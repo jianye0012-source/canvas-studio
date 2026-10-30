@@ -3,7 +3,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-import { AUTH_TOKEN_KEY, fetchCurrentUser, login, register, type AuthPayload, type AuthUser } from "@/services/api/auth";
+import { AUTH_TOKEN_KEY, fetchLocalSession, login, register, type AuthPayload, type AuthUser } from "@/services/api/auth";
 
 type UserStore = {
     token: string;
@@ -17,6 +17,8 @@ type UserStore = {
     register: (payload: AuthPayload) => Promise<AuthUser>;
 };
 
+let localSessionHydration: Promise<void> | null = null;
+
 export const useUserStore = create<UserStore>()(
     persist(
         (set, get) => ({
@@ -26,23 +28,15 @@ export const useUserStore = create<UserStore>()(
             isLoading: false,
             setSession: (token, user) => set({ token, user, isReady: true }),
             clearSession: () => set({ token: "", user: null, isReady: true }),
-            hydrateUser: async () => {
-                const token = get().token;
-                if (!token) {
-                    set({ user: null, isReady: true });
-                    return;
-                }
+            hydrateUser: () => {
+                if (localSessionHydration) return localSessionHydration;
                 set({ isLoading: true });
-                try {
-                    const user = await fetchCurrentUser(token);
-                    if (user.role === "guest") {
-                        set({ token: "", user: null, isReady: true, isLoading: false });
-                        return;
-                    }
-                    set({ user, isReady: true, isLoading: false });
-                } catch {
+                localSessionHydration = fetchLocalSession().then((session) => {
+                    set({ token: session.token, user: session.user, isReady: true, isLoading: false });
+                }).catch(() => {
                     set({ token: "", user: null, isReady: true, isLoading: false });
-                }
+                }).finally(() => { localSessionHydration = null; });
+                return localSessionHydration;
             },
             login: async (payload) => {
                 set({ isLoading: true });

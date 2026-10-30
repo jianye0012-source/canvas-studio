@@ -405,7 +405,9 @@ export const useConfigStore = create<ConfigStore>()(
                 if (get().isPublicSettingsLoading) return;
                 set({ isPublicSettingsLoading: true });
                 try {
-                    set({ publicSettings: await apiGet<AdminPublicSettings>("/api/settings") });
+                    const publicSettings = await apiGet<AdminPublicSettings>("/api/settings");
+                    const local = await fetch("/local/config").then((response) => response.json());
+                    set((state) => ({ publicSettings, config: { ...state.config, channelMode: "remote", imageModel: local.imageModel || "", imageChannelId: local.imageChannelId || "", videoModel: local.videoModel || "", videoChannelId: local.videoChannelId || "", textModel: local.textModel || local.directorModel || "", textChannelId: local.textModel ? local.textChannelId : local.directorChannelId, activeChannelId: "", model: local.imageModel || "" } }));
                 } finally {
                     set({ isPublicSettingsLoading: false });
                 }

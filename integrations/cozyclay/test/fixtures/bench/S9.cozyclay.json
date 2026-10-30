@@ -1,0 +1,278 @@
+{
+	"app": "cozyclay",
+	"kind": "project",
+	"version": 5,
+	"name": "Bench S9 sit on a chair",
+	"previsMode": "animation",
+	"savedAt": 1792200000000,
+	"scenes": {
+		"version": 5,
+		"activeSceneId": "scene-bench-s9",
+		"scenes": [
+			{
+				"id": "scene-bench-s9",
+				"name": "SCENE 01",
+				"objects": [
+					{
+						"id": "chair",
+						"name": "Chair",
+						"renderer": "empty",
+						"x": 0,
+						"y": 0,
+						"z": 1.8,
+						"rot": 180,
+						"rotX": 0,
+						"rotZ": 0,
+						"scaleX": 1,
+						"scaleY": 1,
+						"scaleZ": 1,
+						"path": null,
+						"color": "#ffffff",
+						"parent": null,
+						"attach": null,
+						"hidden": false,
+						"footprint": {
+							"width": 0,
+							"depth": 0
+						},
+						"height": 0,
+						"supportY": 0
+					},
+					{
+						"id": "chair-seat",
+						"name": "Chair seat",
+						"renderer": "cube",
+						"x": 0,
+						"y": 0.43,
+						"z": 1.8,
+						"rot": 180,
+						"rotX": 0,
+						"rotZ": 0,
+						"scaleX": 0.46,
+						"scaleY": 0.04,
+						"scaleZ": 0.44,
+						"path": null,
+						"color": "#8b5a2b",
+						"parent": "chair",
+						"attach": null,
+						"hidden": false,
+						"footprint": {
+							"width": 1,
+							"depth": 1
+						},
+						"height": 1,
+						"supportY": 1
+					},
+					{
+						"id": "chair-back",
+						"name": "Chair back",
+						"renderer": "cube",
+						"x": 0,
+						"y": 0.47,
+						"z": 2,
+						"rot": 180,
+						"rotX": 0,
+						"rotZ": 0,
+						"scaleX": 0.46,
+						"scaleY": 0.5,
+						"scaleZ": 0.04,
+						"path": null,
+						"color": "#8b5a2b",
+						"parent": "chair",
+						"attach": null,
+						"hidden": false,
+						"footprint": {
+							"width": 1,
+							"depth": 1
+						},
+						"height": 1,
+						"supportY": 1
+					},
+					{
+						"id": "chair-leg-1",
+						"name": "chair leg 1",
+						"renderer": "cylinder",
+						"x": -0.2,
+						"y": 0,
+						"z": 1.61,
+						"rot": 180,
+						"rotX": 0,
+						"rotZ": 0,
+						"scaleX": 0.035,
+						"scaleY": 0.43,
+						"scaleZ": 0.035,
+						"path": null,
+						"color": "#6b4423",
+						"parent": "chair",
+						"attach": null,
+						"hidden": false,
+						"footprint": {
+							"width": 1,
+							"depth": 1
+						},
+						"height": 1,
+						"supportY": 1
+					},
+					{
+						"id": "chair-leg-2",
+						"name": "chair leg 2",
+						"renderer": "cylinder",
+						"x": 0.2,
+						"y": 0,
+						"z": 1.61,
+						"rot": 180,
+						"rotX": 0,
+						"rotZ": 0,
+						"scaleX": 0.035,
+						"scaleY": 0.43,
+						"scaleZ": 0.035,
+						"path": null,
+						"color": "#6b4423",
+						"parent": "chair",
+						"attach": null,
+						"hidden": false,
+						"footprint": {
+							"width": 1,
+							"depth": 1
+						},
+						"height": 1,
+						"supportY": 1
+					},
+					{
+						"id": "chair-leg-3",
+						"name": "chair leg 3",
+						"renderer": "cylinder",
+						"x": -0.2,
+						"y": 0,
+						"z": 1.99,
+						"rot": 180,
+						"rotX": 0,
+						"rotZ": 0,
+						"scaleX": 0.035,
+						"scaleY": 0.43,
+						"scaleZ": 0.035,
+						"path": null,
+						"color": "#6b4423",
+						"parent": "chair",
+						"attach": null,
+						"hidden": false,
+						"footprint": {
+							"width": 1,
+							"depth": 1
+						},
+						"height": 1,
+						"supportY": 1
+					},
+					{
+						"id": "chair-leg-4",
+						"name": "chair leg 4",
+						"renderer": "cylinder",
+						"x": 0.2,
+						"y": 0,
+						"z": 1.99,
+						"rot": 180,
+						"rotX": 0,
+						"rotZ": 0,
+						"scaleX": 0.035,
+						"scaleY": 0.43,
+						"scaleZ": 0.035,
+						"path": null,
+						"color": "#6b4423",
+						"parent": "chair",
+						"attach": null,
+						"hidden": false,
+						"footprint": {
+							"width": 1,
+							"depth": 1
+						},
+						"height": 1,
+						"supportY": 1
+					}
+				],
+				"shotDocument": {
+					"version": 5,
+					"frameCount": 240,
+					"waypoints": [],
+					"shots": []
+				},
+				"stage": {
+					"hasCharSheet": false,
+					"environmentImage": null,
+					"shotAspect": "16:9",
+					"cameraPresetId": null,
+					"sensorId": "fullFrame",
+					"keyLight": {
+						"x": 6,
+						"y": 9,
+						"z": 4,
+						"intensity": 1.12,
+						"warmth": 0.5,
+						"color": null
+					},
+					"lighting": {
+						"preset": "studio",
+						"sky": null,
+						"skyTop": null,
+						"ambient": 1,
+						"hemiSky": "#ffffff",
+						"hemiGround": "#5a5d64",
+						"fill": 1,
+						"fog": 0,
+						"exposure": 1,
+						"shadowSoftness": 0,
+						"envLight": 0,
+						"ao": 0,
+						"hdr": null,
+						"hdrRotation": 0,
+						"hdrIntensity": 1,
+						"hdrBackground": true
+					},
+					"environment": "",
+					"style": "",
+					"hasEnvSheet": false,
+					"characters": [
+						{
+							"id": "char-a",
+							"model": "y-bot-tpose",
+							"posture": "stand",
+							"x": 0,
+							"y": 0,
+							"z": 0,
+							"rot": 0,
+							"hidden": false,
+							"parent": null,
+							"tint": null,
+							"pose": null,
+							"identityImage": null,
+							"scale": 1,
+							"subject": "a person in a grey hoodie",
+							"layer": {
+								"waypoints": []
+							},
+							"ikEdits": null
+						}
+					]
+				},
+				"order": 0
+			}
+		]
+	},
+	"workspace": {
+		"hierarchyWidth": 300,
+		"sidebarWidth": 380,
+		"timelineHeight": 224,
+		"insetWidth": 310,
+		"insetHeight": 310,
+		"insetCollapsed": false,
+		"planZoom": 1
+	},
+	"poseLibrary": [],
+	"workflow": {
+		"version": 1,
+		"nodes": [],
+		"edges": []
+	},
+	"resources": {
+		"assets": []
+	}
+}

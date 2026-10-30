@@ -22,9 +22,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/robfig/cron/v3"
+	"github.com/tigerowo/infinite-canvas/config"
 	"github.com/tigerowo/infinite-canvas/model"
 	"github.com/tigerowo/infinite-canvas/repository"
 	"gorm.io/gorm"
+	"os"
 )
 
 // UploadedStorageObject 上传存储对象返回结果。
@@ -98,6 +100,9 @@ func canUseGlobalStorage(ctx context.Context, storage model.PrivateStorageSettin
 
 // HasActiveCloudStorage 判断当前请求是否有可用的云存储。
 func HasActiveCloudStorage(ctx context.Context) (bool, error) {
+	if config.Cfg.LocalToken != "" {
+		return true, nil
+	}
 	settings, err := repository.GetSettings()
 	if err != nil {
 		return false, err
@@ -125,6 +130,9 @@ func HasActiveCloudStorage(ctx context.Context) (bool, error) {
 
 // PublicStorageConfig 返回公开存储配置。
 func PublicStorageConfig() (model.PublicStorageConfig, error) {
+	if config.Cfg.LocalToken != "" {
+		return model.PublicStorageConfig{PublicStorageSetting: model.PublicStorageSetting{Mode: "server_sqlite_s3", AllowUserGlobalProvider: true}, AutoSyncAllAssets: true}, nil
+	}
 	settings, err := repository.GetSettings()
 	if err != nil {
 		return model.PublicStorageConfig{}, err
@@ -195,6 +203,9 @@ func UploadStorageObject(ctx context.Context, filename string, contentType strin
 
 // UploadStorageObjectWithProvider 上传对象到存储（可选用户自定义 Provider）。
 func UploadStorageObjectWithProvider(ctx context.Context, filename string, contentType string, data []byte, providerInput *StorageObjectProviderInput) (UploadedStorageObject, error) {
+	if config.Cfg.LocalToken != "" {
+		return uploadLocalObject(ctx, filename, contentType, data)
+	}
 	settings, err := repository.GetSettings()
 	if err != nil {
 		return UploadedStorageObject{}, err
@@ -307,6 +318,16 @@ func DeleteStorageObject(ctx context.Context, id string, providerInput *StorageO
 	}
 	if user, ok := UserFromContext(ctx); ok && object.CreatedBy != "" && object.CreatedBy != user.ID {
 		return errors.New("无权删除该对象")
+	}
+	if object.ProviderID == "local-disk" {
+		name, err := LocalObjectPath(object.ObjectKey)
+		if err != nil {
+			return err
+		}
+		if err = os.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return repository.DeleteStorageObjectRecord(id)
 	}
 	settings, err := repository.GetSettings()
 	if err != nil {
@@ -479,6 +500,9 @@ func DownloadStorageObject(id string, rangeHeader string) (DownloadedStorageObje
 	object, err := repository.GetStorageObject(id)
 	if err != nil {
 		return DownloadedStorageObject{}, err
+	}
+	if object.ProviderID == "local-disk" {
+		return localObjectStream(object)
 	}
 
 	providers := []model.StorageProvider{}

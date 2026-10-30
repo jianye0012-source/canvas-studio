@@ -14,11 +14,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/tigerowo/infinite-canvas/config"
 	"github.com/tigerowo/infinite-canvas/model"
 	"github.com/tigerowo/infinite-canvas/repository"
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -336,6 +336,12 @@ func AdjustUserCredits(id string, credits float64) (model.User, error) {
 }
 
 func ConsumeUserCredits(userID string, modelName string, credits float64, path string, task ...any) error {
+	if config.Cfg.LocalToken != "" {
+		if len(task) > 0 && task[0] != nil {
+			return repository.InsertWorkflowTask(task[0])
+		}
+		return nil
+	}
 	credits = normalizeCredits(credits)
 	var workflowTask any
 	if len(task) > 0 {
@@ -368,6 +374,9 @@ func ConsumeUserCredits(userID string, modelName string, credits float64, path s
 }
 
 func RefundUserCredits(userID string, modelName string, credits float64, path string) error {
+	if config.Cfg.LocalToken != "" {
+		return nil
+	}
 	credits = normalizeCredits(credits)
 	if credits <= 0 {
 		return nil

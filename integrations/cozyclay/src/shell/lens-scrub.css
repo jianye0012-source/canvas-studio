@@ -1,0 +1,73 @@
+/* The Shot Camera card's focal-length scrub (lens-scrub.jsx): a small field, the mm value over a track with a
+   thumb, so it reads as a control at rest; the step arrows appear just outside it on hover, taking no width. */
+.dock-lens-scrub {
+	position: relative;
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	gap: 0;
+	padding: 1px;
+	border-radius: 6px;
+	background: var(--chip-fill, rgba(127, 127, 127, .1));
+	color: var(--text-1, currentColor);
+	font: 500 11px var(--sans);
+	font-variant-numeric: tabular-nums;
+	cursor: ew-resize;
+	user-select: none;
+	touch-action: none;
+}
+.dock-lens-body { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 2px 4px; }
+.dock-lens-value { line-height: 1; white-space: nowrap; text-align: center; }
+.dock-lens-track {
+	position: relative;
+	width: 38px;
+	height: 2px;
+	border-radius: 1px;
+	background: var(--hairline, rgba(127, 127, 127, .3));
+}
+.dock-lens-fill {
+	position: absolute;
+	inset: 0 auto 0 0;
+	width: var(--lens-at, 0%);
+	border-radius: inherit;
+	background: var(--text-3, currentColor);
+}
+.dock-lens-thumb {
+	position: absolute;
+	top: 50%;
+	left: var(--lens-at, 0%);
+	width: 5px;
+	height: 5px;
+	border-radius: 50%;
+	background: var(--text-2, currentColor);
+	box-shadow: 0 0 0 1px var(--surface-raised, #fff);
+	transform: translate(-50%, -50%);
+}
+.dock-lens-step {
+	position: absolute;
+	top: 50%;
+	display: grid;
+	place-items: center;
+	width: 12px;
+	height: 18px;
+	border-radius: 3px;
+	color: var(--text-3, currentColor);
+	cursor: pointer;
+	opacity: 0;
+	transform: translateY(-50%);
+	transition: opacity .12s;
+}
+.dock-lens-step[data-step="back"] { right: 100%; }
+.dock-lens-step[data-step="next"] { left: 100%; }
+.dock-lens-scrub:is(:hover, :focus-visible, .dragging) .dock-lens-step { opacity: 1; }
+.dock-lens-step:hover { color: var(--select); background: var(--hairline, rgba(127, 127, 127, .2)); }
+.dock-lens-scrub:hover,
+.dock-lens-scrub.dragging { color: var(--select); }
+.dock-lens-scrub:hover .dock-lens-fill,
+.dock-lens-scrub.dragging .dock-lens-fill,
+.dock-lens-scrub:hover .dock-lens-thumb,
+.dock-lens-scrub.dragging .dock-lens-thumb { background: var(--select); }
+.dock-lens-scrub.dragging .dock-lens-thumb { transform: translate(-50%, -50%) scale(1.3); }
+.dock-lens-scrub:focus-visible { outline: 2px solid var(--select); outline-offset: 1px; }
+.dock-lens-scrub[aria-disabled="true"] { cursor: default; opacity: .45; background: none; box-shadow: none; color: var(--label, var(--text-2)); }
+.dock-lens-scrub[aria-disabled="true"] :is(.dock-lens-fill, .dock-lens-thumb, .dock-lens-step) { visibility: hidden; }

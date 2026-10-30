@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	gormmysql "gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 var promptCategories = []model.PromptCategory{
@@ -72,7 +74,11 @@ func DB() (*gorm.DB, error) {
 				return
 			}
 		}
-		db, dbErr = gorm.Open(dialector(driver, dsn), &gorm.Config{})
+		options := &gorm.Config{}
+		if config.Cfg.LocalToken != "" {
+			options.Logger = logger.New(log.New(os.Stderr, "", log.LstdFlags), logger.Config{LogLevel: logger.Error, IgnoreRecordNotFoundError: true, ParameterizedQueries: true})
+		}
+		db, dbErr = gorm.Open(dialector(driver, dsn), options)
 		if dbErr != nil {
 			return
 		}

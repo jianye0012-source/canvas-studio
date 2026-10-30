@@ -25,8 +25,8 @@ export function CanvasDirector({
     onClose: () => void;
     onProjectChange: (project: unknown) => void;
     onPanoramaRemoved: (payload: PanoramaRemoval) => void;
-    onCapturesSent: (nodeId: string, captures: CanvasDirectorCapture[]) => void;
-    onVideoSent: (nodeId: string, video: CanvasDirectorVideo) => void;
+    onCapturesSent: (nodeId: string, captures: CanvasDirectorCapture[]) => Promise<boolean | void>;
+    onVideoSent: (nodeId: string, video: CanvasDirectorVideo) => Promise<boolean | void>;
 }) {
     const iframeRef = useRef<HTMLIFrameElement>(null);
     const projectRef = useRef(project);
@@ -80,7 +80,9 @@ export function CanvasDirector({
                         .filter((capture: DirectorCapturePayload): capture is { dataUrl: string; fileName?: unknown } => typeof capture?.dataUrl === "string" && capture.dataUrl.startsWith("data:image/"))
                         .map((capture: { dataUrl: string; fileName?: unknown }, index: number) => ({ dataUrl: capture.dataUrl, fileName: typeof capture.fileName === "string" && capture.fileName.trim() ? capture.fileName.trim() : "导演台截图-" + (index + 1) + ".png" }))
                     : [];
-                if (captures.length) void onCapturesSent(nodeId, captures);
+                if (captures.length) void onCapturesSent(nodeId, captures)
+                    .then((ok) => postToDesk("storyai:director-output-result", { requestId: event.data?.payload?.requestId, ok: ok !== false }))
+                    .catch(() => postToDesk("storyai:director-output-result", { requestId: event.data?.payload?.requestId, ok: false }));
                 return;
             }
 
@@ -99,14 +101,15 @@ export function CanvasDirector({
                     width: Number.isFinite(width) && width > 0 ? width : 1280,
                     height: Number.isFinite(height) && height > 0 ? height : 720,
                     durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : 0,
-                });
+                }).then((ok) => postToDesk("storyai:director-output-result", { requestId: event.data?.payload?.requestId, ok: ok !== false }))
+                    .catch(() => postToDesk("storyai:director-output-result", { requestId: event.data?.payload?.requestId, ok: false }));
                 return;
             }
         }
 
         window.addEventListener("message", handleMessage);
         return () => window.removeEventListener("message", handleMessage);
-    }, [nodeId, onCapturesSent, onClose, onPanoramaRemoved, onProjectChange, onVideoSent]);
+    }, [nodeId, onCapturesSent, onClose, onPanoramaRemoved, onProjectChange, onVideoSent, postToDesk]);
 
     useEffect(() => {
         if (!ready || sessionSentRef.current) return;
@@ -125,7 +128,7 @@ export function CanvasDirector({
 
     return (
         <div className="fixed inset-0 z-[2000]">
-            <iframe ref={iframeRef} title="3D导演台" src="/director/index.html" className="block h-full w-full border-0" />
+            <iframe ref={iframeRef} title="3D导演台" src="/cozy/app/?canvas=1" className="block h-full w-full border-0" />
         </div>
     );
 }

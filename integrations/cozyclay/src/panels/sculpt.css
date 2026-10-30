@@ -1,0 +1,173 @@
+/* Unlayered and rooted like src/panels/details.css: the Foldout's v2 Details primitives
+   (.v2-details-section.v2-details-section .btn / .inspector-hint) are unlayered too, so the
+   overrides below repeat that root to win on specificity. */
+/* One shrinkable column: an image's intrinsic width must not widen the Details column. */
+.sculpt-panel { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-1); min-width: 0; padding: 4px var(--sp-2) var(--sp-2); }
+.sculpt-panel > *, .sculpt-sheet > * { min-width: 0; }
+.v2-details-section.v2-details-section .sculpt-panel .btn.full { margin-top: 0; }
+.v2-details-section.v2-details-section .sculpt-panel .btn:disabled { opacity: .45; cursor: not-allowed; }
+.sculpt-label { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-1); color: var(--text-2); font-size: 11px; font-weight: 500; white-space: nowrap; }
+.sculpt-label small { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text-3); }
+
+/* Reference well */
+.sculpt-well { position: relative; border-radius: var(--r-2); border: 1px solid var(--row-divider); background: var(--field); overflow: hidden; }
+.sculpt-well-empty { display: grid; justify-items: center; gap: 4px; padding: var(--sp-3) var(--sp-2); border-style: dashed; border-color: var(--divider-strong); color: var(--text-2); text-align: center; cursor: pointer; transition: border-color var(--fast), background var(--fast); }
+.sculpt-well-empty:hover, .sculpt-well-empty[data-dragging="true"] { border-color: var(--select); background: var(--select-tint); color: var(--text-1); }
+.sculpt-well-empty:focus-visible { outline: none; border-color: var(--select); box-shadow: 0 0 0 2px var(--select-tint); }
+.sculpt-well-title { font-size: 12px; font-weight: 500; color: var(--text-1); }
+.sculpt-well-sub { font-size: 11px; color: var(--text-3); }
+.v2-details-section.v2-details-section .sculpt-well-empty .btn.ghost { width: auto; margin-top: 4px; pointer-events: none; }
+.sculpt-well-filled { display: grid; justify-items: center; background: var(--surface-0); }
+/* The frame shrink-wraps the picture, so the measured slices land on the subject. */
+.sculpt-ref-frame { position: relative; max-width: 100%; }
+.sculpt-ref-frame img { display: block; max-width: 100%; max-height: 220px; }
+.v2-details-section.v2-details-section .sculpt-well-replace { position: absolute; right: 6px; bottom: 6px; width: auto; background: var(--overlay); color: var(--text-1); }
+
+/* Primary action */
+.v2-details-section.v2-details-section .sculpt-cancel { color: var(--danger); background: none; box-shadow: inset 0 0 0 1px var(--danger); }
+.v2-details-section.v2-details-section .sculpt-cancel:hover { background: var(--surface-active); color: var(--danger); }
+.v2-details-section.v2-details-section .sculpt-refusal { color: var(--text-2); }
+
+/* Progress */
+.sculpt-progress { display: grid; gap: var(--sp-1); padding: var(--sp-1); border-radius: var(--r-2); background: var(--surface-raised); }
+.sculpt-stepper { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; padding: 0; list-style: none; }
+.sculpt-step { position: relative; display: grid; justify-items: center; gap: 4px; color: var(--text-3); font-size: 10.5px; white-space: nowrap; letter-spacing: -.01em; }
+/* Connector from the previous step's dot to this one. */
+.sculpt-step + .sculpt-step::before { content: ""; position: absolute; top: 4px; right: 50%; width: 100%; height: 1px; background: var(--divider-strong); }
+.sculpt-step[data-state="complete"]::before, .sculpt-step[data-state="current"]::before { background: var(--select); }
+.sculpt-step-dot { position: relative; z-index: 1; width: 9px; height: 9px; border-radius: 50%; border: 1px solid var(--divider-strong); background: var(--surface-raised); }
+.sculpt-step[data-state="complete"] { color: var(--text-2); }
+.sculpt-step[data-state="complete"] .sculpt-step-dot { background: var(--select); border-color: var(--select); }
+.sculpt-step[data-state="current"] { color: var(--text-1); font-weight: 600; }
+.sculpt-step[data-state="current"] .sculpt-step-dot { border-color: var(--select); background: var(--select); box-shadow: 0 0 0 3px var(--select-tint); animation: sculpt-pulse 1.4s var(--ease) infinite; }
+@keyframes sculpt-pulse { 50% { box-shadow: 0 0 0 5px var(--select-tint); } }
+@media (prefers-reduced-motion: reduce) { .sculpt-step[data-state="current"] .sculpt-step-dot { animation: none; } }
+
+.sculpt-stats { display: flex; justify-content: space-between; color: var(--text-2); font-size: 11px; font-variant-numeric: tabular-nums; }
+.sculpt-iou { display: grid; gap: 4px; }
+.sculpt-iou .sculpt-label small { color: var(--text-1); font-family: var(--mono); }
+.sculpt-iou-target { color: var(--text-3); }
+.sculpt-iou-bar { position: relative; height: 6px; border-radius: 3px; background: var(--field); }
+.sculpt-iou-fill { position: absolute; inset: 0 auto 0 0; width: calc(var(--sculpt-iou) * 100%); border-radius: inherit; background: var(--primary); transition: width var(--med) var(--ease); }
+.sculpt-iou-bar[data-reached="true"] .sculpt-iou-fill { background: var(--ok); }
+.sculpt-iou-marker { position: absolute; top: -3px; bottom: -3px; left: calc(var(--sculpt-target) * 100%); width: 2px; margin-left: -1px; border-radius: 1px; background: var(--select); }
+.v2-details-section.v2-details-section .sculpt-done { color: var(--ok); }
+.v2-details-section.v2-details-section .sculpt-error { color: var(--danger); }
+
+/* Overlay sheet */
+.sculpt-sheet { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.v2-details-section.v2-details-section .sculpt-sheet .btn[aria-pressed="true"] { color: var(--text-1); box-shadow: inset 0 0 0 1px var(--select); }
+.sculpt-sheet-image { display: block; width: 100%; border-radius: var(--r-1); border: 1px solid var(--row-divider); background: var(--surface-0); }
+
+
+/* --------------------------------------------------- live narration (#739) ---
+   Everything below says "it is working": a lump of clay being kneaded while we
+   wait, a bar against the usual wait, the score trail, the candidate race and
+   the log. Motion stops under prefers-reduced-motion; the words stay. */
+
+/* What we wait on now */
+.sculpt-now { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; column-gap: 8px; row-gap: 4px; padding: 6px 8px; border-radius: var(--r-1); background: var(--field); font-size: 12px; color: var(--text-1); }
+.sculpt-now-label { min-width: 0; overflow-wrap: anywhere; line-height: 1.35; font-weight: 500; }
+.sculpt-now-time { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--text-2); }
+.sculpt-now-expect { grid-column: 2 / 4; font-size: 11px; color: var(--text-3); }
+.sculpt-now[data-over="true"] .sculpt-now-expect { color: var(--warn, var(--text-2)); }
+.sculpt-now-bar { grid-column: 1 / -1; position: relative; height: 3px; border-radius: 2px; background: var(--surface-active); overflow: hidden; }
+.sculpt-now-bar > span { position: absolute; inset: 0 auto 0 0; width: calc(var(--sculpt-wait) * 100%); background: var(--select); border-radius: inherit; transition: width .5s linear; }
+.sculpt-now[data-over="true"] .sculpt-now-bar > span { width: 100%; background: linear-gradient(90deg, var(--select-tint), var(--select), var(--select-tint)); background-size: 200% 100%; animation: sculpt-shimmer 1.2s linear infinite; }
+@keyframes sculpt-shimmer { to { background-position: -200% 0; } }
+
+/* A lump of clay being kneaded: squash, stretch, a thumb press. */
+.sculpt-clay { width: 16px; height: 16px; margin-top: 1px; border-radius: 52% 48% 46% 54% / 55% 50% 50% 45%; background: radial-gradient(circle at 35% 30%, #e9c9a6, #c08a5c 70%); box-shadow: inset -2px -2px 0 rgba(0, 0, 0, .12); animation: sculpt-knead 1.1s ease-in-out infinite; }
+@keyframes sculpt-knead {
+	0%, 100% { transform: scale(1, 1) rotate(0deg); border-radius: 52% 48% 46% 54% / 55% 50% 50% 45%; }
+	30% { transform: scale(1.18, .82) rotate(-6deg); border-radius: 60% 40% 55% 45% / 45% 55% 45% 55%; }
+	60% { transform: scale(.86, 1.14) rotate(5deg); border-radius: 45% 55% 40% 60% / 60% 40% 60% 40%; }
+}
+.sculpt-now[data-what="score"] .sculpt-clay, .sculpt-now[data-what="measure"] .sculpt-clay { animation-duration: .6s; }
+
+/* IoU trail */
+.sculpt-trail { position: relative; height: 34px; }
+.sculpt-trail svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.sculpt-trail-target { stroke: var(--select); stroke-width: 1; stroke-dasharray: 2 2; vector-effect: non-scaling-stroke; opacity: .7; }
+.sculpt-trail-line { fill: none; stroke: var(--primary); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.sculpt-trail-dot { fill: var(--primary); }
+.sculpt-trail-dot[data-last="true"] { fill: var(--ok); animation: sculpt-dot 1.6s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes sculpt-dot { 50% { transform: scale(1.6); } }
+.sculpt-delta { position: absolute; right: 0; top: -4px; padding: 1px 6px; border-radius: 9px; font: 600 11px/1.4 var(--mono); background: var(--surface-raised); box-shadow: 0 0 0 1px var(--row-divider); animation: sculpt-float 1.8s var(--ease) both; }
+.sculpt-delta[data-sign="up"] { color: var(--ok); }
+.sculpt-delta[data-sign="down"] { color: var(--danger); }
+@keyframes sculpt-float { from { opacity: 0; transform: translateY(8px) scale(.9); } 25% { opacity: 1; transform: none; } }
+
+/* Candidate race */
+.sculpt-race { display: grid; gap: 3px; margin: 0; padding: 6px 8px; list-style: none; border-radius: var(--r-1); background: var(--field); }
+.sculpt-race-row { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 6fr) auto; align-items: center; gap: 6px; font-size: 11px; color: var(--text-2); }
+.sculpt-race-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sculpt-race-bar { height: 5px; border-radius: 3px; background: var(--surface-active); overflow: hidden; }
+.sculpt-race-bar > span { display: block; height: 100%; width: calc(var(--sculpt-race) * 100%); border-radius: inherit; background: var(--text-3); transform-origin: left; animation: sculpt-grow .7s var(--ease) both; animation-delay: var(--sculpt-race-delay); }
+@keyframes sculpt-grow { from { transform: scaleX(0); } }
+.sculpt-race-score { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.sculpt-race-row[data-leader="true"] { color: var(--text-1); font-weight: 600; }
+.sculpt-race-row[data-leader="true"] .sculpt-race-bar > span { background: var(--ok); }
+.sculpt-race-row[data-leader="true"] .sculpt-race-label::before { content: "\2605  "; color: var(--ok); }
+.sculpt-race-row[data-refused="true"] { opacity: .5; text-decoration: line-through; }
+
+/* Part tree (#740 S7) */
+.sculpt-parts { display: grid; gap: 4px; }
+.sculpt-part-list { display: grid; gap: 1px; max-height: 200px; margin: 0; padding: 2px; list-style: none; overflow-y: auto; overscroll-behavior: contain; border-radius: var(--r-2); border: 1px solid var(--row-divider); background: var(--field); }
+.sculpt-part-row { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 24px; padding: 2px 6px 2px calc(6px + var(--sculpt-part-depth) * 12px); border: 0; border-radius: var(--r-1); background: transparent; color: var(--text-2); font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
+.sculpt-part-row:hover { background: var(--surface-active); color: var(--text-1); }
+.sculpt-part-row:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--select-tint); }
+.sculpt-part-row[aria-pressed="true"] { background: var(--select-tint); color: var(--text-1); box-shadow: inset 2px 0 0 var(--select); }
+.sculpt-part-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+.sculpt-part-tag { flex: none; padding: 0 4px; border-radius: var(--r-1); background: var(--select); color: var(--surface-raised); font-size: 10px; }
+.sculpt-part-shape { flex: none; margin-left: auto; color: var(--text-3); }
+
+/* Activity log */
+.sculpt-log { display: grid; gap: 2px; max-height: 168px; margin: 0; padding: 4px 2px; list-style: none; overflow-y: auto; overscroll-behavior: contain; scroll-behavior: smooth; }
+.sculpt-log-row { display: grid; grid-template-columns: 30px 8px minmax(0, 1fr); align-items: baseline; gap: 6px; font-size: 11px; line-height: 1.4; color: var(--text-2); animation: sculpt-in .35s var(--ease) both; }
+.sculpt-log-row:last-child { color: var(--text-1); }
+@keyframes sculpt-in { from { opacity: 0; transform: translateY(4px); } }
+.sculpt-log-time { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--text-3); }
+.sculpt-log-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); align-self: center; }
+.sculpt-log-row[data-kind="agent"] .sculpt-log-dot { background: var(--select); }
+.sculpt-log-row[data-kind="ok"] .sculpt-log-dot, .sculpt-log-row[data-kind="done"] .sculpt-log-dot { background: var(--ok); }
+.sculpt-log-row[data-kind="score"] .sculpt-log-dot { background: var(--primary); }
+.sculpt-log-row[data-kind="warn"] .sculpt-log-dot { background: var(--warn, #d9a441); }
+.sculpt-log-row[data-kind="error"] .sculpt-log-dot { background: var(--danger); }
+.sculpt-log-row[data-kind="done"] { color: var(--ok); font-weight: 600; }
+.sculpt-log-text { min-width: 0; overflow-wrap: anywhere; }
+
+/* Measuring the reference: a scan line, then the slices it found */
+.sculpt-scanline { position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--select); box-shadow: 0 0 8px 2px var(--select-tint); animation: sculpt-scan 1.1s ease-in-out infinite alternate; pointer-events: none; }
+@keyframes sculpt-scan { to { top: calc(100% - 2px); } }
+.sculpt-scan { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.sculpt-scan-span { fill: var(--select); opacity: .8; animation: sculpt-slice .45s var(--ease) both; }
+@keyframes sculpt-slice { from { opacity: 0; transform: scaleX(0); } }
+.sculpt-scan-span { transform-box: fill-box; transform-origin: center; }
+
+@media (prefers-reduced-motion: reduce) {
+	.sculpt-clay, .sculpt-trail-dot, .sculpt-delta, .sculpt-race-bar > span, .sculpt-log-row, .sculpt-scanline, .sculpt-scan-span, .sculpt-now[data-over="true"] .sculpt-now-bar > span { animation: none; }
+}
+
+/* Model and effort */
+.sculpt-model { display: grid; gap: 4px; }
+.sculpt-model-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
+.sculpt-select { min-width: 0; height: 26px; padding: 0 6px; border-radius: var(--r-1); border: 1px solid var(--row-divider); background: var(--field); color: var(--text-1); font: inherit; font-size: 12px; }
+.sculpt-select:disabled { opacity: .6; }
+
+
+/* Blueprint (model sheet) */
+.sculpt-blueprint { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; min-width: 0; padding: 8px; border-radius: var(--r-2); background: var(--surface-raised); }
+.sculpt-blueprint-row { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; }
+.sculpt-blueprint > * { min-width: 0; }
+.sculpt-blueprint .sculpt-label small { overflow: hidden; text-overflow: ellipsis; }
+.sculpt-notes { box-sizing: border-box; width: 100%; min-width: 0; resize: vertical; padding: 6px; border-radius: var(--r-1); border: 1px solid var(--row-divider); background: var(--field); color: var(--text-1); font: inherit; font-size: 12px; }
+.sculpt-blueprint .sculpt-now .btn { grid-column: 1 / -1; justify-self: end; width: auto; }
+.sculpt-sheet-figure { display: grid; gap: 4px; margin: 0; }
+.sculpt-sheet-figure > a { position: relative; display: block; border-radius: var(--r-1); overflow: hidden; border: 1px solid var(--row-divider); background: #fff; }
+.sculpt-sheet-figure img { display: block; width: 100%; }
+.sculpt-sheet-tag { position: absolute; margin: 3px; padding: 0 4px; border-radius: 3px; font-size: 9.5px; line-height: 1.5; color: #fff; background: rgba(20, 22, 28, .62); pointer-events: none; }
+.sculpt-sheet-figure figcaption { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-3); }
+.sculpt-sheet-figure figcaption a { color: var(--select); }
+.sculpt-prompt summary { cursor: pointer; font-size: 11px; color: var(--text-2); }
+.sculpt-prompt pre { max-height: 180px; margin: 4px 0 0; padding: 6px; overflow: auto; white-space: pre-wrap; border-radius: var(--r-1); background: var(--field); font: 10.5px/1.45 var(--mono); color: var(--text-2); }

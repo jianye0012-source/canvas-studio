@@ -1,0 +1,2 @@
+# Check out LF everywhere, whatever core.autocrlf says: source-text and snapshot tests compare exact bytes.
+* text=auto eol=lf

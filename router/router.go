@@ -6,13 +6,23 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tigerowo/infinite-canvas/handler"
 	"github.com/tigerowo/infinite-canvas/middleware"
+	"github.com/tigerowo/infinite-canvas/model"
+	"github.com/tigerowo/infinite-canvas/service"
 )
 
 func New() *gin.Engine {
 	router := gin.Default()
+	router.Use(middleware.LocalGateway)
 	router.RedirectTrailingSlash = false
 	_ = router.SetTrustedProxies(nil)
 	api := router.Group("/api")
+	api.GET("/auth/local", func(c *gin.Context) {
+		if user, ok := service.LocalUser(); ok {
+			handler.OK(c.Writer, model.AuthSession{Token: "local-session", User: user})
+			return
+		}
+		c.Status(http.StatusNotFound)
+	})
 	api.GET("/health", func(c *gin.Context) {
 		c.String(http.StatusOK, "ok")
 	})

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -130,6 +131,27 @@ func DeleteDirectFileRecord(w http.ResponseWriter, r *http.Request, id string) {
 
 // FileContent 获取文件内容。
 func FileContent(w http.ResponseWriter, r *http.Request, id string) {
+	if object, err := service.StorageObjectInfo(id); err == nil && object.ProviderID == "local-disk" {
+		name, err := service.LocalObjectPath(object.ObjectKey)
+		if err != nil {
+			FailError(w, err)
+			return
+		}
+		file, err := os.Open(name)
+		if err != nil {
+			FailError(w, err)
+			return
+		}
+		defer file.Close()
+		info, err := file.Stat()
+		if err != nil {
+			FailError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", object.MimeType)
+		http.ServeContent(w, r, name, info.ModTime(), file)
+		return
+	}
 	download, err := service.DownloadStorageObject(id, r.Header.Get("Range"))
 	if err != nil {
 		FailError(w, err)

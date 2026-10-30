@@ -1,0 +1,304 @@
+#!/usr/bin/env node
+/** MCP P0 live protocol regression checks over real stdio and WebSocket transports. */
+import assert from "node:assert/strict";
+import { createServer } from "node:net";
+import { createServer as createHttpServer } from "node:http";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { WebSocket } from "ws";
+import { LiveHub, LiveMutationUncertainError } from "./live-hub.mjs";
+import { fileURLToPath } from "node:url";
+
+const SERVER = fileURLToPath(new URL("./server.mjs", import.meta.url));
+
+const reservePort = () =>
+	new Promise((resolve, reject) => {
+		const server = createServer();
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", () => {
+			const address = server.address();
+			if (!address || typeof address === "string") {
+				reject(new Error("Could not reserve a TCP port."));
+				return;
+			}
+			server.close((error) => (error ? reject(error) : resolve(address.port)));
+		});
+	});
+
+const timeout = (promise, label) => {
+	let timer;
+	return Promise.race([
+		promise,
+		new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}.`)), 2_000); }),
+	]).finally(() => clearTimeout(timer));
+};
+
+const once = (target, event) =>
+	timeout(
+		new Promise((resolve, reject) => {
+			target.once(event, resolve);
+			target.once("error", reject);
+		}),
+		event,
+	);
+
+const clone = (value) => JSON.parse(JSON.stringify(value));
+const livePort = await reservePort();
+const bridgePort = await reservePort();
+const bridge = createHttpServer((request, response) => {
+	if (request.url === "/ardy/health") {
+		response.writeHead(200, { "content-type": "application/json" });
+		response.end(JSON.stringify({ ok: true }));
+		return;
+	}
+	response.writeHead(404).end();
+});
+await new Promise((resolve, reject) => {
+	bridge.once("error", reject);
+	bridge.listen(bridgePort, "127.0.0.1", resolve);
+});
+const editor = {
+	sceneName: "MCP P0 LIVE",
+	camera: { x: 0, y: 1.6, z: 4.5, focalMm: 35, sensorId: "super35", aspectRatio: 1.78 },
+	stage: { shotAspect: "2.39:1", sensorId: "super35", hasCharSheet: true },
+	timeline: { currentFrame: 17, frameCount: 240, fps: 24 },
+	characters: [{ id: "char-a", model: "y-bot-tpose", subject: "a performer", x: 0, y: 0, z: 0, rot: 0, hidden: false }],
+	objects: [],
+};
+let rejectDescribe = false;
+let rejectAfterMutation = false;
+const executionTelemetry = [];
+let disconnectBeforeReceipt = false;
+let omitCharacterFields = true;
+let revision = 0;
+const host = { workspaceId: "p0-workspace", documentEpoch: "document", sceneId: "scene", sceneEpoch: "epoch" };
+
+const handle = (name, args) => {
+	switch (name) {
+		case "describe":
+			if (rejectDescribe) {
+				rejectDescribe = false;
+				throw new Error("Describe unavailable after mutation");
+			}
+			const description = clone(editor);
+			return omitCharacterFields
+				? { ...description, characters: description.characters.map(({ model, ...character }) => character) }
+				: description;
+		case "inspect_studio":
+			return { context: { host, revision: { scene: revision }, activeCharacterId: 'char-a' }, actions: [] };
+		case "run_action": {
+			assert.deepEqual(args.host, host);
+			assert.equal(args.expectedRevision, revision);
+			const { action, args: input } = args.args;
+			if (action === "character.update") return {
+				ok: false, commandId: args.commandId, host, code: "STALE_TARGET", phase: "admission", affectedIds: [],
+				expectedTargets: [], currentTargets: [], mutated: false, preserved: { authoredState: "unchanged" },
+				recovery: { action: "inspect", retryAllowed: false }, message: `Character not found: ${input.characterId}`,
+			};
+			assert.equal(action, "character.add");
+			if (rejectAfterMutation) { rejectDescribe = true; rejectAfterMutation = false; }
+			const character = input.character;
+			const id = `char-${String.fromCharCode(97 + editor.characters.length)}`;
+			editor.characters.push({ id, model: character.model ?? "y-bot-tpose", subject: character.subject,
+				x: character.x ?? 0, y: 0, z: character.z ?? 0, rot: character.rot ?? 0, hidden: false });
+			if (disconnectBeforeReceipt) return { disconnectBeforeReceipt: true };
+			const before = revision++;
+			return { ok: true, status: "applied", action, commandId: args.commandId, receiptId: `receipt-${revision}`, host,
+				authored: true, revision: { before, after: revision }, affectedIds: [id],
+				delta: [{ id, after: { model: character.model ?? "y-bot-tpose" } }], checks: {}, warnings: [],
+				undo: { historyEntryId: `history-${revision}`, entries: 1, canUndoDirect: true } };
+		}
+		default:
+			throw new Error(`Unknown command ${name}`);
+	}
+};
+
+const client = new Client({ name: "cozyclay-mcp-live-p0-verify", version: "1.0.0" });
+const projectDirectory = await mkdtemp(join(tmpdir(), "cozyclay-mcp-live-p0-"));
+const transport = new StdioClientTransport({
+	command: process.execPath,
+	args: [SERVER, "--live-port", String(livePort)],
+	env: { ...process.env, COZYCLAY_BRIDGE: `http://127.0.0.1:${bridgePort}`, COZYCLAY_PROJECT_ROOT: projectDirectory },
+});
+let socket;
+try {
+	await client.connect(transport);
+	socket = new WebSocket(`ws://127.0.0.1:${livePort}/live`);
+	const welcomed = Promise.withResolvers();
+	socket.on("message", (raw) => {
+		const frame = JSON.parse(raw.toString());
+		if (frame.type === "workspace") welcomed.resolve();
+		if (frame.type === "event" && frame.name === "telemetry") executionTelemetry.push(frame.payload);
+		if (frame.type !== "cmd") return;
+		try {
+			const value = handle(frame.name, frame.args);
+			if (value.disconnectBeforeReceipt) { socket.close(); return; }
+			socket.send(JSON.stringify({ type: "result", id: frame.id, ok: true, value }));
+		} catch (error) {
+			socket.send(JSON.stringify({ type: "result", id: frame.id, ok: false, error: error.message }));
+		}
+	});
+	await once(socket, "open");
+	socket.send(JSON.stringify({ type: "hello", role: "editor", version: 1, workspaceId: host.workspaceId }));
+	await timeout(welcomed.promise, "workspace hello");
+
+	const call = (name, args = {}) => client.callTool({ name, arguments: args });
+
+	// Given a live character and object whose authored fields differ from defaults
+	omitCharacterFields = false;
+	editor.characters[0] = {
+		id: "char-a", model: "x-bot-tpose", subject: "a prior performer", x: 1, y: 0, z: 2, rot: 30, hidden: false,
+		tint: "#123456", pose: { label: "Walking", bones: { hips: [1, 2, 3] } }, scale: 1.4,
+		layer: { waypoints: [{ frame: 12, x: 1, z: 2 }] },
+	};
+	editor.objects = [{
+		id: "cube-1", name: "Cube", renderer: "cube", x: 1, y: 0, z: -2, rot: 15,
+		rotX: 12, rotZ: -8, scaleX: 1, scaleY: 1, scaleZ: 1, color: "#d9b18c",
+		parent: null, footprint: { width: 1, depth: 1 }, height: 1,
+	}];
+	const seededReport = await call("describe_scene");
+	assert.equal(seededReport.isError, undefined, JSON.stringify(seededReport));
+	assert.match(
+		seededReport.content[0].text,
+		/"label":"Walking"[\s\S]*tint: #123456[\s\S]*scale: 1\.4[\s\S]*"waypoints":\[\{"frame":12,"x":1,"z":2(?:,"id":"[^"]+")?}\][\s\S]*rotX: 12[\s\S]*rotZ: -8[\s\S]*color: #d9b18c[\s\S]*shotAspect: 2\.39:1[\s\S]*sensorId: super35[\s\S]*hasCharSheet: true[\s\S]*currentFrame: 17[\s\S]*frameCount: 240[\s\S]*fps: 24/,
+		"describe missing fields: pose, tint, scale, layer.waypoints, object.rotX, object.rotZ, object.color, stage.shotAspect, stage.sensorId, stage.hasCharSheet, timeline.currentFrame, timeline.frameCount, timeline.fps",
+	);
+
+	// Given fields that are honestly absent, describe must keep their explicit null or empty shape.
+	editor.characters[0] = {
+		id: "char-a", model: "y-bot-tpose", subject: "an unposed performer", x: 0, y: 0, z: 0, rot: 0, hidden: false,
+		tint: null, pose: null, scale: 1, layer: { waypoints: [] },
+	};
+	editor.objects = [{
+		id: "cube-1", name: "Cube", renderer: "cube", x: 0, y: 0, z: 0, rot: 0,
+		rotX: 0, rotZ: 0, scaleX: 1, scaleY: 1, scaleZ: 1, color: null,
+		parent: null, footprint: { width: 1, depth: 1 }, height: 1,
+	}];
+	const absentReport = await call("describe_scene");
+	assert.equal(absentReport.isError, undefined, JSON.stringify(absentReport));
+	assert.match(absentReport.content[0].text, /pose: null[\s\S]*tint: null[\s\S]*scale: 1[\s\S]*"waypoints":\[\][\s\S]*rotX: 0[\s\S]*rotZ: 0[\s\S]*color: null/);
+
+	// Given an empty scene, camera, stage and timeline sections remain well formed.
+	editor.characters = [];
+	editor.objects = [];
+	const emptyReport = await call("describe_scene");
+	assert.equal(emptyReport.isError, undefined, JSON.stringify(emptyReport));
+	assert.match(emptyReport.content[0].text, /CAMERA[\s\S]*STAGE[\s\S]*TIMELINE/);
+
+	// Restore authored fields, then send a partial report to prove the existing
+	// omitted-field preservation seam still keeps every omitted value.
+	editor.characters = [{
+		id: "char-a", model: "x-bot-tpose", subject: "a prior performer", x: 1, y: 0, z: 2, rot: 30, hidden: false,
+		tint: "#123456", pose: { label: "Walking", bones: { hips: [1, 2, 3] } }, scale: 1.4,
+		layer: { waypoints: [{ frame: 12, x: 1, z: 2 }] },
+	}];
+	await call("describe_scene");
+	editor.characters = [{ id: "char-a", subject: "the described performer", x: 7 }];
+	editor.objects = [];
+	omitCharacterFields = false;
+	// When the editor reports only its authoritative subject and x fields
+	const projectPath = join(projectDirectory, "description-merge.cclayproject");
+	const merged = await call("save_project", { path: projectPath });
+	assert.equal(merged.isError, undefined, JSON.stringify(merged));
+	assert.match(merged.content[0].text, /^Saved/, JSON.stringify(merged));
+	const saved = JSON.parse(await readFile(projectPath, "utf8"));
+	const mergedCharacter = saved.scenes.scenes[0].stage.characters[0];
+	// Then reported values update, while every omitted prior field survives normalization.
+	assert.equal(mergedCharacter.subject, "the described performer");
+	assert.equal(mergedCharacter.x, 7);
+	assert.equal(mergedCharacter.model, "x-bot-tpose");
+	assert.equal(mergedCharacter.layer.waypoints[0].frame, 12);
+	omitCharacterFields = false;
+
+	// Given a requested non-default mannequin
+	// When the admitted add command returns its bus receipt
+	const added = await call("add_character", { subject: "an x-bot performer", model: "x-bot-tpose" });
+	// Then the editor model survives the round trip.
+	assert.equal(added.isError, undefined, JSON.stringify(added));
+	const addedReceipt = JSON.parse(added.content[0].text);
+	assert.equal(addedReceipt.action, "character.add");
+	assert.equal(editor.characters.find(row => row.id === addedReceipt.affectedIds[0]).model, "x-bot-tpose");
+	const described = await call("describe_scene");
+	assert.match(described.content[0].text, /\[x-bot-tpose\]/, described.content[0].text);
+
+	// A bus receipt already attests the commit. A later failed description must
+	// not turn that receipt into an uncertain mutation or invite a duplicate.
+	rejectAfterMutation = true;
+	const acknowledgedOffset = executionTelemetry.length;
+	const acknowledged = await call("add_character", { subject: "a second performer", model: "x-bot-tpose" });
+	assert.equal(acknowledged.isError, undefined, JSON.stringify(acknowledged));
+	assert.equal(JSON.parse(acknowledged.content[0].text).status, "applied");
+	assert.equal(rejectDescribe, true, "the alias must not need a post-commit description");
+	const failedRead = await call("describe_scene");
+	assert.equal(failedRead.isError, true);
+
+	// Given a live editor that rejects a command
+	// When a tool forwards that command
+	const rejected = await call("place_character", { character: "missing", x: 1 });
+	// Then the MCP tool result uses the protocol error state.
+	assert.equal(rejected.isError, true, JSON.stringify(rejected));
+	assert.equal(JSON.parse(rejected.content[0].text).code, "STALE_TARGET");
+	// This subsequent inspected command fences earlier events on the same
+	// socket; absence is not inferred from whichever events arrived by luck.
+	const acknowledgedEvents = executionTelemetry.slice(acknowledgedOffset);
+	const acknowledgedRequest = acknowledgedEvents.find(({ event }) => event === "mcp:tool_requested");
+	const lifecycle = acknowledgedEvents.filter(({ props }) => props.request_id === acknowledgedRequest.props.request_id);
+	assert.deepEqual(lifecycle.map(({ event }) => event), ["mcp:tool_requested", "mcp:tool_executed", "mcp:result_applied"]);
+	assert.equal(lifecycle[1].props.outcome, "succeeded");
+
+	// Losing the command receipt is still uncertain even if the editor applied
+	// the mutation. Do not substitute a retry or a legacy describe handshake.
+	disconnectBeforeReceipt = true;
+	const disconnected = await call("add_character", { subject: "a disconnected performer", model: "x-bot-tpose" });
+	// Then it is uncertain-applied rather than a successful mutation result.
+	assert.equal(disconnected.isError, true, JSON.stringify(disconnected));
+	assert.match(disconnected.content[0].text, /may have been applied/i, disconnected.content[0].text);
+	assert.match(disconnected.content[0].text, /do not retry/i, disconnected.content[0].text);
+
+	assert.equal(LiveHub.commandTimeoutMs("capture_frame"), 30_000);
+	assert.equal(LiveHub.commandTimeoutMs("import_asset"), 30_000);
+	for (const name of [
+		"inspect_studio", "operate_studio", "arrange_objects", "arrange_characters", "patch_elements",
+		"frame_shot", "verify_result", "undo_edit", "read_studio_context", "resolve_studio_image",
+		"capture_framing_png", "reconcile_studio_command", "run_action",
+	]) {
+		assert.equal(LiveHub.commandTimeoutMs(name), 30_000, `${name} uses the Studio command timeout`);
+	}
+	assert.equal(LiveHub.commandTimeoutMs("describe"), 5_000);
+
+	console.log(JSON.stringify({
+		livePort,
+		modelRoundTrip: { isError: added.isError ?? false, described: /\[x-bot-tpose\]/.test(described.content[0].text) },
+		rejected: { isError: rejected.isError === true },
+		committedDespiteLaterReadFailure: { isError: acknowledged.isError ?? false, laterReadFailed: failedRead.isError === true },
+		uncertainAfterDisconnect: { isError: disconnected.isError === true, doNotRetry: /do not retry/i.test(disconnected.content[0].text) },
+		defaultCommandTimeoutMs: LiveHub.commandTimeoutMs("describe"),
+		seededDescribe: seededReport,
+		emptyDescribe: emptyReport,
+		descriptionMerge: {
+			before: { model: "x-bot-tpose", pose: "Walking", tint: "#123456", scale: 1.4, layer: true },
+			describe: { subject: "the described performer", x: 7 },
+			after: { model: mergedCharacter.model, pose: mergedCharacter.pose?.label, tint: mergedCharacter.tint, scale: mergedCharacter.scale, layer: mergedCharacter.layer.waypoints.length, subject: mergedCharacter.subject, x: mergedCharacter.x },
+		},
+	}));
+} finally {
+	if (socket && socket.readyState === WebSocket.OPEN) socket.close();
+	await client.close().catch(() => {});
+	await new Promise((resolve, reject) => bridge.close((error) => (error ? reject(error) : resolve())));
+	await rm(projectDirectory, { recursive: true, force: true });
+}
+
+// Read-only transport loss is retryable; mutation transport loss is not.
+const unitHub = new LiveHub();
+const unitSocket = { readyState: WebSocket.OPEN, send() {} };
+unitHub.editors.set("unit-workspace", unitSocket);
+const readOnlyFailure = unitHub.command("describe", {}, "unit-workspace");
+unitHub.disconnect(unitSocket);
+await assert.rejects(readOnlyFailure, (error) => !(error instanceof LiveMutationUncertainError));
+unitHub.editors.set("unit-workspace", unitSocket);
+const mutationFailure = unitHub.command("add_character", {}, "unit-workspace");
+unitHub.disconnect(unitSocket);
+await assert.rejects(mutationFailure, (error) => error instanceof LiveMutationUncertainError && /do not retry/i.test(error.message));

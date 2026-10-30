@@ -1,0 +1,113 @@
+/* One turn's step list in the agent panel (AgentTurnSteps.jsx); colours and sizes come from agent-panel.css. */
+.agent-steps {
+	--agent-step-icon: 11px;
+	display: flex;
+	flex-direction: column;
+}
+
+.agent-steps-head {
+	display: flex;
+	align-items: center;
+	gap: var(--agent-space-3);
+	width: 100%;
+	padding: var(--agent-space-2) var(--agent-space-4);
+	border: 0;
+	background: none;
+	color: var(--agent-text-soft, var(--agent-text));
+	font: inherit;
+	font-size: var(--agent-font-md);
+	text-align: left;
+	cursor: pointer;
+}
+
+.agent-steps-title { flex: 1; font-variant-numeric: tabular-nums; }
+.agent-steps-chevron { color: var(--agent-text-dim); transition: transform var(--agent-motion); }
+.agent-steps[data-open="true"] .agent-steps-chevron { transform: rotate(90deg); }
+
+.agent-steps-list {
+	display: flex;
+	flex-direction: column;
+	margin: 0;
+	padding: 0 0 var(--agent-space-2);
+	border-top: 1px solid var(--agent-border);
+	list-style: none;
+}
+
+.agent-step { padding: 0 var(--agent-space-4); }
+.agent-step.narration { display: flex; gap: var(--agent-space-3); padding-top: var(--agent-space-1); color: var(--agent-text-muted); font-size: var(--agent-font-md); }
+
+.agent-step-row {
+	display: flex;
+	align-items: center;
+	gap: var(--agent-space-3);
+	width: 100%;
+	min-width: 0;
+	padding: var(--agent-space-1) 0 0;
+	border: 0;
+	background: none;
+	color: var(--agent-text);
+	font: inherit;
+	font-size: var(--agent-font-md);
+	text-align: left;
+}
+
+button.agent-step-row { cursor: pointer; }
+.agent-step-label { flex: none; white-space: nowrap; }
+.agent-step.thinking .agent-step-label { color: var(--agent-text-muted); }
+.agent-step-subject { flex: 1; min-width: 0; overflow: hidden; color: var(--agent-text-muted); text-overflow: ellipsis; white-space: nowrap; }
+.agent-step-label + .agent-step-time { margin-left: auto; }
+.agent-step-time { flex: none; color: var(--agent-text-dim); font: var(--agent-font-sm) ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+
+.agent-step-result,
+.agent-step-thought {
+	margin: 0;
+	padding-left: calc(var(--agent-step-icon) + var(--agent-space-3));
+	color: var(--agent-text-muted);
+	font-size: var(--agent-font-sm);
+	line-height: 1.45;
+	overflow-wrap: anywhere;
+}
+
+.agent-step-thought { white-space: pre-wrap; max-height: 160px; overflow-y: auto; }
+.agent-step.failed .agent-step-result { color: var(--agent-alert); }
+
+.agent-step-icon { flex: none; width: var(--agent-step-icon); }
+.agent-step-icon.ok { color: var(--agent-ok); }
+.agent-step-icon.alert { color: var(--agent-alert); }
+.agent-step-icon.warn { color: var(--agent-warn); }
+
+.agent-step-dot {
+	flex: none;
+	width: var(--agent-step-icon);
+	height: var(--agent-step-icon);
+	background: radial-gradient(circle, var(--agent-text-dim) 0 2px, transparent 2.5px);
+}
+
+.agent-step-spin {
+	flex: none;
+	width: var(--agent-step-icon);
+	height: var(--agent-step-icon);
+	border: 1.5px solid var(--agent-border-strong);
+	border-top-color: var(--agent-accent);
+	border-radius: var(--agent-radius-pill);
+	animation: agent-spin 700ms linear infinite;
+}
+
+.agent-steps-note {
+	margin: 0;
+	padding: var(--agent-space-2) var(--agent-space-4);
+	border-top: 1px solid var(--agent-border);
+	color: var(--agent-warn);
+	font-size: var(--agent-font-sm);
+	line-height: 1.45;
+}
+
+/* The activity line's second part: what the current step is about. */
+.agent-activity-detail {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	color: var(--agent-text-dim);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}

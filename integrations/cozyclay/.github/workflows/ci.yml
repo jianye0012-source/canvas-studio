@@ -1,0 +1,412 @@
+name: CI
+
+# Pre-merge gate. pages.yml already runs the same node suite on main pushes
+# before deploying, so this only needs to cover pull requests.
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "Run every Node test (false selects against origin/main like a pull request)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Keep the workflow and its required check alive for every pull request, but
+  # avoid spending a full test budget on docs/metrics-only changes. A job-level
+  # skip reports success; a workflow-level paths filter would leave a required
+  # check pending instead. It also picks the Node tests the shards run
+  # (tools/select-tests.mjs, #632): a pull request runs the tests its changed
+  # files reach, anything the selector cannot vouch for runs everything.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      source: ${{ steps.filter.outputs.source }}
+      mode: ${{ steps.select.outputs.mode }}
+    steps:
+      - id: filter
+        uses: actions/github-script@v7
+        with:
+          script: |
+            if (context.eventName === "workflow_dispatch") {
+              core.setOutput("source", "true");
+              return;
+            }
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            // Other Markdown (e.g. mcp/LIVE-PROTOCOL.md and public/fonts/README.md)
+            // is asserted by tests. Renames must check the original path too.
+            const ignored = (path) => path.startsWith(".metrics/") || /^docs\/.*\.md$/.test(path) || /^[^/]+\.md$/.test(path);
+            // The files API caps responses at 3000 files: incomplete/empty
+            // input must run CI rather than silently skip unlisted changes.
+            const source = files.length === 0 || files.length >= 3000 || files.some(
+              ({ filename, previous_filename }) => !ignored(filename) || (previous_filename && !ignored(previous_filename))
+            );
+            core.setOutput("source", String(source));
+            await core.summary
+              .addHeading("CI scope")
+              .addTable([
+                [{ data: "Changed files", header: true }, { data: "Source/test scope", header: true }],
+                [String(files.length), source ? "yes" : "no"],
+              ])
+              .write();
+      - uses: actions/checkout@v4
+        with:
+          # The selector diffs against the merge base with origin/main.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19
+      # Writes the step-summary table (changed files, mode, fallback reason,
+      # selected/total, always run). A failing selector still yields "full".
+      - id: select
+        name: Select Node tests
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          FORCE_FULL: ${{ github.event_name == 'workflow_dispatch' && inputs.full }}
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ] || { [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$FORCE_FULL" = "false" ]; }; then
+            if ! { git diff --name-only --no-renames "origin/$BASE_REF...HEAD" > changed-files.txt && node tools/select-tests.mjs --changed changed-files.txt --out test-selection.json; }; then
+              echo '{"mode":"full","reason":"selector step failed"}' > test-selection.json
+              printf '### Test selection (#632)\n\nmode full: selector step failed\n' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo '{"mode":"full","reason":"workflow_dispatch full run"}' > test-selection.json
+            printf '### Test selection (#632)\n\nmode full: workflow_dispatch full run\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "mode=$(node -p 'require("./test-selection.json").mode')" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-selection
+          path: test-selection.json
+          retention-days: 7
+
+  lint:
+    if: needs.changes.outputs.source == 'true'
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            mcp/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      # The packed tarball, not the checkout: every relative import of a shipped
+      # bin/ or mcp/ module must be in it (#940). The signature step is publish-only.
+      - name: Package tarball imports
+        run: node tools/verify-package-tarball.mjs --imports-only
+
+  # Keep the historical `test` check name stable for branch protection while
+  # the actual suite runs on four deterministic shards below.
+  test:
+    if: always()
+    needs: [changes, test-shard]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check test shards
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          SOURCE_SCOPE: ${{ needs.changes.outputs.source }}
+          SHARD_RESULT: ${{ needs.test-shard.result }}
+        run: |
+          if [ "$CHANGES_RESULT" != "success" ]; then
+            echo "changes job did not complete successfully: $CHANGES_RESULT"
+            exit 1
+          fi
+          if [ "$SOURCE_SCOPE" = "false" ]; then
+            echo "docs/metrics-only change: test shards skipped"
+            exit 0
+          fi
+          if [ "$SOURCE_SCOPE" != "true" ]; then
+            echo "missing or invalid CI scope: $SOURCE_SCOPE"
+            exit 1
+          fi
+          if [ "$SHARD_RESULT" != "success" ]; then
+            echo "test shard result: $SHARD_RESULT"
+            exit 1
+          fi
+          echo "all test shards passed"
+
+  # The full node suite (vite build + tools/run-tests.mjs), identical to the
+  # test step pages.yml runs before deploying: green here means the merge
+  # cannot break the deploy. Each shard has its own runner, so wall-clock time
+  # follows the slowest quarter of the suite instead of the whole suite (#666):
+  # minutes are free on this public repository, and ten jobs per run stay
+  # under the free plan's 20 concurrent jobs with two pull requests in flight.
+  test-shard:
+    if: needs.changes.outputs.source == 'true'
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    name: test / shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            mcp/package-lock.json
+      - run: npm ci
+      - run: npm --prefix mcp ci
+      # H3 preservation tests decode real frames with ffmpeg/ffprobe, matching
+      # the fail-closed runtime check used by the Comfy adapter.
+      - name: Install media inspection tools
+        # The runner image ships a Google Chrome apt source whose index
+        # intermittently fails its hash check; ffmpeg comes from Ubuntu, so
+        # that source is dropped before the update instead of failing the job.
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list /etc/apt/sources.list.d/google-chrome*.sources
+          sudo apt-get update
+          # The Azure mirror occasionally stalls between packages for minutes
+          # (8 min on one shard in run 37955319380). Bound the download; on a
+          # stall drop that mirror and fetch from the main archive, then
+          # install from the local package cache.
+          if ! sudo timeout 120 apt-get install -y --no-install-recommends --download-only ffmpeg; then
+            echo "::warning title=apt mirror stalled::ffmpeg download exceeded 120 s; retrying without the Azure mirror"
+            if [ -f /etc/apt/apt-mirrors.txt ]; then
+              sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
+            fi
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends --download-only ffmpeg
+          fi
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - run: npm run build
+      # The `changes` job's selection. It always uploads one (mode full included), so a
+      # failed download fails this shard rather than letting one runner run everything
+      # while the others run the selection: the four shards must split the same list.
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-selection
+      # The shard split is balanced by tools/test-durations.json; each shard
+      # records its own per-file seconds for tools/update-test-durations.mjs
+      # and writes "selected N, predicted X s, actual Y s" to its summary (#632).
+      # --only-from narrows the split to the selected files; an empty shard passes.
+      - run: |
+          if [ ! -f test-selection.json ]; then echo "::error title=test selection missing::the changes job's test-selection artifact did not arrive; rerun the job"; exit 1; fi
+          node tools/run-tests.mjs --shard "${{ matrix.shard }}/4" --durations-out test-durations.json --only-from test-selection.json
+        env:
+          # test/verify-morphgs-exporter.mjs: the MorphGS truth comparison
+          # needs uv + a torch wheel; the runner has neither, so only its
+          # structural checks run here. Run the full test locally.
+          MORPHGS_SKIP_TRUTH: "1"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-durations-${{ matrix.shard }}
+          path: test-durations.json
+          retention-days: 14
+
+  # MCP <-> real-editor element management, end to end: each suite spawns its
+  # own Vite, Chrome and MCP server on reserved ports. These are the only
+  # checks that prove an element placed/updated/removed over MCP actually
+  # lands in the live editor — they existed but ran nowhere, which is exactly
+  # how a broken capture_frame shipped. The element-management suites assert
+  # at the protocol/JSON level and GATE; verify-live-capture actually renders
+  # an offscreen frame, which overruns the 5 s live-command bound under the
+  # runner's software GL (SwiftShader), so it is covered by the scheduled
+  # observation workflow instead of extending every pull request.
+  mcp-live:
+    if: needs.changes.outputs.source == 'true'
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            mcp/package-lock.json
+      - run: npm ci
+      - run: npm --prefix mcp ci
+      - name: MCP live suites (gating)
+        run: |
+          {
+            echo "## MCP live suites (gating)"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          failed=0
+          for t in verify-live-batch verify-live-scene-parity verify-live-editor-model; do
+            if node "mcp/$t.mjs" > "/tmp/$t.log" 2>&1; then
+              echo "- :white_check_mark: $t" >> "$GITHUB_STEP_SUMMARY"
+              echo "$t: PASS"
+            else
+              failed=1
+              echo "::error title=MCP live suite failed::$t (see step summary)"
+              echo "::group::$t failure log (last 40 lines)"
+              echo "$t: FAIL"
+              tail -40 "/tmp/$t.log"
+              echo "::endgroup::"
+              {
+                echo "- :x: $t"
+                echo "  <details><summary>log tail</summary>"
+                echo ""
+                echo '  ```'
+                tail -40 "/tmp/$t.log" | sed 's/^/  /'
+                echo '  ```'
+                echo "  </details>"
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          exit "$failed"
+
+  # Real-browser rendering regressions via the CDP QA wrapper. The suites
+  # proven green on the hosted runner gate pull requests; the motion3 suites
+  # that still fail are tracked in browser-observation.yml. The previs-mode
+  # suites (#654) run here as observation: a failure is a warning in the step
+  # summary, not a red check.
+  browser:
+    if: needs.changes.outputs.source == 'true'
+    needs: changes
+    name: browser / ${{ matrix.suite }} (${{ matrix.tier }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: verify-camera-rail-browser
+            tier: gating
+          - suite: qa-gizmo-click-through-browser
+            tier: gating
+          - suite: qa-speed-graph-browser
+            tier: gating
+          - suite: motion3/qa-motion3-playback-browser
+            tier: gating
+          - suite: motion3/qa-motion3-objects-browser
+            tier: gating
+          - suite: motion3/qa-motion3-grab-browser
+            tier: observation
+          - suite: motion3/qa-motion3-held-gizmo-browser
+            tier: observation
+          - suite: qa-proxy-figure-browser
+            tier: observation
+          - suite: qa-storyboard-board-browser
+            tier: observation
+          - suite: qa-storyboard-export-browser
+            tier: observation
+          - suite: qa-previs-start-browser
+            tier: observation
+          - suite: qa-sculpt-mode-browser
+            tier: observation
+          - suite: qa-sculpt-parts-browser
+            tier: observation
+          - suite: qa-sculpt-shelf-browser
+            tier: observation
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19
+          cache: npm
+      - run: npm ci
+      # Vite only: the suites drive the studio at /app/ and need neither the
+      # OAuth nor the agent sidecar that `npm run dev` adds.
+      - name: Start dev server (vite)
+        run: |
+          npm run dev:ui -- --host 127.0.0.1 --port 5180 --strictPort &
+          for _ in $(seq 1 120); do
+            curl -sf -o /dev/null http://127.0.0.1:5180/app/ && exit 0
+            sleep 1
+          done
+          echo "dev server did not come up" >&2
+          exit 1
+      - name: Run ${{ matrix.suite }} (${{ matrix.tier }})
+        run: |
+          t="${{ matrix.suite }}"
+          tier="${{ matrix.tier }}"
+          # Suites under test/motion3/ log to /tmp/motion3/; the redirect needs the dir.
+          mkdir -p "$(dirname "/tmp/$t.log")"
+          {
+            echo "## $t ($tier)"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          if node tools/qa-browser.mjs -- node "test/$t.mjs" > "/tmp/$t.log" 2>&1; then
+            echo "- :white_check_mark: $t ($(grep -c '^PASS' "/tmp/$t.log") checks)" >> "$GITHUB_STEP_SUMMARY"
+            echo "$t: PASS ($(grep -c '^PASS' "/tmp/$t.log") checks)"
+            exit 0
+          fi
+          # Also to stdout: the step summary is not reachable from the API,
+          # so a summary-only failure cannot be read back when triaging a
+          # run after the fact.
+          echo "::group::$t failure log (last 40 lines)"
+          echo "$t: FAIL ($(grep -c '^PASS' "/tmp/$t.log") checks passed, $(grep -c '^FAIL' "/tmp/$t.log") failed)"
+          tail -40 "/tmp/$t.log"
+          echo "::endgroup::"
+          {
+            echo "- :x: $t"
+            echo "  <details><summary>log tail</summary>"
+            echo ""
+            echo '  ```'
+            tail -40 "/tmp/$t.log" | sed 's/^/  /'
+            echo '  ```'
+            echo "  </details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$tier" = "gating" ]; then
+            echo "::error title=browser suite failed::$t (see step summary)"
+            exit 1
+          fi
+          echo "::warning title=browser suite failed::$t (see step summary)"
+
+  # One stable required check can be selected in branch protection while the
+  # expensive jobs remain conditionally skipped for docs/metrics-only PRs.
+  gate:
+    if: always()
+    needs: [changes, lint, test, mcp-live, browser]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check CI results
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          SOURCE_SCOPE: ${{ needs.changes.outputs.source }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          MCP_RESULT: ${{ needs.mcp-live.result }}
+          BROWSER_RESULT: ${{ needs.browser.result }}
+        run: |
+          if [ "$CHANGES_RESULT" != "success" ]; then
+            echo "changes job did not complete successfully: $CHANGES_RESULT"
+            exit 1
+          fi
+          if [ "$SOURCE_SCOPE" = "false" ]; then
+            echo "docs/metrics-only change: heavy CI skipped"
+            exit 0
+          fi
+          if [ "$SOURCE_SCOPE" != "true" ]; then
+            echo "missing or invalid CI scope: $SOURCE_SCOPE"
+            exit 1
+          fi
+          for result in "$LINT_RESULT" "$TEST_RESULT" "$MCP_RESULT" "$BROWSER_RESULT"; do
+            if [ "$result" != "success" ]; then
+              echo "required CI job result: $result"
+              exit 1
+            fi
+          done
+          echo "all required CI jobs passed"

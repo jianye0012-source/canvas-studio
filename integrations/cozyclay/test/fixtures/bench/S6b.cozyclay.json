@@ -1,0 +1,378 @@
+{
+	"app": "cozyclay",
+	"kind": "project",
+	"version": 5,
+	"name": "Bench S6b vending machine kick, the whole scene asked",
+	"previsMode": "animation",
+	"savedAt": 1792200000000,
+	"scenes": {
+		"version": 5,
+		"activeSceneId": "scene-bench-s6b",
+		"scenes": [
+			{
+				"id": "scene-bench-s6b",
+				"name": "SCENE 01",
+				"objects": [
+					{
+						"id": "vending",
+						"name": "Vending machine",
+						"renderer": "empty",
+						"x": 0,
+						"y": 0,
+						"z": 3.2,
+						"rot": 0,
+						"rotX": 0,
+						"rotZ": 0,
+						"scaleX": 1,
+						"scaleY": 1,
+						"scaleZ": 1,
+						"path": null,
+						"color": "#ffffff",
+						"parent": null,
+						"attach": null,
+						"hidden": false,
+						"footprint": {
+							"width": 0,
+							"depth": 0
+						},
+						"height": 0,
+						"supportY": 0
+					},
+					{
+						"id": "vm-body",
+						"name": "Machine body",
+						"renderer": "cube",
+						"x": 0,
+						"y": 0,
+						"z": 3.2,
+						"rot": 0,
+						"rotX": 0,
+						"rotZ": 0,
+						"scaleX": 0.9,
+						"scaleY": 1.85,
+						"scaleZ": 0.7,
+						"path": null,
+						"color": "#b3202a",
+						"parent": "vending",
+						"attach": null,
+						"hidden": false,
+						"footprint": {
+							"width": 1,
+							"depth": 1
+						},
+						"height": 1,
+						"supportY": 1
+					},
+					{
+						"id": "vm-window",
+						"name": "Drink window",
+						"renderer": "cube",
+						"x": 0.08,
+						"y": 0.95,
+						"z": 2.835,
+						"rot": 0,
+						"rotX": 0,
+						"rotZ": 0,
+						"scaleX": 0.55,
+						"scaleY": 0.7,
+						"scaleZ": 0.03,
+						"path": null,
+						"color": "#e8f4ff",
+						"parent": "vending",
+						"attach": null,
+						"hidden": false,
+						"footprint": {
+							"width": 1,
+							"depth": 1
+						},
+						"height": 1,
+						"supportY": 1
+					},
+					{
+						"id": "vm-panel",
+						"name": "Button panel",
+						"renderer": "cube",
+						"x": -0.33,
+						"y": 0.95,
+						"z": 2.835,
+						"rot": 0,
+						"rotX": 0,
+						"rotZ": 0,
+						"scaleX": 0.16,
+						"scaleY": 0.4,
+						"scaleZ": 0.03,
+						"path": null,
+						"color": "#2a2a2e",
+						"parent": "vending",
+						"attach": null,
+						"hidden": false,
+						"footprint": {
+							"width": 1,
+							"depth": 1
+						},
+						"height": 1,
+						"supportY": 1
+					},
+					{
+						"id": "vm-button-1",
+						"name": "Button 1",
+						"renderer": "cube",
+						"x": -0.33,
+						"y": 1.25,
+						"z": 2.81,
+						"rot": 0,
+						"rotX": 0,
+						"rotZ": 0,
+						"scaleX": 0.06,
+						"scaleY": 0.04,
+						"scaleZ": 0.025,
+						"path": null,
+						"color": "#e53935",
+						"parent": "vending",
+						"attach": null,
+						"hidden": false,
+						"footprint": {
+							"width": 1,
+							"depth": 1
+						},
+						"height": 1,
+						"supportY": 1
+					},
+					{
+						"id": "vm-button-2",
+						"name": "Button 2",
+						"renderer": "cube",
+						"x": -0.33,
+						"y": 1.15,
+						"z": 2.81,
+						"rot": 0,
+						"rotX": 0,
+						"rotZ": 0,
+						"scaleX": 0.06,
+						"scaleY": 0.04,
+						"scaleZ": 0.025,
+						"path": null,
+						"color": "#fdd835",
+						"parent": "vending",
+						"attach": null,
+						"hidden": false,
+						"footprint": {
+							"width": 1,
+							"depth": 1
+						},
+						"height": 1,
+						"supportY": 1
+					},
+					{
+						"id": "vm-button-3",
+						"name": "Button 3",
+						"renderer": "cube",
+						"x": -0.33,
+						"y": 1.05,
+						"z": 2.81,
+						"rot": 0,
+						"rotX": 0,
+						"rotZ": 0,
+						"scaleX": 0.06,
+						"scaleY": 0.04,
+						"scaleZ": 0.025,
+						"path": null,
+						"color": "#43a047",
+						"parent": "vending",
+						"attach": null,
+						"hidden": false,
+						"footprint": {
+							"width": 1,
+							"depth": 1
+						},
+						"height": 1,
+						"supportY": 1
+					},
+					{
+						"id": "vm-kick-panel",
+						"name": "Kick panel",
+						"renderer": "cube",
+						"x": 0,
+						"y": 0.3,
+						"z": 2.835,
+						"rot": 0,
+						"rotX": 0,
+						"rotZ": 0,
+						"scaleX": 0.8,
+						"scaleY": 0.28,
+						"scaleZ": 0.03,
+						"path": null,
+						"color": "#3a3a40",
+						"parent": "vending",
+						"attach": null,
+						"hidden": false,
+						"footprint": {
+							"width": 1,
+							"depth": 1
+						},
+						"height": 1,
+						"supportY": 1
+					},
+					{
+						"id": "vm-tray",
+						"name": "Tray",
+						"renderer": "cube",
+						"x": 0.12,
+						"y": 0.1,
+						"z": 2.79,
+						"rot": 0,
+						"rotX": 0,
+						"rotZ": 0,
+						"scaleX": 0.42,
+						"scaleY": 0.05,
+						"scaleZ": 0.12,
+						"path": null,
+						"color": "#1c1c1f",
+						"parent": "vending",
+						"attach": null,
+						"hidden": false,
+						"footprint": {
+							"width": 1,
+							"depth": 1
+						},
+						"height": 1,
+						"supportY": 1
+					},
+					{
+						"id": "vm-opening",
+						"name": "Tray opening",
+						"renderer": "cube",
+						"x": 0.12,
+						"y": 0.15,
+						"z": 2.844,
+						"rot": 0,
+						"rotX": 0,
+						"rotZ": 0,
+						"scaleX": 0.42,
+						"scaleY": 0.13,
+						"scaleZ": 0.012,
+						"path": null,
+						"color": "#050505",
+						"parent": "vending",
+						"attach": null,
+						"hidden": false,
+						"footprint": {
+							"width": 1,
+							"depth": 1
+						},
+						"height": 1,
+						"supportY": 1
+					},
+					{
+						"id": "can",
+						"name": "Can",
+						"renderer": "cylinder",
+						"x": 0.12,
+						"y": 0.35,
+						"z": 3.05,
+						"rot": 0,
+						"rotX": 0,
+						"rotZ": 0,
+						"scaleX": 0.066,
+						"scaleY": 0.12,
+						"scaleZ": 0.066,
+						"path": null,
+						"color": "#f2c230",
+						"parent": null,
+						"attach": null,
+						"hidden": false,
+						"footprint": {
+							"width": 1,
+							"depth": 1
+						},
+						"height": 1,
+						"supportY": 1
+					}
+				],
+				"shotDocument": {
+					"version": 5,
+					"frameCount": 240,
+					"waypoints": [],
+					"shots": []
+				},
+				"stage": {
+					"hasCharSheet": false,
+					"environmentImage": null,
+					"shotAspect": "16:9",
+					"cameraPresetId": null,
+					"sensorId": "fullFrame",
+					"keyLight": {
+						"x": 6,
+						"y": 9,
+						"z": 4,
+						"intensity": 1.12,
+						"warmth": 0.5,
+						"color": null
+					},
+					"lighting": {
+						"preset": "studio",
+						"sky": null,
+						"skyTop": null,
+						"ambient": 1,
+						"hemiSky": "#ffffff",
+						"hemiGround": "#5a5d64",
+						"fill": 1,
+						"fog": 0,
+						"exposure": 1,
+						"shadowSoftness": 0,
+						"envLight": 0,
+						"ao": 0,
+						"hdr": null,
+						"hdrRotation": 0,
+						"hdrIntensity": 1,
+						"hdrBackground": true
+					},
+					"environment": "",
+					"style": "",
+					"hasEnvSheet": false,
+					"characters": [
+						{
+							"id": "char-a",
+							"model": "y-bot-tpose",
+							"posture": "stand",
+							"x": 0,
+							"y": 0,
+							"z": 0,
+							"rot": 0,
+							"hidden": false,
+							"parent": null,
+							"tint": null,
+							"pose": null,
+							"identityImage": null,
+							"scale": 1,
+							"subject": "a person in a grey hoodie",
+							"layer": {
+								"waypoints": []
+							},
+							"ikEdits": null
+						}
+					]
+				},
+				"order": 0
+			}
+		]
+	},
+	"workspace": {
+		"hierarchyWidth": 300,
+		"sidebarWidth": 380,
+		"timelineHeight": 224,
+		"insetWidth": 310,
+		"insetHeight": 310,
+		"insetCollapsed": false,
+		"planZoom": 1
+	},
+	"poseLibrary": [],
+	"workflow": {
+		"version": 1,
+		"nodes": [],
+		"edges": []
+	},
+	"resources": {
+		"assets": []
+	}
+}

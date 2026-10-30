@@ -4,10 +4,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	"github.com/tigerowo/infinite-canvas/handler"
 	"github.com/tigerowo/infinite-canvas/model"
 	"github.com/tigerowo/infinite-canvas/service"
-	"github.com/gin-gonic/gin"
 )
 
 func AdminAuth(c *gin.Context) {
@@ -44,6 +44,9 @@ func NotFoundJSON(c *gin.Context) {
 }
 
 func authUser(c *gin.Context) (model.AuthUser, bool) {
+	if user, ok := service.LocalUser(); ok {
+		return user, true
+	}
 	token := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
 	if strings.TrimSpace(token) == "" {
 		return model.AuthUser{}, false

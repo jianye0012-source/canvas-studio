@@ -1,0 +1,178 @@
+{
+  "path": "/privacy/",
+  "type": "WebPage",
+  "title": "Privacy — CozyClay",
+  "og_title": "CozyClay privacy: analytics and telemetry disclosure",
+  "headline": "Privacy",
+  "description": "What cozyclay.org and the cozyclay npm package collect (anonymous usage analytics via PostHog, no cookies, no session recording, no project content), how to opt out, and what the hosted demo stores.",
+  "published": "2026-10-25"
+}
+---
+      <div class="hero">
+        <h1>Privacy</h1>
+        <p class="lede">Short version: anonymous usage counts, no cookies, no recordings, never your project content. Every part of it can be turned off.</p>
+        <p class="meta">Effective October 25, 2026</p>
+      </div>
+
+      <section>
+        <h2>The website (cozyclay.org)</h2>
+        <p>
+          The site uses <a href="https://posthog.com/">PostHog</a> (US Cloud) for anonymous usage analytics and
+          Cloudflare Web Analytics for page counts. There are no cookies and no session recording, and
+          Do-Not-Track is respected. PostHog keeps a random pseudonymous identifier in your browser's
+          localStorage so returning visits can be counted; it is never linked to an account or to anything you
+          make, and clearing site data removes it. Country comes from ingest-time GeoIP only; no precise
+          location is collected.
+        </p>
+        <p>
+          The in-browser playground on the home page runs the studio inside the page. It does not read or
+          write your saved scenes, and nothing you build there leaves your browser unless you download it.
+        </p>
+      </section>
+
+      <section>
+        <h2>The npm package (npx cozyclay)</h2>
+        <p>
+          The official npm package measures anonymous first launches, sessions and an in-app usage funnel on
+          its local studio. It stores one random installation identifier in <code>~/.config/cozyclay/state.json</code>
+          (or <code>$XDG_CONFIG_HOME/cozyclay/state.json</code>) so returning use can be counted across normal
+          CLI restarts, ports and browser storage resets. The browser's memory-only SDK starts with this
+          anonymous ID on each launch. Independent state files receive independent random IDs, without
+          fingerprinting, account linking or cross-device matching; do not copy the state file between users.
+          A copied start command such as <code>npx cozyclay --via site</code> stores that one source label
+          with the first-launch receipt instead of asking where you heard about CozyClay.
+          Prompt text, asset names,
+          file names, project content, local paths and any user-entered text are never collected. For a prompt sent to the agent, only two values derived from its text leave the device: a length bucket and a similarity grade (first, same, near or different) that the browser computes against the previous prompt. Neither the text nor its words are sent; the previous prompt is kept in the page only as its set of words, until the page closes. Session
+          duration and action counts are bucketed. Source checkouts, forks, development servers, CI and tests
+          send nothing.
+        </p>
+        <p>The package prints this disclosure once on first launch. Control it at any time:</p>
+        <pre><code>cclay telemetry status
+cclay telemetry off
+cclay telemetry on</code></pre>
+        <p>
+          <code>COZYCLAY_TELEMETRY=0</code> or <code>DO_NOT_TRACK=1</code> disable collection for a launch. The
+          topbar toggle inside the studio changes the same setting and removes the installation identifier.
+          Enabling collection later creates a new, unlinked ID; the original first-launch receipt remains,
+          so this does not create another new-install event. Environment overrides only suspend collection
+          and do not erase the stored ID. Opting out also suppresses the session-end beacon.
+        </p>
+      </section>
+
+      <section>
+        <h2>Explicit internal and QA marking</h2>
+        <p>
+          Internal marking is optional and never enables telemetry. Use
+          <code>cclay telemetry internal on</code> or <code>cclay telemetry internal off</code> to store
+          the boolean <code>internalQa</code> in the npm CLI state file, then reload open studio tabs.
+          For the hosted app, open <code>https://cozyclay.org/app/?internal_qa=1</code> to mark that browser
+          or <code>?internal_qa=0</code> to clear it. A single explicit 1 or 0 persists as
+          <code>cozyclay.internalQa</code> in localStorage for that origin. The npm app uses only its CLI
+          setting, not this URL parameter.
+        </p>
+        <p>
+          All app events and end beacons carry boolean <code>internal_qa</code>, false by default.
+          External usage queries exclude only explicitly marked events; localhost, ports, country and
+          source checkouts are never used to infer internal people. Unmarked local-app users remain
+          included. Opt-out, Do-Not-Track, CI, origin restrictions and disabled builds still win.
+          Historical unmarked QA cannot be retroactively distinguished.
+        </p>
+      </section>
+
+      <section>
+        <h2>Events collected</h2>
+        <div class="scroller">
+          <table>
+            <thead><tr><th>Event</th><th>Purpose</th></tr></thead>
+            <tbody>
+              <tr><td>install:first_launch, app:session_started, app:session_ended</td><td>Counting installs and sessions; duration and action counts are bucketed. install:first_launch may carry heard_from (x, hn, reddit, github, friend, other, site or playground), from the first-launch prompt or a copied <code>npx cozyclay --via</code> command. app:session_ended also carries scenes_touched (how many scenes were created or loaded in the session, an exact count capped at 20, not bucketed), session_id (the opaque random session id the PostHog SDK generates, used only to join a session's last events, such as an error just before it ended) and per-session edit gesture counts in five groups, pose_edit_bucket, camera_edit_bucket, object_edit_bucket, shot_edit_bucket and prompt_edit_bucket, each bucketed (0, 1-3, 4-10 or gte11); never what was edited</td></tr>
+              <tr><td>app:friction_summary</td><td>Once per session, next to app:session_ended: how much friction the session had, as closed buckets only. active_time (the session duration bucket); counts of refusals the Studio gave the user (refusals_ui) and the agent (refusals_agent), user undos (undos), errors (errors), browser long tasks (long_tasks) and motion compiles (compiles), each as 0, 1, 2, 3, 4-5, 6-10 or gte11; the longest long task (long_task_max: lt50, 50-150, 150-500, 500-2000 or gte2000 ms); the share of late playback ticks (late_tick_ratio: 0, lt5, 5-20, 20-50 or gte50 %). rage_clicks and dead_clicks count every ui:rage_click and ui:dead_click, shortcut_ignored every shortcut:ignored, search_empty every search:no_results, and nav_thrash and camera_thrash every nav:thrash and camera:thrash, including those past their event's cap. Never which command, control, key or text was involved.</td></tr>
+              <tr><td>studio:refused</td><td>A command the Studio refused, as closed values only: code (one of the Studio's fixed error codes, such as INVALID_ARGUMENT, STALE_SCENE or TARGET_BUSY, else other), origin (ui for the user's own control, agent for the agent or an MCP client), phase (admission, refused before any change, or commit, refused after it started changing) group (the command's family: object, shot, cast, scene, motion, edit, task, agent or other) and command (the refused action's id, such as object.set or shot.setCameraRail, only when it is one of the actions the Studio itself declares; a name the caller made up is left out). At most 3 per code, command (or group, without one) and origin per session; the rest are only counted in app:friction_summary. A cancel the caller asked for is not a refusal. Never the command's arguments, target or message.</td></tr>
+              <tr><td>edit:undone</td><td>A user undo (agent undos are not counted): age (lt2s, 2-10s, 10-60s or gte60s since the undone edit was made, only when the undo was done and its age is known), kind (pose, camera, object, shot, prompt, agent_turn for the agent's whole turn, ik_preview for an un-applied IK drag, or other), via (key, menu or button) and result (done, noop when there was nothing to undo, or refused). At most 20 per session. Never what was undone.</td></tr>
+              <tr><td>agent:turn_summary</td><td>One per agent turn: turn_id (the same random id as agent:turn_*); outcome (succeeded, failed or cancelled); wall (the turn's length) and first_tool (time to the first tool call, absent without tools), each lt10s, 10-30s, 30-60s, 1-2m, 2-5m or gte5m; counts of tool calls (tool_calls), failed tool calls (tool_failed), tool calls the Studio refused (refused), commands re-sent once after a stale revision or a busy gesture (stale_retry) and motion compiles (drafts), each as 0, 1, 2, 3, 4-5, 6-10 or gte11; refusal_top (the most frequent refusal code, or none); authored (true or false: the turn changed the scene); qa_first and qa_last (clean or problems, absent without drafts); qa_trend (improved, flat, worse, or na with fewer than 2 drafts); stuck (true or false: the motion compiler's stop rule fired); cancel_phase (before_tool, during_tool, after_tool or na). No prompt text, tool names, messages or responses.</td></tr>
+              <tr><td>agent:post_turn_edit</td><td>One per agent turn: turn_id (the same random id) and the user's own edit gestures in the 120 seconds after the turn ended, closed early when the next turn starts or the page closes. edited (true or false); counts per group (pose, camera, object, shot, and prompt_block, which counts edits to a take's prompt and take fields), each as 0, 1, 2, 3, 4-5, 6-10 or gte11, where one continuous drag is one gesture; first_delay (time to the first edit: lt10s, 10-30s, 30-60s, 1-2m, 2-5m or gte5m), only when edited is true. Never which object or what changed.</td></tr>
+              <tr><td>motion:draft_compiled</td><td>One per motion compile (each draft the agent's motion work produces), at most 50 per session; the rest only move app:friction_summary compiles. draft_index (the draft's number for its character in the turn) and qa_problems as 0, 1, 2, 3, 4-5, 6-10 or gte11; qa_clean; qa_frames (frame-level QA issues: 0, 1-10, 11-50, 51-200 or gte201); compile (the whole compile, QA included: lt50, 50-150, 150-500, 500-2000 or gte2000 ms); installed, stuck, repaired, searched and adjusted (true or false); frames (take length: lt30, 30-120, 121-480 or gte481). Never the motion spec, the take, skill names or QA text.</td></tr>
+              <tr><td>shortcut:ignored</td><td>A bound Studio key that did nothing, as closed values only: key_class (undo, redo, mode, transform, frame, duplicate or delete) and reason (no_selection, wrong_mode, workflow_mode, busy or empty_history). At most 5 per key_class per session; the rest only move app:friction_summary shortcut_ignored. Keys typed into a text field, a list box or an editable area, and keys of an input-method composition, are never looked at. Never the key character.</td></tr>
+              <tr><td>shortcut:unbound</td><td>A common key combination the Studio has no binding for, pressed outside any text field: combo (copy, paste, cut, select_all, group, find, rename or help). At most 3 per combo per session. Never the key character.</td></tr>
+              <tr><td>help:shortcuts_opened</td><td>Help &gt; Keyboard shortcuts was opened. No properties. At most 3 per session.</td></tr>
+              <tr><td>search:no_results</td><td>A search in the Content browser (surface assets) or the Outliner (outliner) that has shown nothing for 1 second: surface and query_len (the length of the search, 1, 2-3, 4-8 or gte9 characters). At most 3 per surface per session; every one moves app:friction_summary search_empty. Never the search text.</td></tr>
+              <tr><td>nav:thrash</td><td>4 or more switches of one panel or mode within 10 seconds with no edit in between: surface (dock_tab, mode or agent_panel), switches (4-5, 6-10 or gte11) and window_s (always 10). At most one per surface every 30 seconds; every one moves app:friction_summary nav_thrash. Never which tab or mode.</td></tr>
+              <tr><td>camera:thrash</td><td>6 or more viewport camera moves (orbit, fly or pan drags) within 20 seconds with no edit in between: gestures (6-10 or gte11), kind_mix (orbit, fly, pan or mixed) and window_s (always 20). At most one every 30 seconds; every one moves app:friction_summary camera_thrash. Never a camera position or view.</td></tr>
+              <tr><td>agent:connect_opened</td><td>The model-connect list opened: entry (first_run, failure_card, signed_out, menu or other; the signed-out card reads first_run until this browser profile has connected once). At most 5 per session.</td></tr>
+              <tr><td>agent:connect_started</td><td>One model-connect attempt began: provider (one of the providers CozyClay configures — openai-codex, anthropic, anthropic-subscription, openai, google, minimax, minimax-cn, openrouter, cliproxy, openai-compatible — or other) and method (oauth, api_key or chatgpt).</td></tr>
+              <tr><td>agent:connect_finished</td><td>That attempt ended: provider, method, outcome (ok, failed, cancelled with the Cancel button, abandoned when closed or left unfinished), step it had reached (list, prompt, waiting or done) and duration (lt10s, 10-30s, 30-60s, 1-2m, 2-5m or gte5m). Never the key, token, account, email or error text.</td></tr>
+              <tr><td>agent:model_changed</td><td>A model picked in the agent's model list: its provider (as above, or other) and after_failure (whether the last agent turn had failed). At most 10 per session.</td></tr>
+              <tr><td>agent:prompt_sent</td><td>One per prompt sent to the agent: turn_id (the same random id as agent:turn_*); provider (as for agent:connect_started, or other); via (typed, retry_button, regenerate, chip or supervisor); prompt_len (1-20, 21-80, 81-240 or gte241 characters); compose_ms (first keystroke to send, typed prompts only) and gap (since the previous turn ended, or first) as lt10s, 10-30s, 30-60s, 1-2m, 2-5m or gte5m; similarity (first, same, near or different, computed in the browser against the previous prompt's words); prev_outcome (succeeded, failed, cancelled or none); turn_index (1, 2, 3, 4-5, 6-10 or gte11); attached and task_mode (true or false). Never the prompt text or its words.</td></tr>
+              <tr><td>ui:rage_click</td><td>Three or more fast clicks (within 1 second and 24 pixels) on one primary control: control (a control id from a fixed list, such as tl_play or export_video; for a control not on that list, the Studio area it sits in: other_guide, other_agent, other_menu, other_sculpt, other_assets, other_board, other_timeline, other_inspector or other_viewport; else other), clicks (3, 4-5 or gte6) and changed (whether the Studio responded within half a second). At most 2 per control per session. No coordinates, no text, no element or object ids.</td></tr>
+              <tr><td>ui:dead_click</td><td>A click on a primary control that did nothing: control (as above) and reason (aria_disabled when the control was disabled, refused when the Studio refused the command, no_effect when nothing changed within half a second). At most 2 per control per session. Clicks into text fields are never observed.</td></tr>
+              <tr><td>feature:used</td><td>One signal per feature per session: a fixed feature name such as pose_edit (a real bone or pose change), pose_save (saving a pose to the library), camera_fly, export_video, export_storyboard or export_render_pass</td></tr>
+              <tr><td>$pageview, scene:created, scene:loaded, craft:first_action, activation:completed</td><td>Funnel and drop-off analysis</td></tr>
+              <tr><td>craft:first_edit</td><td>First successful Studio authoring change per editor mount; only a fixed edit-kind label and definition version 2 (not camera navigation, playback, loading, restore, or undo/redo)</td></tr>
+              <tr><td>playground:first_edit</td><td>The same versioned first-edit definition for Playground, counted separately from Studio; no prompts or scene contents</td></tr>
+              <tr><td>project:saved, project:opened</td><td>Whether people keep their work (object counts and ages are bucketed; never names or paths)</td></tr>
+              <tr><td>workflow:run_requested</td><td>Workflow execution requests: surface (workflow), ephemeral run_id and node_count_bucket (0, 1-3, 4-10 or gte11). No graph contents, node labels or outputs.</td></tr>
+              <tr><td>workflow:run_succeeded, workflow:run_failed, workflow:run_cancelled</td><td>Workflow outcomes paired by run_id, with duration_bucket (lt1s, 1-3s, 3-10s, 10-30s or gte30s); failures and actual cancellations also include failure_code (aborted, capture_failed, generation_failed or unknown). Starting another run does not imply cancellation.</td></tr>
+              <tr><td>workflow:result_applied</td><td>Captured or generated image/video output was written to the Workflow canvas: run_id only, at most once per run, independently of a later failure. No image bytes or output contents.</td></tr>
+              <tr><td>agent:turn_requested</td><td>Explicit Agent turn requests from surface (studio or workflow), paired by ephemeral turn_id. No prompts, responses or model identifiers.</td></tr>
+              <tr><td>agent:tool_executed</td><td>Agent tool observations: turn_id, tool_category (workflow_read, workflow_write, workflow_run, frame_capture, image_generate, scene_write or other), outcome (succeeded, failed or cancelled) and duration_bucket (lt1s, 1-3s, 3-10s, 10-30s or gte30s). Tool names, arguments and results are excluded.</td></tr>
+              <tr><td>agent:turn_succeeded, agent:turn_failed, agent:turn_cancelled</td><td>Agent turn outcomes: turn_id and duration_bucket (lt1s, 1-3s, 3-10s, 10-30s or gte30s); failures and actual cancellations also include failure_code (aborted, auth, rate_limited, tool_failed, upstream, network, key_refused, stale_scene, capability_missing, busy, invalid_request or unknown). upstream means the model provider failed (an HTTP 5xx, overload or a cut-off stream); network means the request never got an HTTP answer (offline, connection reset or DNS); unknown is any other failure. auth means CozyClay's local agent has no sign-in or refused the session; key_refused means the model provider rejected the key or credentials; stale_scene means the turn was refused because the scene changed underneath it; capability_missing means a required capability was unavailable, for example the live hub port was already in use; busy means another turn or target was busy; invalid_request means the request itself was rejected. Missing terminal delivery is not success.</td></tr>
+              <tr><td>agent:result_applied</td><td>An Agent turn produced an acknowledged editor change: turn_id only, at most once per turn. Successful reads and focus/navigation do not prove applied output.</td></tr>
+              <tr><td>mcp:tool_requested</td><td>Connected-editor MCP execution requests: ephemeral request_id, tool_category (read, camera, scene_write, prompt_authoring, frame_capture, motion_generate, motion_apply, project_io or other) and tool_name, the CozyClay tool that ran (describe_scene, describe_shot, render_prompt, mark_camera_move, describe_camera_move, save_project, set_camera, frame_shot, add_character, place_character, remove_character, focus_character, place_object, import_mesh, sculpt_object, compare_sculpt, group_objects, update_object, remove_object, apply_batch, add_scene, switch_scene, open_project, capture_frame, studio_commands, studio_run or other; never its arguments).</td></tr>
+              <tr><td>mcp:tool_executed</td><td>Connected-editor MCP outcomes: request_id, tool_category (read, camera, scene_write, prompt_authoring, frame_capture, motion_generate, motion_apply, project_io or other), tool_name (describe_scene, describe_shot, render_prompt, mark_camera_move, describe_camera_move, save_project, set_camera, frame_shot, add_character, place_character, remove_character, focus_character, place_object, import_mesh, sculpt_object, compare_sculpt, group_objects, update_object, remove_object, apply_batch, add_scene, switch_scene, open_project, capture_frame, studio_commands, studio_run or other), outcome (succeeded, failed, uncertain or cancelled) and duration_bucket (lt1s, 1-3s, 3-10s, 10-30s or gte30s). Control-plane success does not prove a mutation applied.</td></tr>
+              <tr><td>mcp:result_applied</td><td>A connected editor acknowledged an MCP mutation, paired by request_id. Detached or disconnected MCP sessions remain unobserved.</td></tr>
+              <tr><td>export:blocking_frame_succeeded, export:video_succeeded</td><td>Export reliability</td></tr>
+              <tr><td>export:attempt_started, export:attempt_succeeded, export:attempt_failed, export:attempt_cancelled</td><td>Export attempts and outcomes, paired by an ephemeral random attempt_id; export_kind (video, depth_video, frame, keyframe_pack, contact_sheet, panel_pack, animatic, animation_project, workflow_send, storyboard, render_pass or otio), format (mp4, png, zip, cclayproject or otio), initiating surface (studio, workflow or embed), is_retry (whether the attempt retries an earlier one), retry_of (the retried attempt's attempt_id, only when is_retry is true) and objects (the scene's object count, bucketed 0, 1-3, 4-10 or gte11). Terminal events include a bucketed duration_bucket; failures and real cancellations include a normalized failure_code (unsupported_codec, encode_failed, render_failed, aborted or unknown), the stage where the export stopped (preparing, encoding, finalizing or handoff) and a progress bucket (0, 1-25, 26-50, 51-75 or 76-99 percent), never raw error messages, filenames, URLs, paths, prompts or scene content. Success means pipeline completion or download handoff, not confirmation that the OS saved a file.</td></tr>
+              <tr><td>export:saved</td><td>How each exported file was saved, one event per file: method (workspace, written into the export folder you chose, or download, a browser download) and reason (none; unsupported, the browser has no folder access; no_workspace, no export folder is chosen; permission, folder access was denied; or write_failed, the folder write failed and the file fell back to a download). Never the file name or path.</td></tr>
+              <tr><td>export:menu_opened</td><td>The Export menu opened, once per open: surface (studio or embed), mode (animation or storyboard), webcodecs (whether this browser has the video encoder an MP4 export needs; a yes/no check, not a codec test) and shots (shot count bucket, panels in a storyboard: 0, 1-3, 4-10, gte11). Never shot names or what you exported.</td></tr>
+              <tr><td>export:keyframe_pack</td><td>Legacy Workflow pack handoffs, with numeric entries count and source=workflow; not an additional export attempt</td></tr>
+              <tr><td>sculpt_run</td><td>One event per finished Sculpt mode run: outcome (done, cancelled or failed), rounds (0 to 10), final_iou (how closely the final sculpt matched the reference image, 0 to 1 rounded to two decimals; omitted when the run was never scored), duration_ms (elapsed run time in milliseconds) and had_target (whether the run reworked an existing sculpt instead of creating one). Numbers only: never the reference image, recipe, part names or sculpt id.</td></tr>
+              <tr><td>playground:opened, playground:first_action</td><td>Whether the home-page playground gets used</td></tr>
+              <tr><td>app:error</td><td>Uncaught errors and unhandled promise rejections, at most ten distinct per session: error_kind (error or unhandled_rejection), error_type (a built-in name such as TypeError or DOMException, other or non_error), error_source (app, extension, external or unknown) and, only for the app's own scripts, error_file (the bundle file name), error_line and error_col. Never the error message, stack text, URLs, query strings, paths, prompts or scene content.</td></tr>
+              <tr><td>app:render_crash</td><td>A render error that brought up the studio's crash screen, at most two per session: error_type (the same closed labels as app:error). Never the error message, stack text, component names, file names or scene content.</td></tr>
+              <tr><td>app:gl_lost</td><td>The 3D view's graphics failed, at most once per kind per session: kind (unavailable when WebGL is off at startup, context_lost when the GPU context drops later). Never the GPU renderer string.</td></tr>
+              <tr><td>studio:ready</td><td>Once per session: how long the studio took to show its first frame, from page navigation to the first frame after the first render: boot (lt2s, 2-5s, 5-15s or gte15s). Never what was loaded.</td></tr>
+              <tr><td>playback:summary</td><td>One per playback run (play until stop, or until the frame rate or speed changes), at most 10 per session: duration (lt10s, 10-30s, 30-60s, 1-2m, 2-5m or gte5m); late_ticks, an estimate of dropped frames, not a measured one: the share of playback timer ticks that had to catch up more than one frame (0, lt5, 5-20, 20-50 or gte50 %); max_catchup (the most frames one tick caught up: 1, 2, 3-5 or gte6); fps (12, 24, 30, 60 or other); speed (0.5, 1, 2 or other); measured_fps (the browser's frame rate during playback, the device:profile frame-rate buckets). Every run also feeds app:friction_summary.late_tick_ratio. Never the scene, the take or the frame range.</td></tr>
+              <tr><td>landing:cta_clicked</td><td>The landing page (cozyclay.org/) sends one $pageview and, when a call to action is pressed, which one: target (app, github, discord, npm, copy_npx, copy_clone, copy_mcp, copy_terminal or agent_install_doc). Never the URL or the copied text. The landing page sends no session, error, device or performance events.</td></tr>
+              <tr><td>guide:opened</td><td>The first-60-seconds guide opened, at most once per session: mode (animation or storyboard). Never step text or what you did.</td></tr>
+              <tr><td>guide:step</td><td>A guide step marked done, each step at most once per session: mode (animation or storyboard), step (1 to 4) and step_ms (time on that step: lt10s, 10-30s, 30-60s, 1-2m, 2-5m or gte5m).</td></tr>
+              <tr><td>guide:dismissed</td><td>The guide closed before its last step, at most once per session: mode (animation or storyboard) and reached (1 to 4, the step it was showing).</td></tr>
+              <tr><td>guide:completed</td><td>The guide's last step marked done, at most once per session: mode (animation or storyboard).</td></tr>
+              <tr><td>agent:panel_toggled</td><td>The agent panel opened or closed, at most 10 per session: open (true or false) and via (key for Cmd/Ctrl+B, button for the toolbar control). Never what the panel showed.</td></tr>
+              <tr><td>object:deleted_soon</td><td>You deleted an object you added in this session, at most 10 per session: age (how long after adding it: lt2s, 2-10s, 10-60s or gte60s). Object ids are reused names, so this is an estimate. Never the object's id, name or kind.</td></tr>
+              <tr><td>object:delete_undone</td><td>You undid an object deletion within its 7-second undo window, at most 10 per session: age (time from the deletion to the undo: lt2s or 2-10s). Never the object's id, name or kind.</td></tr>
+              <tr><td>update:notice_shown</td><td>The update notice appeared in the top bar of an npm studio, once per session: kind (global or npx) and behind (patch, minor or major: how far the running version is behind the newest release). Never a path or a command</td></tr>
+              <tr><td>update:clicked</td><td>A button on the update notice, at most 10 per session: action (update_now, copy_command, later, dismiss, release_notes or restart) and kind (global or npx)</td></tr>
+              <tr><td>update:finished</td><td>A one-click update ended, at most 3 per session: outcome (ok or failed), error_class (none, permission, network, node_version, npm_missing or other) and duration (lt10s, 10-30s, 30-60s, 1-2m, 2-5m or gte5m). Never npm's output, a path or the command line</td></tr>
+              <tr><td>update:restarted</td><td>Restart now ended in the tab that pressed it, once per session: outcome (ok: the updated launcher answered; timeout: it did not within 30 seconds). Never a version string, a path or the command line</td></tr>
+              <tr><td>device:profile</td><td>Once per session, whether the studio can run smoothly: gpu_vendor (nvidia, amd, intel, apple, qualcomm, arm, software, other or unknown), gpu_class (discrete, integrated, software or unknown), webgl (webgl2, webgl1 or none), cpu_bucket (1-4, 5-8, 9-16, gte17 or unknown), memory_bucket (lt4, 4-7, gte8 or unknown) and frame_rate_bucket (lt20, 20-40, 40-55, gte55 or unknown) from one three-second sample. The GPU renderer string and exact hardware values never leave the browser.</td></tr>
+              <tr><td>survey:use_case</td><td>An optional question shown at most once after a successful export, only while telemetry is on: use_case (animation, film, game, ad_mv, personal, other or skip) and team (team, solo or skip). Closed choices only; no free text.</td></tr>
+              <tr><td>hosted:composer_viewed, hosted:login_started, hosted:ticket_created, hosted:result_opened, hosted:opened_in_studio</td><td>Hosted demo funnel</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="note">Only the events in this table are sent; any other event name is dropped in the browser before it reaches PostHog. Every regular app event and session-end beacon carries the same distribution (npm or hosted), app_version when available, origin_kind (local or hosted), internal_qa boolean, coarse operating-system label and, for npm sessions, install_kind (npx or global) and update_status (latest, outdated or unknown), read from the package's own cached update check. The update notice asks the launcher on 127.0.0.1 whether a newer release exists; the launcher answers from that same cached check, so the notice adds no request to anyone else. Update now runs npm install -g cozyclay@&lt;version&gt; on your machine, and only when you press it. PostHog's free plan retains events for one year.</p>
+        <p class="note">Workflow run_id, Agent turn_id and MCP request_id values are fresh random 32-character hexadecimal values held only for one execution. Execution telemetry contains only closed categories, outcomes and elapsed-time buckets; missing telemetry is left unknown, and a disconnected MCP editor is not backfilled.</p>
+      </section>
+
+      <section>
+        <h2>The hosted demo (Google sign-in)</h2>
+        <p>
+          The hosted demo is not open to the public right now. This section describes what it handled while it
+          was running. The hosted motion demo asks you to sign in with Google so that the daily generation cap can be
+          enforced per account. It receives your Google account's email address and basic profile only, stores
+          a session cookie signed by our server, and keeps your prompt and the generated result for up to 30
+          days so the ticket link keeps working. Results are stored on Cloudflare R2 and deleted after that
+          window. The demo does not post to your account or read anything else from it. Cloudflare Turnstile
+          is used to block automated submissions.
+        </p>
+      </section>
+
+      <section>
+        <h2>Your rights and contact</h2>
+        <p>
+          Nothing collected is tied to a person, so there is nothing to look up by name; opting out and
+          clearing site data is the complete remedy. For anything else, open an issue on
+          <a href="https://github.com/NomaDamas/CozyClay/issues">GitHub</a> or email
+          <a href="mailto:doyunha16@gmail.com">doyunha16@gmail.com</a>.
+        </p>
+      </section>

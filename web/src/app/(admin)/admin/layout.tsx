@@ -12,13 +12,11 @@ import { adminLayoutStyle } from "@/lib/app-theme";
 import { useUserStore } from "@/stores/use-user-store";
 
 const adminMenus = [
-    { key: "/admin/users", icon: <UserOutlined />, label: "用户管理" },
-    { key: "/admin/credit-logs", icon: <TransactionOutlined />, label: "算力点日志" },
     { key: "/admin/ai-logs", icon: <AuditOutlined />, label: "AI 日志" },
     { key: "/admin/prompts", icon: <FileTextOutlined />, label: "提示词管理" },
     { key: "/admin/skills", icon: <ToolOutlined />, label: "Skill 管理" },
     { key: "/admin/assets", icon: <PictureOutlined />, label: "素材库" },
-    { key: "/admin/settings", icon: <SettingOutlined />, label: "系统设置" },
+    { key: "/local-settings", icon: <SettingOutlined />, label: "模型配置" },
 ];
 
 export default function AdminLayout({ children }: { children: ReactNode }) {
@@ -91,9 +89,6 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
                 <Flex vertical gap={8} style={{ position: "absolute", bottom: 0, insetInline: 0, padding: 12, borderTop: `1px solid ${antToken.colorBorder}`, background: antToken.colorBgContainer }}>
                     <Button block icon={<HomeOutlined />} href="/canvas" target="_blank" rel="noreferrer">
                         前往画布
-                    </Button>
-                    <Button block icon={<LogoutOutlined />} onClick={logout}>
-                        退出登录
                     </Button>
                 </Flex>
             </Layout.Sider>

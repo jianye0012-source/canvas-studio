@@ -1,0 +1,25 @@
+{
+  "name": "canvas-studio-launcher",
+  "productName": "画布工作台启动器",
+  "version": "1.2.0",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.cjs",
+    "package": "node scripts/package.mjs"
+  },
+  "dependencies": {
+    "http-proxy": "1.18.1",
+    "mime-types": "3.0.2",
+    "semver": "7.8.5",
+    "unzipper": "0.12.3"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "archiver": "7.0.1",
+    "cross-spawn": "7.0.6",
+    "electron": "45.1.0",
+    "playwright-core": "1.58.2"
+  }
+}

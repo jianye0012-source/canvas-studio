@@ -10,3 +10,9 @@ data/
 web/public/InfiniteCanvas-ComfyBridge*
 .DS_Store
 .idea
+/work/
+/outputs/
+/launcher/node_modules/
+/integrations/cozyclay/node_modules/
+/integrations/cozyclay/mcp/node_modules/
+/integrations/cozyclay/dist/

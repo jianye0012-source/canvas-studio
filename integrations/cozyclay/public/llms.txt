@@ -1,0 +1,32 @@
+# CozyClay
+
+> Free, open source previs (previsualization) software that runs in a Chromium browser. Block a scene with primitives, pose characters, author camera moves and cuts on a timeline, then hand the same shot to an AI video model (Seedance, Kling, Veo) as a first frame or a reference clip. AGPL-3.0. Install: `npx cozyclay`.
+
+## Pages
+
+- [Home](https://cozyclay.org/): what it does, demo reels, an in-browser playground running the studio, quick start.
+- [Greybox to AI video](https://cozyclay.org/greybox-to-video/): why a grey blockout is the most reliable input to a video model, and the block-then-generate workflow.
+- [Previs software compared](https://cozyclay.org/previs-software/): free, open source and browser-based previs tools side by side.
+- [Seedance 2.5 camera control](https://cozyclay.org/seedance-camera-control/): getting the same camera every take with a reference clip instead of camera prompts.
+- [Camera control for AI video](https://cozyclay.org/ai-camera-control/): why camera prompts drift and what the models actually accept.
+- [Privacy](https://cozyclay.org/privacy/): analytics and telemetry disclosure.
+
+## Agent loop
+
+1. Install and open the Studio: `npx cozyclay`.
+2. Wait for a live editor: `cclay live status --wait`.
+3. Read before editing: `cclay live inspect --scope scene` or `--scope catalogue`.
+4. Apply one semantic batch with `cclay live arrange-objects`, `arrange-characters`, `frame-shot`, or `patch`.
+5. Verify the result. For a whole shot, use `cclay live verify --targets <id> --checks framing --range whole_clip --visual contact_sheet --out verify.png`.
+6. Use `--strict` when sampled framing findings should make the command fail. A sampled result is evidence for the returned frames, not proof of every frame.
+7. Read the receipt before retrying. `UNCERTAIN_APPLY` means reconcile or inspect first. `STALE_HANDLE` means status and workspace selection again. `NOT_IN_MODE` means switch Storyboard/Animation before using motion tools.
+
+The Studio, MCP server and `cclay live` use the same command contract. `script` can call several tools in one QuickJS transaction for computed layouts. Every authored edit returns a receipt and can be undone.
+
+For source-checkout CI, start the same Studio in owned headless Chrome with `node tools/headless-studio.mjs --project shot.cclayproject --port 5920 --live-port 5924`; then point `COZYCLAY_LIVE_PORT=5924 cclay live ...` at it. The launcher owns the Vite and Chrome children and cleans them up on exit.
+
+## Source
+
+- GitHub: https://github.com/NomaDamas/CozyClay
+- Agent install guide: https://github.com/NomaDamas/CozyClay/blob/main/INSTALL_FOR_AGENTS.md
+- npm: https://www.npmjs.com/package/cozyclay

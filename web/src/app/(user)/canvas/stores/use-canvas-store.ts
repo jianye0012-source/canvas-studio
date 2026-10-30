@@ -3,7 +3,7 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 
 import { nanoid } from "nanoid";
 import { localForageStorage } from "@/lib/localforage-storage";
-import { deleteImagePreviews } from "@/services/image-storage";
+import { deleteImagePreviews, STORAGE_SYNC_FAILED_EVENT } from "@/services/image-storage";
 import { listCanvasProjects, saveCanvasProject, syncCanvasProjects } from "@/services/api/canvas-tasks";
 import { fetchUserConfig } from "@/services/api/user-config";
 import { useUserStore } from "@/stores/use-user-store";
@@ -83,7 +83,11 @@ async function flushProjectSave(id: string) {
     if (!pending || !accountCanvasSyncEnabled || useUserStore.getState().token !== pending.token) return;
 
     savingProjects.add(id);
-    await saveCanvasProject(pending.token, pending.project).catch(() => undefined);
+    await saveCanvasProject(pending.token, pending.project).catch((error) => {
+        if (!pendingProjectSaves.has(id)) pendingProjectSaves.set(id, pending);
+        window.dispatchEvent(new CustomEvent(STORAGE_SYNC_FAILED_EVENT, { detail: error instanceof Error ? error.message : "" }));
+        if (!projectSaveTimers.has(id)) projectSaveTimers.set(id, setTimeout(() => { projectSaveTimers.delete(id); void flushProjectSave(id); }, 3000));
+    });
     savingProjects.delete(id);
     void flushProjectSave(id);
 }
@@ -161,6 +165,9 @@ async function reconcileCanvasProjects(
 const canvasStorage: PersistStorage<CanvasStore> = {
     getItem: async (name) => {
         await waitForUserStoreHydration();
+        // A fresh browser has no cached token. Establish the local session before
+        // reading projects so IndexedDB never becomes the only source of data.
+        if (!useUserStore.getState().isReady) await useUserStore.getState().hydrateUser();
         const localValue = await localForageStorage.getItem(name);
         const token = useUserStore.getState().token;
         const localParsed = localValue

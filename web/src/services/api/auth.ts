@@ -36,3 +36,5 @@ export async function register(payload: AuthPayload) {
 export async function fetchCurrentUser(token?: string) {
     return apiGet<AuthUser>("/api/auth/me", undefined, token);
 }
+
+export async function fetchLocalSession() { return apiGet<AuthSession>("/api/auth/local"); }

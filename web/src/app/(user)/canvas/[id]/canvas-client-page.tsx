@@ -2353,13 +2353,15 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     const handleDirectorCapturesSent = useCallback(
         async (directorNodeId: string, captures: CanvasDirectorCapture[]) => {
             const director = nodesRef.current.find((node) => node.id === directorNodeId && node.type === CanvasNodeType.Director);
-            if (!director || captures.length === 0) return;
+            if (!director || captures.length === 0) return false;
 
             const hideLoading = message.loading(captures.length > 1 ? "正在发送 " + captures.length + " 张截图到画布..." : "正在发送截图到画布...", 0);
             try {
                 const images = await Promise.all(
                     captures.map(async (capture) => {
-                        const image = await uploadImage(capture.dataUrl, { localOnly: true });
+                        const image = await uploadImage(capture.dataUrl);
+                        if (!image.storageKey.startsWith("server:")) throw new Error("截图未能保存到磁盘，请恢复数据目录后重试");
+                        useAssetStore.getState().addAsset({ kind: "image", title: capture.fileName, coverUrl: image.url, tags: [], source: "Director", data: { dataUrl: image.url, storageKey: image.storageKey, width: image.width, height: image.height, bytes: image.bytes, mimeType: image.mimeType || "image/png" }, metadata: { source: "director", nodeId: directorNodeId } });
                         return {
                             id: nanoid(),
                             title: capture.fileName,
@@ -2387,9 +2389,11 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                 setSelectedNodeIds(new Set(imageNodes.map((node) => node.id)));
                 setSelectedConnectionId(null);
                 message.success(captures.length > 1 ? "已发送 " + captures.length + " 张截图到画布" : "截图已发送到画布");
+                return true;
             } catch (error) {
                 console.error("Send director captures to canvas failed:", error);
                 message.error("截图发送到画布失败");
+                return false;
             } finally {
                 hideLoading();
             }
@@ -2400,11 +2404,12 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     const handleDirectorVideoSent = useCallback(
         async (directorNodeId: string, output: CanvasDirectorVideo) => {
             const director = nodesRef.current.find((node) => node.id === directorNodeId && node.type === CanvasNodeType.Director);
-            if (!director) return;
+            if (!director) return false;
 
             const hideLoading = message.loading("正在发送视频到画布...", 0);
             try {
                 const uploaded = await uploadMediaFile(output.blob, "video");
+                if (!uploaded.storageKey.startsWith("server:")) throw new Error("动画未能保存到磁盘，请恢复数据目录后重试");
                 const video = {
                     ...uploaded,
                     width: uploaded.width || output.width,
@@ -2417,15 +2422,18 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     x: director.position.x + director.width + 96 + size.width / 2,
                     y: y + size.height / 2,
                 });
+                useAssetStore.getState().addAsset({ kind: "video", title: output.fileName, coverUrl: "", tags: [], source: "Director", data: { url: video.url, storageKey: video.storageKey, width: video.width, height: video.height, bytes: video.bytes, mimeType: video.mimeType }, metadata: { source: "director", nodeId: directorNodeId } });
                 setNodes((prev) => [...prev, node]);
                 setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: director.id, toNodeId: node.id }]);
                 setSelectedNodeIds(new Set([node.id]));
                 setSelectedConnectionId(null);
                 setDialogNodeId(node.id);
                 message.success("视频已发送到画布");
+                return true;
             } catch (error) {
                 console.error("Send director video to canvas failed:", error);
                 message.error("视频发送到画布失败");
+                return false;
             } finally {
                 hideLoading();
             }
@@ -2938,35 +2946,36 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             }
 
             if (target?.nodeId) {
+                const targetNodeId = target.nodeId;
                 const hideLoading = message.loading(isAudioFile(file) ? "正在上传音频..." : file.type.startsWith("video/") ? "正在上传视频..." : "正在上传图片...", 0);
                 try {
                     const audio = isAudioFile(file) ? await uploadMediaFile(file, "audio") : null;
                     const video = !audio && file.type.startsWith("video/") ? await uploadMediaFile(file, "video") : null;
                     const image = !audio && !video ? await uploadImage(file) : null;
-                    const canApplyUpload = (nodeTaskRunsRef.current.get(target.nodeId)?.preparing || nodeTaskRunsRef.current.get(target.nodeId)?.generation || nodeTaskRunsRef.current.get(target.nodeId)?.controller) === targetToken && nodesRef.current.some((node) => node.id === target.nodeId);
+                    const canApplyUpload = (nodeTaskRunsRef.current.get(targetNodeId)?.preparing || nodeTaskRunsRef.current.get(targetNodeId)?.generation || nodeTaskRunsRef.current.get(targetNodeId)?.controller) === targetToken && nodesRef.current.some((node) => node.id === targetNodeId);
                     if (canApplyUpload) {
                         if (targetRun && targetRun.preparing === targetToken) delete targetRun.preparing;
-                        if (targetRun) nodeTaskRunsRef.current.set(target.nodeId, { id: "", controller: targetRun.controller, generation: typeof targetToken === "symbol" ? targetToken : undefined });
-                        pollingImageNodeIdsRef.current.get(target.nodeId)?.abort();
-                        pollingVideoNodeIdsRef.current.get(target.nodeId)?.abort();
-                        pollingAudioNodeIdsRef.current.get(target.nodeId)?.abort();
+                        if (targetRun) nodeTaskRunsRef.current.set(targetNodeId, { id: "", controller: targetRun.controller, generation: typeof targetToken === "symbol" ? targetToken : undefined });
+                        pollingImageNodeIdsRef.current.get(targetNodeId)?.abort();
+                        pollingVideoNodeIdsRef.current.get(targetNodeId)?.abort();
+                        pollingAudioNodeIdsRef.current.get(targetNodeId)?.abort();
                     }
                     if (audio && canApplyUpload) {
                         const spec = NODE_DEFAULT_SIZE[CanvasNodeType.Audio];
-                        setNodes((prev) => (nodeTaskRunsRef.current.get(target.nodeId)?.preparing || nodeTaskRunsRef.current.get(target.nodeId)?.generation || nodeTaskRunsRef.current.get(target.nodeId)?.controller) === targetToken && prev.some((node) => node.id === target.nodeId) ? prev.map((node) => (node.id === target.nodeId ? { ...node, type: CanvasNodeType.Audio, title: file.name, position: { x: node.position.x + node.width / 2 - spec.width / 2, y: node.position.y + node.height / 2 - spec.height / 2 }, width: spec.width, height: spec.height, metadata: { ...node.metadata, ...audioMetadata(audio), clientTaskId: undefined, taskBackend: undefined, errorDetails: undefined } } : node)) : prev);
-                        setSelectedNodeIds(new Set([target.nodeId]));
+                        setNodes((prev) => (nodeTaskRunsRef.current.get(targetNodeId)?.preparing || nodeTaskRunsRef.current.get(targetNodeId)?.generation || nodeTaskRunsRef.current.get(targetNodeId)?.controller) === targetToken && prev.some((node) => node.id === targetNodeId) ? prev.map((node) => (node.id === targetNodeId ? { ...node, type: CanvasNodeType.Audio, title: file.name, position: { x: node.position.x + node.width / 2 - spec.width / 2, y: node.position.y + node.height / 2 - spec.height / 2 }, width: spec.width, height: spec.height, metadata: { ...node.metadata, ...audioMetadata(audio), clientTaskId: undefined, taskBackend: undefined, errorDetails: undefined } } : node)) : prev);
+                        setSelectedNodeIds(new Set([targetNodeId]));
                         setSelectedConnectionId(null);
                     } else if (video && canApplyUpload) {
                         const nextSize = fitNodeSize(video.width || 1280, video.height || 720, VIDEO_NODE_MAX_WIDTH, VIDEO_NODE_MAX_HEIGHT);
-                        setNodes((prev) => (nodeTaskRunsRef.current.get(target.nodeId)?.preparing || nodeTaskRunsRef.current.get(target.nodeId)?.generation || nodeTaskRunsRef.current.get(target.nodeId)?.controller) === targetToken && prev.some((node) => node.id === target.nodeId) ? prev.map((node) => (node.id === target.nodeId ? { ...node, type: CanvasNodeType.Video, title: file.name, position: { x: node.position.x + node.width / 2 - nextSize.width / 2, y: node.position.y + node.height / 2 - nextSize.height / 2 }, width: nextSize.width, height: nextSize.height, metadata: { ...node.metadata, ...videoMetadata(video), clientTaskId: undefined, taskBackend: undefined, errorDetails: undefined } } : node)) : prev);
-                        setSelectedNodeIds(new Set([target.nodeId]));
+                        setNodes((prev) => (nodeTaskRunsRef.current.get(targetNodeId)?.preparing || nodeTaskRunsRef.current.get(targetNodeId)?.generation || nodeTaskRunsRef.current.get(targetNodeId)?.controller) === targetToken && prev.some((node) => node.id === targetNodeId) ? prev.map((node) => (node.id === targetNodeId ? { ...node, type: CanvasNodeType.Video, title: file.name, position: { x: node.position.x + node.width / 2 - nextSize.width / 2, y: node.position.y + node.height / 2 - nextSize.height / 2 }, width: nextSize.width, height: nextSize.height, metadata: { ...node.metadata, ...videoMetadata(video), clientTaskId: undefined, taskBackend: undefined, errorDetails: undefined } } : node)) : prev);
+                        setSelectedNodeIds(new Set([targetNodeId]));
                         setSelectedConnectionId(null);
-                        setDialogNodeId(target.nodeId);
+                        setDialogNodeId(targetNodeId);
                     } else if (image && canApplyUpload) {
                         const size = fitNodeSize(image.width, image.height);
-                        setNodes((prev) => (nodeTaskRunsRef.current.get(target.nodeId)?.preparing || nodeTaskRunsRef.current.get(target.nodeId)?.generation || nodeTaskRunsRef.current.get(target.nodeId)?.controller) === targetToken && prev.some((node) => node.id === target.nodeId) ?
+                        setNodes((prev) => (nodeTaskRunsRef.current.get(targetNodeId)?.preparing || nodeTaskRunsRef.current.get(targetNodeId)?.generation || nodeTaskRunsRef.current.get(targetNodeId)?.controller) === targetToken && prev.some((node) => node.id === targetNodeId) ?
                             prev.map((node) => {
-                                if (node.id !== target.nodeId) return node;
+                                if (node.id !== targetNodeId) return node;
                                 const isPanorama = isPanoramaNodeType(node.type);
                                 const nextSize = isPanorama ? PANORAMA_NODE_SIZE : size;
                                 return {
@@ -3004,9 +3013,9 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                                 };
                             }) : prev,
                         );
-                        setSelectedNodeIds(new Set([target.nodeId]));
+                        setSelectedNodeIds(new Set([targetNodeId]));
                         setSelectedConnectionId(null);
-                        setDialogNodeId(target.nodeId);
+                        setDialogNodeId(targetNodeId);
                     }
                 } catch (error) {
                     console.error("Upload node file failed:", error);

@@ -1,0 +1,121 @@
+name: Deploy demo to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - ".metrics/**"
+      - "docs/**/*.md"
+      - "*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # tools/sitemap.mjs reads each page's last commit date for <lastmod>.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            mcp/package-lock.json
+      - run: npm ci
+      - run: npm run build
+        env:
+          VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+          # Optional first-party proxy host (repo variable); empty falls back to us.i.posthog.com.
+          VITE_POSTHOG_HOST: ${{ vars.VITE_POSTHOG_HOST }}
+          # Public Turnstile site key for the hosted demo composer (pairs with
+          # the TURNSTILE_SECRET_KEY Worker secret; not sensitive).
+          VITE_TURNSTILE_SITE_KEY: "0x4AAAAAAEbNDDTxohyi9XFd"
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  # Keep deployment protected by the same complete Node suite as pull
+  # requests, on the same four shards (#666), so a main push is not serialized.
+  test-shard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    name: pages test / shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            mcp/package-lock.json
+      - run: npm ci
+      - run: npm --prefix mcp ci
+      - name: Install media inspection tools
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list /etc/apt/sources.list.d/google-chrome*.sources
+          sudo apt-get update
+          # The Azure mirror occasionally stalls between packages for minutes
+          # (8 min on one shard in run 37955319380). Bound the download; on a
+          # stall drop that mirror and fetch from the main archive, then
+          # install from the local package cache.
+          if ! sudo timeout 120 apt-get install -y --no-install-recommends --download-only ffmpeg; then
+            echo "::warning title=apt mirror stalled::ffmpeg download exceeded 120 s; retrying without the Azure mirror"
+            if [ -f /etc/apt/apt-mirrors.txt ]; then
+              sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
+            fi
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends --download-only ffmpeg
+          fi
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - run: npm run build
+      # The shard split is balanced by tools/test-durations.json; each shard
+      # records its own per-file seconds for tools/update-test-durations.mjs
+      # and writes "selected N, predicted X s, actual Y s" to its summary (#632).
+      - run: node tools/run-tests.mjs --shard "${{ matrix.shard }}/4" --durations-out test-durations.json
+        env:
+          # The MorphGS truth comparison needs uv + torch; the runner has
+          # neither, so only its structural checks run in hosted CI.
+          MORPHGS_SKIP_TRUTH: "1"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-durations-${{ matrix.shard }}
+          path: test-durations.json
+          retention-days: 14
+
+  deploy:
+    needs: [build, test-shard]
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+      # Bing and the other IndexNow engines learn about the change now instead
+      # of on their next crawl. Google ignores IndexNow and reads the sitemap.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node tools/indexnow.mjs
+        continue-on-error: true

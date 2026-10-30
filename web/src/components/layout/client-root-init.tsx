@@ -32,7 +32,7 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
     useEffect(() => {
         const onSyncFailed = (event: Event) => {
             const detail = (event as CustomEvent<string>).detail;
-            message.warning({ key: STORAGE_SYNC_FAILED_EVENT, content: `云端同步失败，已保留原始素材${detail ? `：${detail}` : ""}` });
+            message.warning({ key: STORAGE_SYNC_FAILED_EVENT, content: `本机保存失败，当前内容暂存于浏览器，请恢复磁盘后保持页面打开${detail ? `：${detail}` : ""}` });
         };
         window.addEventListener(STORAGE_SYNC_FAILED_EVENT, onSyncFailed);
         return () => window.removeEventListener(STORAGE_SYNC_FAILED_EVENT, onSyncFailed);

@@ -1,0 +1,980 @@
+{
+	"source": "agent take, session 02263581 turn 2 (barbell curl): the left hand on a point of the right palm's prop; the scene from the session's arrange_objects ops",
+	"spec": {
+		"schema": "cozyclay.motion-spec.v1",
+		"fps": 24,
+		"frames": 275,
+		"label": "barbell curl x3",
+		"props": {
+			"palmR": {
+				"hand": "r",
+				"origin": [
+					"RightHandIndex2",
+					"RightHandMiddle2"
+				],
+				"points": {
+					"gl": [
+						-0.275,
+						-0.2817,
+						-0.5303
+					]
+				}
+			}
+		},
+		"anchors": {
+			"gripR": {
+				"kind": "object",
+				"object": "empty",
+				"local": [
+					-0.33,
+					0.225,
+					0
+				]
+			},
+			"gripL": {
+				"kind": "prop",
+				"prop": "palmR",
+				"point": "gl"
+			},
+			"rest": {
+				"kind": "world",
+				"p": [
+					0,
+					0,
+					0.25
+				]
+			}
+		},
+		"keys": [
+			{
+				"f": 0,
+				"set": {
+					"root": [
+						0,
+						0.99,
+						0
+					],
+					"yaw": 0,
+					"pitch": 0,
+					"spine_pitch": 0,
+					"head_pitch": 0,
+					"foot_l": [
+						0.15,
+						0.105,
+						0
+					],
+					"foot_r": [
+						-0.15,
+						0.105,
+						0
+					],
+					"fyaw_l": 8,
+					"fyaw_r": -8,
+					"knee_l": [
+						0.35,
+						0,
+						1
+					],
+					"knee_r": [
+						-0.35,
+						0,
+						1
+					]
+				}
+			},
+			{
+				"f": 30,
+				"set": {
+					"root": [
+						0,
+						0.55,
+						-0.16
+					],
+					"pitch": 55,
+					"spine_pitch": 5,
+					"head_pitch": -35
+				}
+			},
+			{
+				"f": 40,
+				"set": {
+					"root": [
+						0,
+						0.55,
+						-0.16
+					],
+					"pitch": 55,
+					"spine_pitch": 5,
+					"head_pitch": -35
+				}
+			},
+			{
+				"f": 55,
+				"set": {
+					"root": [
+						0,
+						0.7,
+						-0.16
+					],
+					"pitch": 46,
+					"spine_pitch": 4,
+					"head_pitch": -25
+				}
+			},
+			{
+				"f": 63,
+				"set": {
+					"root": [
+						0,
+						0.82,
+						-0.14
+					],
+					"pitch": 34,
+					"spine_pitch": 3,
+					"head_pitch": -15
+				}
+			},
+			{
+				"f": 70,
+				"set": {
+					"root": [
+						0,
+						0.97,
+						-0.03
+					],
+					"pitch": 4,
+					"spine_pitch": 0,
+					"head_pitch": -5
+				}
+			},
+			{
+				"f": 80,
+				"set": {
+					"root": [
+						0,
+						0.99,
+						-0.01
+					],
+					"pitch": 0,
+					"spine_pitch": 0,
+					"head_pitch": 5
+				}
+			},
+			{
+				"f": 98,
+				"set": {
+					"root": [
+						0,
+						0.99,
+						-0.02
+					],
+					"pitch": -2,
+					"spine_pitch": -2,
+					"head_pitch": 3
+				}
+			},
+			{
+				"f": 102,
+				"set": {
+					"root": [
+						0,
+						0.99,
+						-0.02
+					],
+					"pitch": -2,
+					"spine_pitch": -2,
+					"head_pitch": 3
+				}
+			},
+			{
+				"f": 120,
+				"set": {
+					"root": [
+						0,
+						0.99,
+						-0.01
+					],
+					"pitch": 0,
+					"spine_pitch": 0,
+					"head_pitch": 5
+				}
+			},
+			{
+				"f": 138,
+				"set": {
+					"root": [
+						0,
+						0.99,
+						-0.02
+					],
+					"pitch": -2,
+					"spine_pitch": -2,
+					"head_pitch": 3
+				}
+			},
+			{
+				"f": 142,
+				"set": {
+					"root": [
+						0,
+						0.99,
+						-0.02
+					],
+					"pitch": -2,
+					"spine_pitch": -2,
+					"head_pitch": 3
+				}
+			},
+			{
+				"f": 160,
+				"set": {
+					"root": [
+						0,
+						0.99,
+						-0.01
+					],
+					"pitch": 0,
+					"spine_pitch": 0,
+					"head_pitch": 5
+				}
+			},
+			{
+				"f": 178,
+				"set": {
+					"root": [
+						0,
+						0.99,
+						-0.02
+					],
+					"pitch": -2,
+					"spine_pitch": -2,
+					"head_pitch": 3
+				}
+			},
+			{
+				"f": 182,
+				"set": {
+					"root": [
+						0,
+						0.99,
+						-0.02
+					],
+					"pitch": -2,
+					"spine_pitch": -2,
+					"head_pitch": 3
+				}
+			},
+			{
+				"f": 200,
+				"set": {
+					"root": [
+						0,
+						0.99,
+						-0.01
+					],
+					"pitch": 0,
+					"spine_pitch": 0,
+					"head_pitch": 5
+				}
+			},
+			{
+				"f": 207,
+				"set": {
+					"root": [
+						0,
+						0.82,
+						-0.14
+					],
+					"pitch": 34,
+					"spine_pitch": 3,
+					"head_pitch": -15
+				}
+			},
+			{
+				"f": 215,
+				"set": {
+					"root": [
+						0,
+						0.7,
+						-0.16
+					],
+					"pitch": 46,
+					"spine_pitch": 4,
+					"head_pitch": -25
+				}
+			},
+			{
+				"f": 230,
+				"set": {
+					"root": [
+						0,
+						0.55,
+						-0.16
+					],
+					"pitch": 55,
+					"spine_pitch": 5,
+					"head_pitch": -35
+				}
+			},
+			{
+				"f": 243,
+				"set": {
+					"root": [
+						0,
+						0.55,
+						-0.16
+					],
+					"pitch": 55,
+					"spine_pitch": 5,
+					"head_pitch": -35
+				}
+			},
+			{
+				"f": 270,
+				"set": {
+					"root": [
+						0,
+						0.99,
+						0
+					],
+					"pitch": 0,
+					"spine_pitch": 0,
+					"head_pitch": 0
+				}
+			}
+		],
+		"use": [
+			{
+				"skill": "reachGrip",
+				"f0": 10,
+				"args": {
+					"anchor": "gripR",
+					"side": "r",
+					"reach": 20,
+					"hold": 200,
+					"release": 12
+				}
+			},
+			{
+				"skill": "reachGrip",
+				"f0": 20,
+				"args": {
+					"anchor": "gripL",
+					"side": "l",
+					"reach": 12,
+					"hold": 196,
+					"release": 8
+				}
+			}
+		],
+		"objects": {
+			"empty": {
+				"prop": "gripRGrip",
+				"grab": 30,
+				"release": 230,
+				"keys": [
+					{
+						"f": 30,
+						"pos": [
+							0,
+							0,
+							0.25
+						],
+						"rot": [
+							0,
+							0,
+							0,
+							1
+						]
+					},
+					{
+						"f": 40,
+						"pos": [
+							0,
+							0,
+							0.25
+						],
+						"rot": [
+							0,
+							0,
+							0,
+							1
+						]
+					},
+					{
+						"f": 55,
+						"pos": [
+							0,
+							0.25,
+							0.25
+						],
+						"rot": [
+							0,
+							0,
+							0,
+							1
+						]
+					},
+					{
+						"f": 70,
+						"pos": [
+							0,
+							0.555,
+							0.15
+						],
+						"rot": [
+							0,
+							0,
+							0,
+							1
+						]
+					},
+					{
+						"f": 80,
+						"pos": [
+							0,
+							0.555,
+							0.15
+						],
+						"rot": [
+							0,
+							0,
+							0,
+							1
+						]
+					},
+					{
+						"f": 86,
+						"pos": [
+							0,
+							0.741,
+							0.423
+						],
+						"rot": [
+							-0.26724,
+							0,
+							0,
+							0.96363
+						]
+					},
+					{
+						"f": 92,
+						"pos": [
+							0,
+							1.03,
+							0.559
+						],
+						"rot": [
+							-0.50754,
+							0,
+							0,
+							0.86163
+						]
+					},
+					{
+						"f": 98,
+						"pos": [
+							0,
+							1.398,
+							0.512
+						],
+						"rot": [
+							-0.74314,
+							0,
+							0,
+							0.66913
+						]
+					},
+					{
+						"f": 102,
+						"pos": [
+							0,
+							1.398,
+							0.512
+						],
+						"rot": [
+							-0.74314,
+							0,
+							0,
+							0.66913
+						]
+					},
+					{
+						"f": 108,
+						"pos": [
+							0,
+							1.03,
+							0.559
+						],
+						"rot": [
+							-0.50754,
+							0,
+							0,
+							0.86163
+						]
+					},
+					{
+						"f": 114,
+						"pos": [
+							0,
+							0.741,
+							0.423
+						],
+						"rot": [
+							-0.26724,
+							0,
+							0,
+							0.96363
+						]
+					},
+					{
+						"f": 120,
+						"pos": [
+							0,
+							0.555,
+							0.15
+						],
+						"rot": [
+							0,
+							0,
+							0,
+							1
+						]
+					},
+					{
+						"f": 126,
+						"pos": [
+							0,
+							0.741,
+							0.423
+						],
+						"rot": [
+							-0.26724,
+							0,
+							0,
+							0.96363
+						]
+					},
+					{
+						"f": 132,
+						"pos": [
+							0,
+							1.03,
+							0.559
+						],
+						"rot": [
+							-0.50754,
+							0,
+							0,
+							0.86163
+						]
+					},
+					{
+						"f": 138,
+						"pos": [
+							0,
+							1.398,
+							0.512
+						],
+						"rot": [
+							-0.74314,
+							0,
+							0,
+							0.66913
+						]
+					},
+					{
+						"f": 142,
+						"pos": [
+							0,
+							1.398,
+							0.512
+						],
+						"rot": [
+							-0.74314,
+							0,
+							0,
+							0.66913
+						]
+					},
+					{
+						"f": 148,
+						"pos": [
+							0,
+							1.03,
+							0.559
+						],
+						"rot": [
+							-0.50754,
+							0,
+							0,
+							0.86163
+						]
+					},
+					{
+						"f": 154,
+						"pos": [
+							0,
+							0.741,
+							0.423
+						],
+						"rot": [
+							-0.26724,
+							0,
+							0,
+							0.96363
+						]
+					},
+					{
+						"f": 160,
+						"pos": [
+							0,
+							0.555,
+							0.15
+						],
+						"rot": [
+							0,
+							0,
+							0,
+							1
+						]
+					},
+					{
+						"f": 166,
+						"pos": [
+							0,
+							0.741,
+							0.423
+						],
+						"rot": [
+							-0.26724,
+							0,
+							0,
+							0.96363
+						]
+					},
+					{
+						"f": 172,
+						"pos": [
+							0,
+							1.03,
+							0.559
+						],
+						"rot": [
+							-0.50754,
+							0,
+							0,
+							0.86163
+						]
+					},
+					{
+						"f": 178,
+						"pos": [
+							0,
+							1.398,
+							0.512
+						],
+						"rot": [
+							-0.74314,
+							0,
+							0,
+							0.66913
+						]
+					},
+					{
+						"f": 182,
+						"pos": [
+							0,
+							1.398,
+							0.512
+						],
+						"rot": [
+							-0.74314,
+							0,
+							0,
+							0.66913
+						]
+					},
+					{
+						"f": 188,
+						"pos": [
+							0,
+							1.03,
+							0.559
+						],
+						"rot": [
+							-0.50754,
+							0,
+							0,
+							0.86163
+						]
+					},
+					{
+						"f": 194,
+						"pos": [
+							0,
+							0.741,
+							0.423
+						],
+						"rot": [
+							-0.26724,
+							0,
+							0,
+							0.96363
+						]
+					},
+					{
+						"f": 200,
+						"pos": [
+							0,
+							0.555,
+							0.15
+						],
+						"rot": [
+							0,
+							0,
+							0,
+							1
+						]
+					},
+					{
+						"f": 215,
+						"pos": [
+							0,
+							0.25,
+							0.25
+						],
+						"rot": [
+							0,
+							0,
+							0,
+							1
+						]
+					},
+					{
+						"f": 230,
+						"pos": [
+							0,
+							0,
+							0.25
+						],
+						"rot": [
+							0,
+							0,
+							0,
+							1
+						]
+					}
+				]
+			}
+		},
+		"goals": [
+			{
+				"name": "curl rep 1 top",
+				"above": [
+					"prop:gripRGrip.origin",
+					"joint:RightForeArm"
+				],
+				"at": [
+					98,
+					102
+				]
+			},
+			{
+				"name": "curl rep 2 top",
+				"above": [
+					"prop:gripRGrip.origin",
+					"joint:RightForeArm"
+				],
+				"at": [
+					138,
+					142
+				]
+			},
+			{
+				"name": "curl rep 3 top",
+				"above": [
+					"prop:gripRGrip.origin",
+					"joint:RightForeArm"
+				],
+				"at": [
+					178,
+					182
+				]
+			},
+			{
+				"name": "barbell back on the floor",
+				"near": [
+					"object:empty.base",
+					"anchor:rest"
+				],
+				"tol": 0.05,
+				"at": [
+					230,
+					274
+				]
+			}
+		]
+	},
+	"objects": [
+		{
+			"id": "empty",
+			"name": "Barbell",
+			"renderer": "empty",
+			"x": 0,
+			"y": 0,
+			"z": 0.25,
+			"rot": 0,
+			"rotX": 0,
+			"rotZ": 0,
+			"scaleX": 1,
+			"scaleY": 1,
+			"scaleZ": 1,
+			"footprint": {
+				"width": 1,
+				"depth": 1
+			},
+			"height": 1
+		},
+		{
+			"id": "cylinder",
+			"name": "Bar",
+			"renderer": "cylinder",
+			"parent": "empty",
+			"x": 0.78,
+			"y": 0.225,
+			"z": 0.25,
+			"rot": 0,
+			"rotX": 0,
+			"rotZ": 90,
+			"scaleX": 0.03,
+			"scaleY": 1.56,
+			"scaleZ": 0.03,
+			"footprint": {
+				"width": 1,
+				"depth": 1
+			},
+			"height": 1
+		},
+		{
+			"id": "cylinder-2",
+			"name": "Sleeve R",
+			"renderer": "cylinder",
+			"parent": "empty",
+			"x": 0.8,
+			"y": 0.225,
+			"z": 0.25,
+			"rot": 0,
+			"rotX": 0,
+			"rotZ": 90,
+			"scaleX": 0.05,
+			"scaleY": 0.25,
+			"scaleZ": 0.05,
+			"footprint": {
+				"width": 1,
+				"depth": 1
+			},
+			"height": 1
+		},
+		{
+			"id": "cylinder-3",
+			"name": "Sleeve L",
+			"renderer": "cylinder",
+			"parent": "empty",
+			"x": -0.55,
+			"y": 0.225,
+			"z": 0.25,
+			"rot": 0,
+			"rotX": 0,
+			"rotZ": 90,
+			"scaleX": 0.05,
+			"scaleY": 0.25,
+			"scaleZ": 0.05,
+			"footprint": {
+				"width": 1,
+				"depth": 1
+			},
+			"height": 1
+		},
+		{
+			"id": "cylinder-4",
+			"name": "Plate R",
+			"renderer": "cylinder",
+			"parent": "empty",
+			"x": 0.625,
+			"y": 0.225,
+			"z": 0.25,
+			"rot": 0,
+			"rotX": 0,
+			"rotZ": 90,
+			"scaleX": 0.45,
+			"scaleY": 0.05,
+			"scaleZ": 0.45,
+			"footprint": {
+				"width": 1,
+				"depth": 1
+			},
+			"height": 1
+		},
+		{
+			"id": "cylinder-5",
+			"name": "Plate L",
+			"renderer": "cylinder",
+			"parent": "empty",
+			"x": -0.575,
+			"y": 0.225,
+			"z": 0.25,
+			"rot": 0,
+			"rotX": 0,
+			"rotZ": 90,
+			"scaleX": 0.45,
+			"scaleY": 0.05,
+			"scaleZ": 0.45,
+			"footprint": {
+				"width": 1,
+				"depth": 1
+			},
+			"height": 1
+		},
+		{
+			"id": "cylinder-6",
+			"name": "Collar R",
+			"renderer": "cylinder",
+			"parent": "empty",
+			"x": 0.57,
+			"y": 0.225,
+			"z": 0.25,
+			"rot": 0,
+			"rotX": 0,
+			"rotZ": 90,
+			"scaleX": 0.07,
+			"scaleY": 0.03,
+			"scaleZ": 0.07,
+			"footprint": {
+				"width": 1,
+				"depth": 1
+			},
+			"height": 1
+		},
+		{
+			"id": "cylinder-7",
+			"name": "Collar L",
+			"renderer": "cylinder",
+			"parent": "empty",
+			"x": -0.54,
+			"y": 0.225,
+			"z": 0.25,
+			"rot": 0,
+			"rotX": 0,
+			"rotZ": 90,
+			"scaleX": 0.07,
+			"scaleY": 0.03,
+			"scaleZ": 0.07,
+			"footprint": {
+				"width": 1,
+				"depth": 1
+			},
+			"height": 1
+		}
+	]
+}

@@ -1,0 +1,572 @@
+{
+	"source": "agent take, interaction bench S8 (session cb2503b5): the cup carried with at/along, keys from the grab frame",
+	"spec": {
+		"schema": "cozyclay.motion-spec.v1",
+		"fps": 24,
+		"frames": 170,
+		"label": "pick up cup, sip, put back",
+		"anchors": {
+			"cup": {
+				"kind": "object",
+				"object": "cup",
+				"local": [
+					-0.0721,
+					0.0876,
+					-0.0062
+				]
+			}
+		},
+		"use": [
+			{
+				"skill": "standIdle",
+				"f0": 0,
+				"args": {
+					"at": [
+						-0.08,
+						0.92
+					],
+					"heading": 0
+				}
+			},
+			{
+				"skill": "reachGrip",
+				"f0": 12,
+				"args": {
+					"anchor": "cup",
+					"side": "r",
+					"reach": 22,
+					"hold": 96,
+					"release": 16,
+					"elbow": [
+						-1,
+						-0.6,
+						0.1
+					]
+				}
+			}
+		],
+		"objects": {
+			"cup": {
+				"prop": "cupGrip",
+				"grab": 34,
+				"release": 130,
+				"keys": [
+					{
+						"f": 34,
+						"pos": [
+							-0.15,
+							0.76,
+							1.22
+						],
+						"aim": [
+							0,
+							1,
+							0
+						]
+					},
+					{
+						"f": 46,
+						"pos": [
+							-0.15,
+							0.88,
+							1.19
+						],
+						"aim": [
+							0,
+							1,
+							0
+						]
+					},
+					{
+						"f": 62,
+						"pos": [
+							-0.11,
+							1.36,
+							1.11
+						],
+						"aim": [
+							0,
+							1,
+							0
+						]
+					},
+					{
+						"f": 76,
+						"pos": [
+							-0.09,
+							1.54,
+							1.09
+						],
+						"aim": [
+							0,
+							0.6,
+							-0.8
+						]
+					},
+					{
+						"f": 92,
+						"pos": [
+							-0.09,
+							1.56,
+							1.09
+						],
+						"aim": [
+							0,
+							0.45,
+							-0.89
+						]
+					},
+					{
+						"f": 102,
+						"pos": [
+							-0.11,
+							1.36,
+							1.11
+						],
+						"aim": [
+							0,
+							1,
+							0
+						]
+					},
+					{
+						"f": 118,
+						"pos": [
+							-0.15,
+							0.88,
+							1.19
+						],
+						"aim": [
+							0,
+							1,
+							0
+						]
+					},
+					{
+						"f": 128,
+						"pos": [
+							-0.15,
+							0.76,
+							1.22
+						],
+						"aim": [
+							0,
+							1,
+							0
+						]
+					}
+				],
+				"along": [
+					-0.6,
+					0.8,
+					0
+				],
+				"at": [
+					0.03,
+					0,
+					0.045
+				]
+			}
+		},
+		"keys": [
+			{
+				"f": 0,
+				"set": {
+					"head_pitch": 0,
+					"spine_pitch": 0
+				}
+			},
+			{
+				"f": 12,
+				"set": {
+					"spine_pitch": 0,
+					"head_pitch": 0
+				}
+			},
+			{
+				"f": 30,
+				"set": {
+					"spine_pitch": 24,
+					"head_pitch": 10
+				}
+			},
+			{
+				"f": 38,
+				"set": {
+					"spine_pitch": 24,
+					"head_pitch": 10
+				}
+			},
+			{
+				"f": 56,
+				"set": {
+					"spine_pitch": 5
+				}
+			},
+			{
+				"f": 64,
+				"set": {
+					"spine_pitch": 0,
+					"head_pitch": 4
+				}
+			},
+			{
+				"f": 76,
+				"set": {
+					"head_pitch": -10
+				}
+			},
+			{
+				"f": 92,
+				"set": {
+					"head_pitch": -16
+				}
+			},
+			{
+				"f": 104,
+				"set": {
+					"head_pitch": 4
+				}
+			},
+			{
+				"f": 108,
+				"set": {
+					"spine_pitch": 0
+				}
+			},
+			{
+				"f": 124,
+				"set": {
+					"spine_pitch": 24,
+					"head_pitch": 10
+				}
+			},
+			{
+				"f": 134,
+				"set": {
+					"spine_pitch": 24,
+					"head_pitch": 10
+				}
+			},
+			{
+				"f": 154,
+				"set": {
+					"spine_pitch": 0,
+					"head_pitch": 0
+				}
+			},
+			{
+				"f": 40,
+				"set": {
+					"elbow_r": [
+						-1,
+						-0.6,
+						0
+					]
+				}
+			},
+			{
+				"f": 62,
+				"set": {
+					"elbow_r": [
+						-0.3,
+						-0.5,
+						1
+					]
+				}
+			},
+			{
+				"f": 102,
+				"set": {
+					"elbow_r": [
+						-0.3,
+						-0.5,
+						1
+					]
+				}
+			},
+			{
+				"f": 122,
+				"set": {
+					"elbow_r": [
+						-1,
+						-0.6,
+						0
+					]
+				}
+			},
+			{
+				"f": 12,
+				"set": {
+					"root": [
+						-0.08,
+						0.988,
+						0.92
+					]
+				}
+			},
+			{
+				"f": 30,
+				"set": {
+					"root": [
+						-0.08,
+						0.84,
+						0.88
+					]
+				}
+			},
+			{
+				"f": 38,
+				"set": {
+					"root": [
+						-0.08,
+						0.84,
+						0.88
+					]
+				}
+			},
+			{
+				"f": 58,
+				"set": {
+					"root": [
+						-0.08,
+						0.988,
+						0.92
+					]
+				}
+			},
+			{
+				"f": 106,
+				"set": {
+					"root": [
+						-0.08,
+						0.988,
+						0.92
+					]
+				}
+			},
+			{
+				"f": 124,
+				"set": {
+					"root": [
+						-0.08,
+						0.84,
+						0.88
+					]
+				}
+			},
+			{
+				"f": 134,
+				"set": {
+					"root": [
+						-0.08,
+						0.84,
+						0.88
+					]
+				}
+			},
+			{
+				"f": 154,
+				"set": {
+					"root": [
+						-0.08,
+						0.988,
+						0.92
+					]
+				}
+			}
+		],
+		"goals": [
+			{
+				"name": "hand grips cup",
+				"near": [
+					"joint:RightHandMiddle2",
+					"object:cup"
+				],
+				"tol": 0.03,
+				"at": [
+					34,
+					40
+				],
+				"mode": "any"
+			},
+			{
+				"name": "cup rests before grab",
+				"still": "object:cup",
+				"at": [
+					0,
+					33
+				],
+				"before": "hand grips cup"
+			},
+			{
+				"name": "cup lifted",
+				"moved": "object:cup",
+				"by": 0.5,
+				"at": [
+					60,
+					105
+				],
+				"mode": "any",
+				"after": "hand grips cup"
+			},
+			{
+				"name": "rim at mouth",
+				"near": [
+					"object:cup.top",
+					"landmark:mouth"
+				],
+				"tol": 0.06,
+				"at": [
+					74,
+					95
+				],
+				"mode": "any"
+			},
+			{
+				"name": "cup above table while carried",
+				"above": [
+					"object:cup.base",
+					"object:table-top.top"
+				],
+				"by": -0.005,
+				"at": [
+					34,
+					169
+				]
+			},
+			{
+				"name": "cup back in place",
+				"still": "object:cup",
+				"tol": 0.02,
+				"at": [
+					130,
+					169
+				]
+			}
+		],
+		"probes": [
+			{
+				"name": "rim-mouth",
+				"distance": [
+					"object:cup.top",
+					"landmark:mouth"
+				],
+				"frames": [
+					60,
+					110
+				],
+				"every": 4
+			},
+			{
+				"name": "mouth",
+				"position": "landmark:mouth",
+				"frames": [
+					74,
+					92
+				],
+				"every": 6
+			}
+		]
+	},
+	"objects": [
+		{
+			"id": "table",
+			"name": "Table",
+			"renderer": "empty",
+			"x": 0,
+			"y": 0,
+			"z": 1.4,
+			"rot": 0,
+			"scaleX": 1,
+			"scaleY": 1,
+			"scaleZ": 1,
+			"color": "#ffffff",
+			"parent": null
+		},
+		{
+			"id": "table-top",
+			"name": "Table top",
+			"renderer": "cube",
+			"x": 0,
+			"y": 0.72,
+			"z": 1.4,
+			"rot": 0,
+			"scaleX": 1,
+			"scaleY": 0.04,
+			"scaleZ": 0.6,
+			"color": "#8d6e63",
+			"parent": "table"
+		},
+		{
+			"id": "table-leg-1",
+			"name": "table leg 1",
+			"renderer": "cylinder",
+			"x": -0.44,
+			"y": 0,
+			"z": 1.16,
+			"rot": 0,
+			"scaleX": 0.04,
+			"scaleY": 0.72,
+			"scaleZ": 0.04,
+			"color": "#6d4c41",
+			"parent": "table"
+		},
+		{
+			"id": "table-leg-2",
+			"name": "table leg 2",
+			"renderer": "cylinder",
+			"x": 0.44,
+			"y": 0,
+			"z": 1.16,
+			"rot": 0,
+			"scaleX": 0.04,
+			"scaleY": 0.72,
+			"scaleZ": 0.04,
+			"color": "#6d4c41",
+			"parent": "table"
+		},
+		{
+			"id": "table-leg-3",
+			"name": "table leg 3",
+			"renderer": "cylinder",
+			"x": -0.44,
+			"y": 0,
+			"z": 1.64,
+			"rot": 0,
+			"scaleX": 0.04,
+			"scaleY": 0.72,
+			"scaleZ": 0.04,
+			"color": "#6d4c41",
+			"parent": "table"
+		},
+		{
+			"id": "table-leg-4",
+			"name": "table leg 4",
+			"renderer": "cylinder",
+			"x": 0.44,
+			"y": 0,
+			"z": 1.64,
+			"rot": 0,
+			"scaleX": 0.04,
+			"scaleY": 0.72,
+			"scaleZ": 0.04,
+			"color": "#6d4c41",
+			"parent": "table"
+		},
+		{
+			"id": "cup",
+			"name": "Cup",
+			"renderer": "cylinder",
+			"x": -0.15,
+			"y": 0.76,
+			"z": 1.22,
+			"rot": 0,
+			"scaleX": 0.08,
+			"scaleY": 0.1,
+			"scaleZ": 0.08,
+			"color": "#f5f5f5",
+			"parent": null
+		}
+	]
+}
