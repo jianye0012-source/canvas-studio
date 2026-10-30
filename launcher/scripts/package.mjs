@@ -44,7 +44,7 @@ async function zip(output, populate) { const writer = createWriteStream(output);
 await zip(path.join(packaged, '对应源码.zip'), archive => archive.glob('**/*', { cwd: sourceRoot, dot: true, ignore: ['.git/**', '.agents/**', '**/node_modules/**', '**/.next/**', 'work/**', 'outputs/**', '**/dist/**', '**/*.log', '**/*.tsbuildinfo'] }));
 await fs.writeFile(path.join(packaged, 'resources/bundle/bundle-manifest.json'), JSON.stringify({ format: 1, version: appVersion, files: await fileManifest(path.join(packaged, 'resources/bundle'), ['bundle-manifest.json']) }));
 await fs.writeFile(path.join(packaged, 'package-manifest.json'), JSON.stringify({ application: 'canvas-studio', format: 1, platform: 'win32-x64', version: appVersion, files: await fileManifest(packaged, ['package-manifest.json']) }));
-const output = path.join(outputs, `画布工作台-Windows-x64-${appVersion}.zip`);
+const output = path.join(outputs, `CanvasStudio-Windows-x64-${appVersion}.zip`);
 await zip(output, archive => archive.directory(packaged, '画布工作台'));
 const digest = crypto.createHash('sha256'); for await (const chunk of createReadStream(output)) digest.update(chunk);
 await fs.writeFile(output + '.sha256', digest.digest('hex') + '  ' + path.basename(output) + '\n');

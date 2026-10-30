@@ -57,7 +57,7 @@ class ReleaseUpdater extends EventEmitter {
     const release = await response.json(), version = semver.valid(String(release.tag_name || '').replace(/^v/, ''));
     if (!version || release.draft || release.prerelease || semver.prerelease(version)) throw new Error('发行版不是有效的正式版本');
     if (!semver.gt(version, this.currentVersion)) { this.update({ phase: this.staged ? 'ready' : 'current', latestVersion: version, message: this.staged ? '已有校验好的更新，可重启安装' : '当前已是最新版本' }); return this.status(); }
-    const name = `画布工作台-Windows-x64-${version}.zip`;
+    const name = `CanvasStudio-Windows-x64-${version}.zip`;
     const asset = release.assets?.find(entry => entry.name === name), checksum = release.assets?.find(entry => entry.name === name + '.sha256');
     if (!asset || !checksum || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > 2 * 1024 ** 3) throw new Error('发行版缺少 Windows 整合包或 SHA-256 校验文件');
     const downloadUrl = this.assetUrl(asset.browser_download_url), checksumUrl = this.assetUrl(checksum.browser_download_url);

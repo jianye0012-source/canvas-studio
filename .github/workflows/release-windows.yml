@@ -40,7 +40,7 @@ jobs:
           $releaseVersion = node -p "require('./launcher/package.json').version"
           $releaseTag = "v$releaseVersion"
           if ('${{ github.ref_type }}' -eq 'tag' -and '${{ github.ref_name }}' -ne $releaseTag) { throw 'Tag does not match launcher version' }
-          $releaseZip = "outputs/画布工作台-Windows-x64-$releaseVersion.zip"
+          $releaseZip = "outputs/CanvasStudio-Windows-x64-$releaseVersion.zip"
           $expected = ((Get-Content -LiteralPath "$releaseZip.sha256" -Raw).Trim() -split '\s+')[0]
           if ((Get-FileHash -LiteralPath $releaseZip -Algorithm SHA256).Hash.ToLower() -ne $expected) { throw 'ZIP hash mismatch' }
           gh release view $releaseTag --repo $env:GITHUB_REPOSITORY

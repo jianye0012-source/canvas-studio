@@ -10,7 +10,7 @@ const source = { owner: 'jianye0012-source', repository: 'canvas-studio' };
 
 async function fixture(t, { corrupt = false, prerelease = false } = {}) {
   const dataDir = await fs.mkdtemp(path.resolve(__dirname, '../../work/tmp/update-test-')); t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
-  const version = prerelease ? '1.3.0-beta.1' : '1.3.0', name = `画布工作台-Windows-x64-${version}.zip`;
+  const version = prerelease ? '1.3.0-beta.1' : '1.3.0', name = `CanvasStudio-Windows-x64-${version}.zip`;
   const files = [{ path: '画布工作台启动器.exe', bytes: Buffer.from('MZ-launcher') }, { path: 'resources/bundle/runtime/node.exe', bytes: Buffer.from('MZ-node') }];
   const manifest = { application: 'canvas-studio', format: 1, platform: 'win32-x64', version, files: files.map(file => ({ path: file.path, size: file.bytes.length, sha256: crypto.createHash('sha256').update(file.bytes).digest('hex') })) };
   const fixtureZip = path.join(dataDir, 'fixture.zip');

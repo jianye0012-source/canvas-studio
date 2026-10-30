@@ -1,6 +1,6 @@
 # Windows 便携整合包
 
-发行文件位于 `outputs/画布工作台-Windows-x64-1.2.0.zip`。完整解压到机械盘后双击启动器，不需要另外安装开发环境。界面与故障处理参见 `launcher/使用说明.txt`。
+发行文件位于 `outputs/CanvasStudio-Windows-x64-1.2.0.zip`。完整解压到机械盘后双击启动器，不需要另外安装开发环境。界面与故障处理参见 `launcher/使用说明.txt`。
 
 ## 组成
 
@@ -65,7 +65,7 @@ Windows 10/11 实机启动、Windows 密钥加密、真实服务商调用和 Win
 
 更新源固定在 `launcher/update-source.json`，当前为 `jianye0012-source/canvas-studio`。启动器只读取本仓库的正式 GitHub Release，不拉取两个上游项目的新代码。可关闭启动时检查，也可随时手动检查。断网或 GitHub 限流不会阻止已有工作区运行。
 
-发行版 tag 使用 `v<launcher/package.json 的 version>`，同时上传 `画布工作台-Windows-x64-<version>.zip` 与同名 `.sha256`。框架核对版本、来源、大小、GitHub 文件摘要、SHA-256 和解压后的全部文件清单，再允许重启安装；已校验的待安装更新保存在数据目录，关闭后可恢复。
+发行版 tag 使用 `v<launcher/package.json 的 version>`，同时上传 `CanvasStudio-Windows-x64-<version>.zip` 与同名 `.sha256`。框架核对版本、来源、大小、GitHub 文件摘要、SHA-256 和解压后的全部文件清单，再允许重启安装；已校验的待安装更新保存在数据目录，关闭后可恢复。
 
 仓库的 `Build Windows release` 工作流支持手动运行，也在版本 tag 推送后构建并发布。发布前同步更新 `launcher/package.json`、锁文件、根目录 `VERSION` 和变更记录。下载页为 <https://github.com/jianye0012-source/canvas-studio/releases>。真实 Windows 重启替换流程仍需实机验收。
 

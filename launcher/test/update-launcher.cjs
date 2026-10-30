@@ -7,7 +7,7 @@ const archiver = require('archiver');
 const { createWriteStream } = require('node:fs');
 (async () => {
   const root = path.resolve(__dirname, '../..'), taskRoot = await fs.mkdtemp(path.join(root, 'work/tmp/native-update-'));
-  const version = '1.3.0', name = `画布工作台-Windows-x64-${version}.zip`, file = path.join(taskRoot, 'fixture.zip');
+  const version = '1.3.0', name = `CanvasStudio-Windows-x64-${version}.zip`, file = path.join(taskRoot, 'fixture.zip');
   const entries = [{ path: '画布工作台启动器.exe', data: 'MZ-launcher' }, { path: 'resources/bundle/runtime/node.exe', data: 'MZ-node' }];
   const manifest = { application: 'canvas-studio', format: 1, platform: 'win32-x64', version, files: entries.map(entry => ({ path: entry.path, size: Buffer.byteLength(entry.data), sha256: crypto.createHash('sha256').update(entry.data).digest('hex') })) };
   const writer = createWriteStream(file), archive = archiver('zip'), done = new Promise((resolve, reject) => { writer.on('close', resolve); archive.on('error', reject); }); archive.pipe(writer);
