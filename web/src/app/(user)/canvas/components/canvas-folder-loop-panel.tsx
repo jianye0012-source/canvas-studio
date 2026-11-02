@@ -5,7 +5,7 @@ import { useThemeStore } from '@/stores/use-theme-store';
 import type { CanvasNodeData } from '../types';
 export function CanvasFolderLoopPanel({ node, active, onSelect, onRun, onPause }: { node: CanvasNodeData; active: boolean; onSelect: (recursive: boolean) => void; onRun: (retry?: boolean) => void; onPause: () => void }) {
     const theme = canvasThemes[useThemeStore(s => s.theme)]; const loop = node.metadata?.folderLoop;
-    return <div className="flex h-full flex-col gap-3 p-5 text-xs" style={{ color: theme.node.text }} onMouseDown={e => e.stopPropagation()}>
+    return <div data-canvas-no-zoom className="thin-scrollbar flex h-full w-full flex-col gap-3 overflow-y-auto p-5 text-xs [&>*]:shrink-0" style={{ color: theme.node.text }} onMouseDown={e => e.stopPropagation()} onWheel={e => e.stopPropagation()}>
         <div className="flex items-center justify-between"><strong>FOR · 逐文件工作流</strong><Button size="small" type="text" disabled={active} icon={<FolderOpen className="size-4" />} onClick={() => onSelect(loop?.recursive || false)}>选文件夹</Button></div>
         <p className="truncate" title={loop?.folder.path} style={{ color: theme.node.muted }}>{loop?.folder.path || '选择本机文件夹，连接后面的生成节点'}</p>
         <Checkbox disabled={active} checked={loop?.recursive || false} onChange={e => onSelect(e.target.checked)}>包含子文件夹（重新选择并扫描）</Checkbox>
