@@ -1,7 +1,7 @@
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
 import { useRef, useState } from "react";
 import { Button, Segmented, Switch } from "antd";
-import { CircleDot, Eraser, FolderOpen, Globe2, Grid2x2, Hand, Image as ImageIcon, Info, Layers3, Library, Moon, MousePointer2, Music2, Palette, Redo2, Settings2, Square, Sun, Trash2, Type, Undo2, Upload, Video } from "lucide-react";
+import { CircleDot, Eraser, FolderOpen, Repeat2, Globe2, Grid2x2, Hand, Image as ImageIcon, Info, Layers3, Library, Moon, MousePointer2, Music2, Palette, Redo2, Settings2, Square, Sun, Trash2, Type, Undo2, Upload, Video } from "lucide-react";
 
 import { canvasThemes, type CanvasBackgroundMode, type CanvasColorTheme, type CanvasTheme } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -20,6 +20,7 @@ export function CanvasToolbar({
     onAddText,
     onAddPanorama,
     onAddDirector,
+    onAddFolderLoop,
     onAddConfig,
     onUndo,
     onRedo,
@@ -44,6 +45,7 @@ export function CanvasToolbar({
     onAddText: () => void;
     onAddPanorama: () => void;
     onAddDirector: () => void;
+    onAddFolderLoop: () => void;
     onAddConfig: () => void;
     onUndo: () => void;
     onRedo: () => void;
@@ -95,6 +97,7 @@ export function CanvasToolbar({
                 <ToolbarButton id="tool-audio" label="音频" hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={onAddAudio}>
                     <Music2 className="size-4.5" />
                 </ToolbarButton>
+                <ToolbarButton id="tool-folder-loop" label="FOR 文件夹循环" hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={onAddFolderLoop}><Repeat2 className="size-4.5" /></ToolbarButton>
                 <ToolbarButton id="tool-panorama" label="全景图" hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={onAddPanorama}>
                     <Globe2 className="size-4.5" />
                 </ToolbarButton>
@@ -300,6 +303,7 @@ function toolLabel(id: string) {
     if (id === "tool-audio") return "音频";
     if (id === "tool-panorama") return "全景图";
     if (id === "tool-director") return "导演台";
+    if (id === 'tool-folder-loop') return 'FOR 文件夹循环';
     if (id === "tool-config") return "生成配置";
     if (id === "tool-upload") return "上传素材";
     if (id === "tool-library") return "素材库";

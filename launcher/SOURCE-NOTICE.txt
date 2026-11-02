@@ -15,3 +15,5 @@ CozyClay：NomaDamas / CozyClay，作者 Doyun
 
 修改内容：本机免登录、磁盘素材存储、中文启动器、加密模型配置、统一代理、CozyClay 画布适配、场景保存和 Windows 便携打包。
 Electron、Chromium、Node.js 与第三方库许可随各自组件保留。未随包提供外部 AI 模型权重。
+
+视频附件解码采用 FFmpeg，来自 eugeneware/ffmpeg-static 固定发行 b6.1.1 的 Windows 资产（FFmpeg 6.1.1，GPL-3.0）。许可、构建配置和上游对应源码地址随包保存在 resources/bundle/runtime/ffmpeg-notices。Linux 开发资产为同发行中的 7.0.2 构建。

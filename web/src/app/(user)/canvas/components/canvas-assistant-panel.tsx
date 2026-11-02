@@ -70,6 +70,7 @@ const ASSISTANT_NODE_TYPE_META = {
     [CanvasNodeType.Audio]: { Icon: Music2, label: "音频" },
     [CanvasNodeType.Text]: { Icon: Type, label: "文本" },
     [CanvasNodeType.Config]: { Icon: Settings2, label: "生成配置" },
+    [CanvasNodeType.FolderLoop]: { Icon: Group, label: "文件夹循环" },
     [CanvasNodeType.Director]: { Icon: Clapperboard, label: "导演台" },
     [CanvasNodeType.Group]: { Icon: Group, label: "组" },
 };
@@ -381,7 +382,7 @@ export function CanvasAssistantPanel({
     const codexModel = codex.models.find((item) => item.model === agentConfig.codexModel) || codex.models.find((item) => item.isDefault) || codex.models[0];
     const effortLabels: Record<string, string> = { none: "不推理", minimal: "最低", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最大", ultra: "超高" };
     const codexEffort = agentConfig.codexEffort || codexModel?.defaultReasoningEffort;
-    const showCodexConnection = mode === "codex" && (view === "connect" || (view === "chat" && codex.status !== "ready"));
+    const showCodexConnection = mode === "codex";
     useEffect(() => {
         if (view !== "chat" || showCodexConnection) return;
         const frame = window.requestAnimationFrame(() => {
@@ -594,9 +595,9 @@ export function CanvasAssistantPanel({
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3" style={{ borderColor: theme.node.stroke }}>
                     <div className="flex items-center gap-2 text-sm font-medium">
                         <Bot className="size-4" />
-                        {view === "history" ? "历史记录" : mode === "codex" ? "Codex" : "创作 Agent"}
-                        <Tooltip title={mode === "codex" ? "切换回创作 Agent" : "切换到 Codex"}>
-                            <Button size="small" className="!h-7 !rounded-md !px-2.5 !shadow-none" style={{ font: "inherit", color: theme.node.text, background: "transparent", borderColor: theme.node.stroke }} icon={<ArrowLeftRight className="size-3.5" />} disabled={isRunning} onClick={switchMode}>{mode === "codex" ? "创作 Agent" : "Codex"}</Button>
+                        {view === "history" ? "历史记录" : mode === "codex" ? "MCP 连接" : "创作 Agent"}
+                        <Tooltip title={mode === "codex" ? "切换回创作 Agent" : "打开 MCP 连接"}>
+                            <Button size="small" className="!h-7 !rounded-md !px-2.5 !shadow-none" style={{ font: "inherit", color: theme.node.text, background: "transparent", borderColor: theme.node.stroke }} icon={<ArrowLeftRight className="size-3.5" />} disabled={isRunning} onClick={switchMode}>{mode === "codex" ? "创作 Agent" : "MCP 连接"}</Button>
                         </Tooltip>
                     </div>
                     <div className="flex items-center gap-1">
@@ -653,7 +654,7 @@ export function CanvasAssistantPanel({
                             onDelete={(id) => setDeleteChatIds([id])}
                         />
                     ) : messages.length ? (
-                        <AssistantMessages messages={messages} nodeById={nodeById} onFocusNode={onFocusNode} onRetry={retryMessage} codexMode={mode === "codex"} />
+                        <AssistantMessages messages={messages} nodeById={nodeById} onFocusNode={onFocusNode} onRetry={retryMessage} codexMode={false} />
                     ) : (
                         <div className="flex h-full flex-col items-center justify-center px-8 text-center">
                             <div className="grid size-12 place-items-center rounded-2xl" style={{ background: theme.node.fill }}>

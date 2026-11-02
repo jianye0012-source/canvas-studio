@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import spawn from 'cross-spawn';
 import crypto from 'node:crypto';
+import { mediaRuntime } from './media-runtime.mjs';
 
 export const sourceRoot = path.resolve(fileURLToPath(new URL('../..', import.meta.url)));
 export const appVersion = JSON.parse(await fs.readFile(path.join(sourceRoot, 'launcher/package.json'), 'utf8')).version;
@@ -27,6 +28,7 @@ export async function fileManifest(root, excluded = []) {
 export async function prepareBundle(platform) {
   const bundle = path.join(sourceRoot, 'work', `bundle-${platform === 'win32' ? 'windows' : 'linux'}`);
   await fs.mkdir(path.join(bundle, 'runtime'), { recursive: true });
+  await mediaRuntime(sourceRoot, bundle, platform);
   if (platform !== 'win32') await fs.copyFile(process.execPath, path.join(bundle, 'runtime/node'));
   let go = process.env.GO_BINARY || path.join(sourceRoot, 'work/toolchains/go/bin/go');
   try { await fs.access(go); } catch { go = 'go'; }
@@ -45,6 +47,7 @@ export async function prepareBundle(platform) {
   await fs.mkdir(path.join(bundle, 'launcher'), { recursive: true });
   await fs.copyFile(path.join(sourceRoot, 'launcher/cozy-runtime.mjs'), path.join(bundle, 'launcher/cozy-runtime.mjs'));
   await fs.copyFile(path.join(sourceRoot, 'launcher/web-runtime.cjs'), path.join(bundle, 'launcher/web-runtime.cjs'));
+  await fs.copyFile(path.join(sourceRoot, 'launcher/mcp-stdio.mjs'), path.join(bundle, 'launcher/mcp-stdio.mjs'));
   await fs.copyFile(path.join(sourceRoot, 'LICENSE'), path.join(bundle, 'LICENSE'));
   await fs.copyFile(path.join(sourceRoot, 'launcher/SOURCE-NOTICE.txt'), path.join(bundle, 'SOURCE-NOTICE.txt'));
   await fs.writeFile(path.join(bundle, 'bundle-manifest.json'), JSON.stringify({ format: 1, version: appVersion, files: await fileManifest(bundle, ['bundle-manifest.json']) }));

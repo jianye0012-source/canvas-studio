@@ -17,10 +17,12 @@ export const NODE_DEFAULT_SIZE = {
     [CanvasNodeType.Video]: { width: 420, height: 236, title: "视频" },
     [CanvasNodeType.Audio]: { width: 340, height: 160, title: "音频" },
     [CanvasNodeType.Director]: { width: 360, height: 320, title: "导演台" },
+    [CanvasNodeType.FolderLoop]: { width: 380, height: 310, title: "FOR 文件夹循环" },
     [CanvasNodeType.Group]: { width: 760, height: 480, title: "组" },
 } satisfies Record<CanvasNodeType, { width: number; height: number; title: string }>;
 
 export const NODE_SPECS = {
+    [CanvasNodeType.FolderLoop]: { ...NODE_DEFAULT_SIZE[CanvasNodeType.FolderLoop], metadata: { status: 'idle' } },
     [CanvasNodeType.Image]: {
         ...NODE_DEFAULT_SIZE[CanvasNodeType.Image],
         metadata: { content: "", status: "idle" },

@@ -1,5 +1,11 @@
 "use client";
 
+import { useFolderLoop } from "../utils/use-folder-loop";
+import { useCanvasMcp } from '../agent/use-canvas-mcp';
+import { textSkillInstructions } from '../utils/text-skills';
+import { useAgentSkillStore, invalidateAgentSkillCache } from '@/stores/use-agent-skill-store';
+import { CanvasFolderLoopPanel } from "../components/canvas-folder-loop-panel";
+
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent as ReactChangeEvent, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import dynamic from "next/dynamic";
@@ -69,7 +75,7 @@ import { CanvasToolbar } from "../components/canvas-toolbar";
 import { AssetPickerModal, type AssetPickerTab } from "../components/asset-picker-modal";
 import { CanvasZoomControls } from "../components/canvas-zoom-controls";
 import { CANVAS_ASSET_DRAG_TYPE, CanvasSidePanel } from "../components/canvas-side-panel";
-import { DEFAULT_CANVAS_AGENT_PANEL, DEFAULT_CANVAS_SIDE_PANEL, useCanvasStore } from "../stores/use-canvas-store";
+import { DEFAULT_CANVAS_AGENT_PANEL, DEFAULT_CANVAS_SIDE_PANEL, useCanvasStore, persistCanvasProjectNow } from "../stores/use-canvas-store";
 import { useCanvasUiStore } from "../stores/use-canvas-ui-store";
 import { assistantReferenceContentFromNode, buildNodeMentionReferences, isCanvasReferenceNode } from "../utils/canvas-resource-references";
 import { buildCanvasAgentContext } from "../agent/canvas-agent-context";
@@ -3124,6 +3130,9 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     const handleGenerateNode = useCallback(
         async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
+            let skillInstructions = '';
+            try { if (mode === 'text') skillInstructions = await textSkillInstructions(sourceNode?.metadata?.textSkills); }
+            catch (error) { message.error((error as Error).message); return; }
             const generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode);
             const workflowRef = mode === "text" ? undefined : sourceNode?.metadata?.workflowRef;
             if (workflowRef && !useUserStore.getState().token) {
@@ -3152,6 +3161,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                 buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, editingTextNode ? `请根据要求修改以下文本。\n\n原文：\n${sourceTextContent}\n\n修改要求：\n${prompt}` : prompt),
             );
             const effectivePrompt = generationContext.prompt.trim();
+            if (skillInstructions) generationContext.prompt = `请遵循以下用户选定的 Skill 完成文字创作。\n\n${skillInstructions}\n\n## 本次任务\n${generationContext.prompt}`;
             const requestPrompt =
                 mode === "video" || (mode === "image" && !isPanoramaNodeType(sourceNode?.type))
                     ? applyCameraPrompt(effectivePrompt, sourceNode?.metadata?.cameraControl)
@@ -3625,7 +3635,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                         },
                         width: textConfig.width,
                         height: textConfig.height,
-                        metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, fontSize: 14, clientTaskId: textTaskId },
+                        metadata: { prompt: effectivePrompt, textSkills: sourceNode?.metadata?.textSkills, status: NODE_STATUS_LOADING, fontSize: 14, clientTaskId: textTaskId },
                     }));
                     setNodes((prev) => [...prev.map((node) => (node.id === nodeId && isConfigNode ? { ...node, metadata: { ...node.metadata, prompt: effectivePrompt, status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)), ...childNodes]);
                     setConnections((prev) => [...prev, ...childIds.map((childId) => ({ id: nanoid(), fromNodeId: nodeId, toNodeId: childId }))]);
@@ -3634,7 +3644,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                 const answers = await Promise.all(
                     (childIds.length ? childIds : [nodeId]).map((targetNodeId) => {
                         let localStreamed = "";
-                        return submitNodeTask(targetNodeId, textTaskId, async (signal) => ({ id: textTaskId, status: "completed", text: await requestImageQuestion(generationConfig, buildNodeChatMessages({ ...generationContext, prompt: effectivePrompt }), (text) => {
+                        return submitNodeTask(targetNodeId, textTaskId, async (signal) => ({ id: textTaskId, status: "completed", text: await requestImageQuestion(generationConfig, buildNodeChatMessages({ ...generationContext, prompt: skillInstructions ? generationContext.prompt : effectivePrompt }), (text) => {
                             localStreamed = text;
                             streamed = text;
                             setNodes((prev) => isNodeTaskActive(targetNodeId, textTaskId) && prev.some((node) => node.id === targetNodeId && node.metadata?.clientTaskId === textTaskId) ? prev.map((node) => (node.id === targetNodeId ? { ...node, type: CanvasNodeType.Text, metadata: { ...node.metadata, content: text, status: NODE_STATUS_LOADING } } : node)) : prev);
@@ -3679,6 +3689,14 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         },
         [effectiveConfig, openConfigDialog, isNodeTaskActive, submitNodeTask, handleStopNode],
     );
+
+    const folderLoops = useFolderLoop({
+        projectId,
+        get: () => ({ nodes: nodesRef.current, connections: connectionsRef.current }),
+        set: graph => { nodesRef.current = graph.nodes; connectionsRef.current = graph.connections; setNodes(graph.nodes); setConnections(graph.connections); },
+        generate: handleGenerateNode,
+        onError: detail => { void message.error(detail); },
+    });
 
     const getCanvasAgentContext = useCallback(
         (agentState: CanvasAgentState) =>
@@ -3778,6 +3796,26 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     const referencedNodeIds = [...stringValues("approvedNodeIds"), ...stringValues("referenceNodeIds")];
                     const missingNodeId = validateNodeIds(referencedNodeIds);
                     return missingNodeId ? missingNodeResult(missingNodeId) : { ok: true };
+                }
+
+                if (action.name === 'generate_text') {
+                    const sourceNodeIds = stringValues('sourceNodeIds'), missing = validateNodeIds(sourceNodeIds);
+                    if (missing) return missingNodeResult(missing);
+                    invalidateAgentSkillCache(); await useAgentSkillStore.getState().loadSkills();
+                    const allSkills = [...useAgentSkillStore.getState().systemSkills, ...useAgentSkillStore.getState().userSkills];
+                    const textSkills = stringValues('skillIds').map(id => { const skill = allSkills.find(s => s.id === id && s.enabled); if (!skill) throw new Error('Skill 不存在或已停用：' + id); return { id: skill.id, name: skill.name, source: skill.source }; });
+                    if (textSkills.length > 5) throw new Error('一次最多使用 5 个 Skill');
+                    const prompt = stringValue('prompt');
+                    const node = createCanvasNode(CanvasNodeType.Text, nextNodeCenter(CanvasNodeType.Text, sourceNodeIds.map(id => getNode(id)!)), { prompt, status: 'idle', textSkills, model: stringValue('model') || agentEffectiveConfig.textModel, channelId: stringValue('channelId') || agentEffectiveConfig.textChannelId });
+                    node.title = stringValue('title') || prompt.slice(0, 32);
+                    const config = buildGenerationConfig(agentEffectiveConfig, node, 'text');
+                    if (!isAiConfigReady(config, config.model)) return { ok: false, code: 'model_not_configured', message: '请先在启动器中配置文字模型' };
+                    commitNodes([...nodesRef.current, node]); commitConnections([...connectionsRef.current, ...sourceNodeIds.map(id => ({ id: nanoid(), fromNodeId: id, toNodeId: node.id }))]);
+                    await handleGenerateNode(node.id, 'text', prompt);
+                    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+                    const result = nodesRef.current.find(n => n.id === node.id);
+                    if (result?.metadata?.status === 'success') await persistCanvasProjectNow(projectId, nodesRef.current, connectionsRef.current);
+                    return { ok: result?.metadata?.status === 'success', nodeId: node.id, text: result?.metadata?.content || '', status: result?.metadata?.status, message: result?.metadata?.errorDetails };
                 }
 
                 if (action.name === "get_canvas_summary") {
@@ -4151,6 +4189,8 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         [agentEffectiveConfig, createGroupFromSelection, currentProject?.title, deleteConnection, deleteNodes, getCanvasCenter, handleGenerateNode, isAiConfigReady, projectId, renameProject, resolvedAgentConfig.autoGenerateMedia, updateProject],
     );
 
+    useCanvasMcp(projectId, executeCanvasAgentAction);
+
     const handleRetryNode = useCallback(
         async (node: CanvasNodeData) => {
             const sourceNode = findRetrySourceNode(node.id, nodesRef.current, connectionsRef.current) || node;
@@ -4222,7 +4262,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                 if (node.type === CanvasNodeType.Text) {
                     if (!context) return;
                     let streamed = "";
-                    const task = await submitNodeTask(node.id, retryClientTaskId, async (signal) => ({ id: retryClientTaskId, status: "completed", text: await requestImageQuestion(generationConfig, buildNodeChatMessages({ ...context, prompt }), (text) => {
+                    const task = await submitNodeTask(node.id, retryClientTaskId, async (signal) => ({ id: retryClientTaskId, status: "completed", text: await requestImageQuestion(generationConfig, buildNodeChatMessages({ ...context, prompt: [await textSkillInstructions(node.metadata?.textSkills || sourceNode?.metadata?.textSkills), prompt].filter(Boolean).join("\n\n") }), (text) => {
                         streamed = text;
                         setNodes((prev) => isNodeTaskActive(node.id, retryClientTaskId) && prev.some((item) => item.id === node.id && item.metadata?.clientTaskId === retryClientTaskId) ? prev.map((item) => (item.id === node.id ? { ...item, type: CanvasNodeType.Text, metadata: { ...item.metadata, content: text, status: NODE_STATUS_LOADING } } : item)) : prev);
                     }, signal) }));
@@ -4622,7 +4662,9 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                                 )
                             }
                             renderNodeContent={(contentNode) =>
-                                contentNode.type === CanvasNodeType.Director ? (
+                                contentNode.type === CanvasNodeType.FolderLoop ? (
+                                    <CanvasFolderLoopPanel node={contentNode} active={folderLoops.active.includes(contentNode.id)} onSelect={recursive => { void folderLoops.select(contentNode.id, recursive); }} onRun={retry => { void folderLoops.run(contentNode.id, retry); }} onPause={() => folderLoops.pause(contentNode.id)} />
+                                ) : contentNode.type === CanvasNodeType.Director ? (
                                     <CanvasDirectorNodePanel onOpen={() => setOpenDirectorNodeId(contentNode.id)} />
                                 ) : (
                                     <CanvasConfigNodePanel
@@ -4765,6 +4807,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     onAddText={() => createNode(CanvasNodeType.Text)}
                     onAddPanorama={() => createNode(CanvasNodeType.Panorama)}
                     onAddDirector={() => createNode(CanvasNodeType.Director)}
+                    onAddFolderLoop={() => createNode(CanvasNodeType.FolderLoop)}
                     onAddConfig={() => createNode(CanvasNodeType.Config)}
                     onUndo={undoCanvas}
                     onRedo={redoCanvas}

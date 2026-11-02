@@ -17,8 +17,8 @@ export type CodexModel = {
 export function normalizeCodexEndpoint(endpoint: string) {
     try {
         const url = new URL(endpoint);
-        if (url.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(url.hostname) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new Error();
-        return url.origin;
+        if (url.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(url.hostname) || url.username || url.password || !["/", "/local/agent"].includes(url.pathname) || url.search || url.hash) throw new Error();
+        return url.origin + (url.pathname === "/local/agent" ? url.pathname : "");
     } catch { throw new Error("本地 Agent 地址必须为 http://127.0.0.1:端口"); }
 }
 export async function readCodexAgentConfig(endpoint: string): Promise<{ url: string; hasToken: boolean }> {

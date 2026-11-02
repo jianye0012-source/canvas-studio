@@ -53,6 +53,7 @@ const NODE_TYPE_ICON = {
     [CanvasNodeType.Text]: Type,
     [CanvasNodeType.Config]: Settings2,
     [CanvasNodeType.Director]: Clapperboard,
+    [CanvasNodeType.FolderLoop]: Group,
     [CanvasNodeType.Group]: Group,
 };
 
@@ -64,6 +65,7 @@ const NODE_TYPE_LABEL = {
     [CanvasNodeType.Text]: "文本",
     [CanvasNodeType.Config]: "生成配置",
     [CanvasNodeType.Director]: "导演台",
+    [CanvasNodeType.FolderLoop]: "文件夹循环",
     [CanvasNodeType.Group]: "组",
 };
 

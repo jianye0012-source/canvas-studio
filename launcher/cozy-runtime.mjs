@@ -1,11 +1,16 @@
 import { createServer } from 'node:http';
 import { createAgentHandler } from '../integrations/cozyclay/bin/agent/agent-routes.mjs';
+import { studioMcpHttp, directorMcpSurface } from '../integrations/cozyclay/mcp/studio-http.mjs';
 
 const port = Number(process.env.COZYCLAY_HTTP_PORT);
 const agent = createAgentHandler({ port: () => port });
 const server = createServer(async (req, res) => {
   const pathname = new URL(req.url, `http://127.0.0.1:${port}`).pathname;
   try {
+    if (pathname === '/mcp/director') {
+      if (req.headers.authorization !== `Bearer ${process.env.CANVAS_LOCAL_PROVIDER_TOKEN}`) { res.writeHead(401); res.end(); return; }
+      return await studioMcpHttp(req, res, await directorMcpSurface(agent));
+    }
     if (pathname === '/health') { res.end('ok'); return; }
     if (pathname.startsWith('/oauth/')) { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ signedIn: false, providersConfigured: 1, configured: true })); return; }
     if (pathname.startsWith('/agent/') && await agent(req, res, pathname)) return;

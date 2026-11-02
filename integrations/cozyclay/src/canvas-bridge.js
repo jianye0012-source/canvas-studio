@@ -60,6 +60,18 @@ export function useCanvasBridge(api) {
     };
     button('← 返回画布', async () => { await save(true); post('storyai:director-close'); });
     button('保存场景', () => save(true)); button('截图到画布', capture); button('动画到画布', video);
+    button('导演台 MCP', async () => {
+      const response = await fetch('/local/mcp/config'); if (!response.ok) throw new Error('MCP 配置读取失败');
+      const config = await response.json();
+      const dialog = document.createElement('dialog'); dialog.style.cssText = 'width:min(560px,90vw);background:var(--panel-bg,#fbfaf7);color:var(--text,#45413b);border:1px solid #95959555;border-radius:12px;padding:24px';
+      const title = document.createElement('h3'); title.textContent = 'Canvas Studio · 导演台专属 MCP';
+      const description = document.createElement('p'); description.textContent = '支持任意 MCP 客户端。先启动工作台并保持场景打开；重载 MCP 后先列出工作区。';
+      const area = document.createElement('textarea'); area.readOnly = true; area.setAttribute('aria-label', '导演台 MCP 配置'); area.style.cssText = 'width:100%;height:240px;font:12px monospace;background:transparent;color:inherit';
+      area.value = JSON.stringify({ mcpServers: { 'canvas-studio-director': config.mcpServers['canvas-studio-director'] } }, null, 2);
+      const copy = document.createElement('button'); copy.textContent = '复制配置'; copy.onclick = async () => { try { await navigator.clipboard.writeText(area.value); copy.textContent = '已复制'; } catch { area.select(); } };
+      const close = document.createElement('button'); close.textContent = '关闭'; close.onclick = () => dialog.close(); dialog.addEventListener('close', () => dialog.remove(), { once: true });
+      dialog.append(title, description, area, copy, close); document.body.append(dialog); dialog.showModal();
+    });
     const panoramaSelect = document.createElement('select'); panoramaSelect.setAttribute('aria-label', '画布全景背景'); panoramaSelect.hidden = true;
     const applyPanorama = async item => {
       const response = await fetch(item.imageUrl); if (!response.ok) throw new Error('全景图片读取失败');

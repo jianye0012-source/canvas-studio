@@ -602,12 +602,13 @@ export default function AgentPanel({
 	// focus on do not hand the picture to the stage.
 	const attachFiles = useCallback(async (files) => {
 		const prepared = [];
-		let failed = 0;
+		let failed = "";
 		for (const file of files) {
-			try { prepared.push(await attachmentFromFile(file)); } catch { failed += 1; }
+			setAttachNotice(`正在处理附件：${file.name || "粘贴图片"}…`);
+			try { prepared.push(await attachmentFromFile(file)); } catch (error) { failed = `${file.name || "附件"}：${error.message || ATTACHMENT_FAILED_NOTICE}`; }
 		}
 		const rejected = prepared.length ? store.addAttachments(prepared).rejected : 0;
-		setAttachNotice(rejected ? ATTACHMENT_LIMIT_NOTICE : failed ? ATTACHMENT_FAILED_NOTICE : null);
+		setAttachNotice(rejected ? ATTACHMENT_LIMIT_NOTICE : failed || null);
 	}, [store]);
 	const takeTransfer = useCallback((transfer) => {
 		const { images, unsupported } = attachmentFilesFromTransfer(transfer);

@@ -12,7 +12,7 @@ const { ConfigStore } = require('./lib/config.cjs');
   // Test-only encryption; production uses Electron safeStorage in main.cjs.
   const store = await new ConfigStore(configRoot, async value => Buffer.from(value), async bytes => bytes.toString()).initialize();
   if (!store.value.channels.length) await store.save({ channels: [{ id: 'smoke-main', name: '联调渠道', baseUrl: '', enabled: true, models: ['smoke-director', 'smoke-image', 'smoke-video'], modelCapabilities: { 'smoke-director': 'text', 'smoke-image': 'image', 'smoke-video': 'video' } }], directorModel: 'smoke-director', directorChannelId: 'smoke-main', textModel: 'smoke-director', textChannelId: 'smoke-main', imageModel: 'smoke-image', imageChannelId: 'smoke-main', videoModel: 'smoke-video', videoChannelId: 'smoke-main', browser: 'chrome', browserPath: '/usr/bin/google-chrome' });
-  const runtime = new Runtime({ store, root: path.join(root, 'work', 'bundle-linux'), development: true });
+  const runtime = new Runtime({ store, root: path.join(root, 'work', 'bundle-linux'), development: true, chooseFolder: process.env.CANVAS_SMOKE_FOLDER ? async () => process.env.CANVAS_SMOKE_FOLDER : undefined });
   runtime.on('status', status => console.log(JSON.stringify(status)));
   runtime.on('log', lines => { const line = lines.at(-1); if (line && !line.includes('GIN')) console.log(line); });
   await runtime.start({ open: false });

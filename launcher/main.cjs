@@ -38,7 +38,7 @@ else {
     const decrypt = async bytes => (await safeStorage.decryptStringAsync(bytes)).result;
     store = await new ConfigStore(portableRoot, encrypt, decrypt).initialize();
     const bundleRoot = process.env.CANVAS_BUNDLE_ROOT || (app.isPackaged ? path.join(portableRoot, 'resources', 'bundle') : path.resolve(__dirname, '..', 'work', 'bundle-linux'));
-    runtime = new Runtime({ store, root: bundleRoot, development: !app.isPackaged });
+    runtime = new Runtime({ store, root: bundleRoot, development: !app.isPackaged, chooseFolder: async () => { const result = await dialog.showOpenDialog(window, { title: '选择 FOR 循环的输入文件夹', properties: ['openDirectory'] }); return result.canceled ? null : result.filePaths[0]; } });
     updater = await new ReleaseUpdater({ dataDir: store.dataDir, currentVersion: app.getVersion(), source: updateSource }).initialize();
     window = new BrowserWindow({ width: 1120, height: 780, minWidth: 960, minHeight: 680, title: '画布工作台启动器', backgroundColor: '#f6f7fb', autoHideMenuBar: true, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true } });
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -52,6 +52,20 @@ else {
       'runtime:stop': () => runtime.stop(),
       'runtime:open': () => runtime.open(),
       'runtime:check': () => runtime.check(),
+      'skills:list': async () => { await runtime.start({ open: false }); return runtime.api('v1/agent-skills'); },
+      'skills:save': async (_event, value) => { await runtime.start({ open: false }); return runtime.api('v1/agent-skills', { method: 'POST', body: JSON.stringify({ id: value.id, name: value.name, description: value.description, content: value.content }) }); },
+      'skills:delete': async (_event, id) => { await runtime.start({ open: false }); return runtime.api('v1/agent-skills/' + encodeURIComponent(id), { method: 'DELETE' }); },
+      'skills:import': async () => {
+        const result = await dialog.showOpenDialog(window, { title: '导入 Skill', properties: ['openFile'], filters: [{ name: 'Markdown / 文本 Skill', extensions: ['md', 'markdown', 'txt'] }] });
+        if (result.canceled) return null;
+        const file = result.filePaths[0]; if ((await fsp.stat(file)).size > 100000) throw new Error('Skill 文件过大，最多支持 20000 字');
+        await runtime.start({ open: false }); return runtime.api('v1/agent-skills', { method: 'POST', body: JSON.stringify({ name: path.basename(file).replace(/\.(md|markdown|txt)$/i, ''), content: await fsp.readFile(file, 'utf8') }) });
+      },
+      'skills:export': async (_event, id) => {
+        await runtime.start({ open: false }); const skills = await runtime.api('v1/agent-skills'), skill = skills.find(s => s.id === id); if (!skill) throw new Error('Skill 不存在');
+        const result = await dialog.showSaveDialog(window, { title: '导出 Skill', defaultPath: path.join(store.dataDir, 'outputs', skill.name.replace(/[<>:"/\\|?*]/g, '_') + '.md'), filters: [{ name: 'Markdown Skill', extensions: ['md'] }] });
+        if (result.canceled) return false; await fsp.writeFile(result.filePath, skill.content, 'utf8'); return true;
+      },
       'config:save': async (_event, value) => { const result = await store.save(value); if (runtime.state.phase === 'running' && value.channels) await runtime.configureCanvas(); return result; },
       'config:test': (_event, value) => store.testChannel(value),
       'storage:open': () => shell.openPath(store.dataDir),

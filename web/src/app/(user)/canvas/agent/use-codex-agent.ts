@@ -23,7 +23,7 @@ type ActiveRun = {
     buffer: CodexRpcEvent[]; messages: Map<string, string>; finished: boolean; controller: AbortController;
     finish: (error?: Error) => void;
 };
-const CONNECTION_KEY = "canvas-codex-connection";
+const CONNECTION_KEY = "canvas-studio-mcp-connection";
 const defaultConnection = { endpoint: "http://127.0.0.1:3210", token: "" };
 const agentTools = [...CANVAS_AGENT_TOOLS, CANVAS_AGENT_SKILL_FILE_TOOL].map(({ function: tool }) => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters }));
 const stopped = () => new DOMException("Agent 已停止", "AbortError");
@@ -212,6 +212,7 @@ export function useCodexAgent(options: {
             cancelTool: (requestId) => toolControllers.get(requestId)?.abort(new Error("画布工具执行超时")),
             ready: async () => {
                 setModels([]);
+                if (connection.endpoint.endsWith('/local/agent')) { setError(''); setStatus('ready'); return; }
                 try {
                     let cursor: string | null = null;
                     const available: CodexModel[] = [];

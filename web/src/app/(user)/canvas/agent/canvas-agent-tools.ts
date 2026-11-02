@@ -24,6 +24,7 @@ export const CANVAS_AGENT_ACTION_NAMES = [
     "create_group",
     "arrange_nodes",
     "generate_image",
+    "generate_text",
     "edit_image",
     "generate_video",
     "generate_audio",
@@ -91,6 +92,7 @@ function defineTool(name: CanvasAgentActionName, description: string, properties
 export const CANVAS_AGENT_SKILL_FILE_TOOL = defineTool("read_skill_file", "按相对路径读取当前激活系统 Skill 的附属 Markdown 或文本文件。仅当 SKILL.md 明确引用附属文件时使用。", { skillId: STRING, path: STRING }, ["skillId", "path"]);
 
 export const CANVAS_AGENT_TOOLS: CanvasAgentToolDefinition[] = [
+    defineTool('generate_text', '调用已配置的文字模型生成 AI 文字并保存为画布节点，可选择本机 Skill；sourceNodeIds 为参考节点，可用 model/channelId 指定已配置渠道。', { prompt: STRING, title: STRING, sourceNodeIds: STRING_ARRAY, skillIds: STRING_ARRAY, model: STRING, channelId: STRING }, ['prompt', 'sourceNodeIds']),
     defineTool("get_canvas_summary", "读取当前画布摘要、节点、连线、模型配置和任务状态。"),
     defineTool("get_selected_nodes", "读取用户当前选中的真实画布节点。"),
     defineTool("query_canvas_nodes", "当默认上下文中没有目标节点 ID 时，按 ID、关键词或类型只读查询画布节点；找到 ID 后再用 get_node 读取详情。", {
@@ -244,6 +246,9 @@ export function normalizeCanvasAgentAction(name: unknown, args: unknown, id = na
                 content: requiredString(input.content, "content"),
                 sourceNodeIds: stringArray(input.sourceNodeIds),
             };
+            break;
+        case 'generate_text':
+            normalized = { prompt: requiredString(input.prompt, 'prompt'), sourceNodeIds: stringArray(input.sourceNodeIds), skillIds: stringArray(input.skillIds), title: optionalString(input.title), model: optionalString(input.model), channelId: optionalString(input.channelId) };
             break;
         case "update_text_node":
             normalized = {
@@ -400,6 +405,7 @@ export function canvasAgentActionLabel(action: CanvasAgentAction) {
         create_group: "正在创建分组",
         arrange_nodes: "正在整理画布",
         generate_image: "正在创建图片节点",
+        generate_text: '正在生成 AI 文字',
         edit_image: "正在创建图片编辑节点",
         generate_video: "正在创建视频节点",
         generate_audio: "正在创建音频节点",

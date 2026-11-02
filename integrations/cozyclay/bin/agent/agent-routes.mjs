@@ -909,6 +909,7 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 		return true;
 	};
 
+	handle.mcpRuntime = () => runtime;
 	handle.close = async () => {
 		unsubscribe?.();
 		for (const session of sessions.values()) session.controller?.abort();

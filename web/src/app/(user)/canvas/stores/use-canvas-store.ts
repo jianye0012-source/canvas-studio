@@ -92,6 +92,19 @@ async function flushProjectSave(id: string) {
     void flushProjectSave(id);
 }
 
+// Workflow checkpoints must reach disk before submitting another paid task.
+export async function persistCanvasProjectNow(id: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
+    useCanvasStore.getState().updateProject(id, { nodes, connections });
+    while (savingProjects.has(id)) await new Promise(resolve => setTimeout(resolve, 50));
+    const timer = projectSaveTimers.get(id); if (timer) clearTimeout(timer);
+    projectSaveTimers.delete(id); pendingProjectSaves.delete(id);
+    const project = useCanvasStore.getState().projects.find(p => p.id === id), token = useUserStore.getState().token;
+    if (!project || !token) throw new Error('本机项目会话不可用，请重新打开工作台');
+    savingProjects.add(id);
+    try { await saveCanvasProject(token, project); }
+    finally { savingProjects.delete(id); void flushProjectSave(id); }
+}
+
 function queueProjectSave(project: CanvasProject) {
     const token = useUserStore.getState().token;
     const previous = projectSaveTimers.get(project.id);

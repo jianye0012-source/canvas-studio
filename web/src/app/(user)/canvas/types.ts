@@ -17,6 +17,7 @@ export enum CanvasNodeType {
     Video = "video",
     Audio = "audio",
     Director = "director",
+    FolderLoop = "folder-loop",
     Group = "group",
 }
 
@@ -33,6 +34,9 @@ export type CameraControlOptions = {
 };
 
 export type CanvasNodeMetadata = {
+    textSkills?: CanvasAgentSkillSelection[];
+    folderLoop?: import('./utils/folder-loop').FolderLoopState;
+    folderLoopOwner?: string;
     content?: string;
     groupId?: string;
     composerContent?: string;

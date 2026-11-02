@@ -1,11 +1,11 @@
 const $ = selector => document.querySelector(selector);
-const titles = { home: '一键启动', models: '模型配置', storage: '存储设置', logs: '运行日志', repair: '检查与修复', about: '关于' };
+const titles = { home: '一键启动', models: '模型配置', skills: 'Skill 管理', storage: '存储设置', logs: '运行日志', repair: '检查与修复', about: '关于' };
 let config, state, updateState, draft, activeId = '';
 const roles = { director: '白模导演', text: '画布文字', image: '图片生成', video: '视频生成' };
 const capabilities = { text: '文字 / 白模', image: '图片', video: '视频' };
 const catalogues = new Map();
 const activeChannel = () => draft?.channels.find(channel => channel.id === activeId);
-function page(name) { for (const node of document.querySelectorAll('.page')) node.hidden = node.id !== 'page-' + name; for (const node of document.querySelectorAll('nav button')) node.classList.toggle('active', node.dataset.page === name); $('#page-title').textContent = titles[name]; }
+function page(name) { for (const node of document.querySelectorAll('.page')) node.hidden = node.id !== 'page-' + name; for (const node of document.querySelectorAll('nav button')) node.classList.toggle('active', node.dataset.page === name); $('#page-title').textContent = titles[name]; if (name === 'skills') void loadSkills().catch(() => {}); }
 function notice(text, error = false) { $('#notice').textContent = text; $('#notice').hidden = false; $('#notice').classList.toggle('error', error); }
 function status(value) {
   state = value;
@@ -122,3 +122,13 @@ $('#test-models').onclick = async () => { const channel = activeChannel(); if (!
 $('#clear-key').onclick = () => { const channel = activeChannel(); if (channel) { channel.apiKey = ''; channel.hasApiKey = false; channel.clearApiKey = true; renderModels(); notice('此渠道密钥将于保存时清除。'); } };
 window.launcher.subscribe(event => { if (event.type === 'status') status(event.value); else if (event.type === 'update') renderUpdate(event.value); else { $('#logs').textContent = event.value.join('\n'); $('#logs').scrollTop = $('#logs').scrollHeight; } });
 invoke('app:load').then(result => { fill(result.config); status(result.status); renderUpdate(result.update); if (result.logs.length) $('#logs').textContent = result.logs.join('\n'); }).catch(() => {});
+
+let skills = [];
+function editSkill(skill = {}) { for (const key of ['id','name','description','content']) $('#skill-form').elements[key].value = skill[key] || ''; $('#skills-export').disabled = $('#skills-delete').disabled = !skill.id; }
+async function loadSkills() { skills = await invoke('skills:list'); $('#skills-list').replaceChildren(...skills.map(skill => { const button = document.createElement('button'); button.type = 'button'; button.textContent = skill.name; button.onclick = () => editSkill(skill); return button; })); if (!skills.some(s => s.id === $('#skill-form').elements.id.value)) editSkill(); }
+$('#skills-refresh').onclick = () => loadSkills().catch(() => {});
+$('#skills-new').onclick = () => { editSkill(); $('#skill-form').elements.name.focus(); };
+$('#skills-import').onclick = async () => { try { const skill = await invoke('skills:import'); if (skill) { await loadSkills(); editSkill(skill); notice('Skill 已导入，画布可直接选择。'); } } catch {} };
+$('#skill-form').onsubmit = async event => { event.preventDefault(); const button = event.submitter; button.disabled = true; try { const skill = await invoke('skills:save', values($('#skill-form'))); await loadSkills(); editSkill(skill); notice('Skill 已保存，下一次文字生成生效。'); } catch {} finally { button.disabled = false; } };
+$('#skills-delete').onclick = async () => { const id = $('#skill-form').elements.id.value; if (!id || !confirm('删除此 Skill？已生成的文字会保留。')) return; try { await invoke('skills:delete', id); await loadSkills(); editSkill(); notice('Skill 已删除'); } catch {} };
+$('#skills-export').onclick = async () => { try { if (await invoke('skills:export', $('#skill-form').elements.id.value)) notice('Skill 已导出'); } catch {} };

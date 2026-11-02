@@ -14,7 +14,8 @@ const SHEET_JPEG_QUALITY = 0.85;
 
 export function isVideoFile(file) {
 	const declared = String(file?.type ?? "").toLowerCase();
-	if (declared) return declared.startsWith("video/");
+	if (declared.startsWith("video/")) return true;
+	if (declared && !["application/octet-stream", "application/mp4"].includes(declared)) return false;
 	const extension = String(file?.name ?? "").toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
 	return VIDEO_EXTENSIONS.has(extension);
 }
@@ -30,8 +31,10 @@ function formatSheetTime(seconds) {
 
 function nextEvent(target, name) {
 	return new Promise((resolve, reject) => {
-		const done = () => { target.removeEventListener(name, done); target.removeEventListener("error", failed); resolve(); };
-		const failed = () => { target.removeEventListener(name, done); target.removeEventListener("error", failed); reject(new Error("this browser cannot decode that video")); };
+		const cleanup = () => { clearTimeout(timer); target.removeEventListener(name, done); target.removeEventListener("error", failed); };
+		const done = () => { cleanup(); resolve(); };
+		const failed = () => { cleanup(); reject(new Error("浏览器无法解码此视频，请使用启动器中的本机视频解码服务")); };
+		const timer = setTimeout(() => { cleanup(); reject(new Error("视频读取超时，请检查文件是否完整")); }, 20000);
 		target.addEventListener(name, done);
 		target.addEventListener("error", failed);
 	});
@@ -42,7 +45,16 @@ function nextEvent(target, name) {
  * a detached <video>; a codec the browser cannot play rejects instead of
  * producing a black sheet.
  */
-export async function videoContactSheet(file, { doc = globalThis.document, frames = SHEET_FRAMES } = {}) {
+export async function videoContactSheet(file, options = {}) {
+	if (!options.doc && globalThis.location?.pathname.startsWith("/cozy/")) {
+		const response = await fetch("/local/media/video-sheet", { method: "POST", headers: { "content-type": "application/octet-stream" }, body: file, signal: AbortSignal.timeout(250000) });
+		if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.msg || "本机视频解码失败，请查看启动器日志"); }
+		return { blob: await response.blob(), name: `${String(file.name || "video").slice(0, 70)} (9 frames over ${Number(response.headers.get("x-video-duration")).toFixed(1)}s)` };
+	}
+	return browserVideoSheet(file, options);
+}
+
+async function browserVideoSheet(file, { doc = globalThis.document, frames = SHEET_FRAMES } = {}) {
 	const url = URL.createObjectURL(file);
 	const video = doc.createElement("video");
 	video.muted = true;
@@ -54,7 +66,7 @@ export async function videoContactSheet(file, { doc = globalThis.document, frame
 		await loaded;
 		const { duration, videoWidth, videoHeight } = video;
 		if (!Number.isFinite(duration) || duration <= 0 || !videoWidth || !videoHeight) throw new Error("that video has no usable length or size");
-		const cellWidth = Math.min(SHEET_CELL_WIDTH, videoWidth);
+		const cellWidth = Math.max(1, Math.round(Math.min(SHEET_CELL_WIDTH, videoWidth, SHEET_CELL_WIDTH * videoWidth / videoHeight)));
 		const cellHeight = Math.round(cellWidth * videoHeight / videoWidth);
 		const canvas = doc.createElement("canvas");
 		canvas.width = cellWidth * SHEET_COLUMNS;
@@ -66,9 +78,9 @@ export async function videoContactSheet(file, { doc = globalThis.document, frame
 		context.font = `600 ${Math.max(12, Math.round(cellHeight / 12))}px system-ui, sans-serif`;
 		context.textBaseline = "top";
 		for (const [index, time] of sheetTimes(duration, frames).entries()) {
-			const seeked = nextEvent(video, "seeked");
-			video.currentTime = time;
-			await seeked;
+			if (Math.abs(video.currentTime - time) > 0.0001) {
+				const seeked = nextEvent(video, "seeked"); video.currentTime = time; await seeked;
+			}
 			const x = (index % SHEET_COLUMNS) * cellWidth;
 			const y = Math.floor(index / SHEET_COLUMNS) * cellHeight;
 			context.drawImage(video, x, y, cellWidth, cellHeight);

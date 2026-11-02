@@ -1,5 +1,5 @@
 const { contextBridge, ipcRenderer } = require('electron');
-const channels = new Set(['app:load', 'runtime:start', 'runtime:stop', 'runtime:open', 'runtime:check', 'config:save', 'config:test', 'storage:open', 'storage:choose', 'browser:choose', 'update:import', 'update:check', 'update:download', 'update:install', 'update:open-release', 'about:open']);
+const channels = new Set(['app:load', 'skills:list', 'skills:save', 'skills:delete', 'skills:import', 'skills:export', 'runtime:start', 'runtime:stop', 'runtime:open', 'runtime:check', 'config:save', 'config:test', 'storage:open', 'storage:choose', 'browser:choose', 'update:import', 'update:check', 'update:download', 'update:install', 'update:open-release', 'about:open']);
 contextBridge.exposeInMainWorld('launcher', {
   invoke(channel, value) { if (!channels.has(channel)) return Promise.reject(new Error('操作无效')); return ipcRenderer.invoke(channel, value); },
   subscribe(callback) {

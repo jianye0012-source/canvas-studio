@@ -28,13 +28,13 @@ async function ready(url, headers = {}, child) {
 }
 
 class Runtime extends EventEmitter {
-  constructor({ store, root, development = false }) { super(); Object.assign(this, { store, root, development }); this.children = []; this.lines = []; this.state = { phase: 'stopped', progress: 0, message: '准备开始创作', url: '' }; }
+  constructor({ store, root, development = false, chooseFolder }) { super(); Object.assign(this, { store, root, development, chooseFolder }); this.children = []; this.lines = []; this.state = { phase: 'stopped', progress: 0, message: '准备开始创作', url: '' }; }
   status() { return { ...this.state }; }
   update(next) { Object.assign(this.state, next); this.emit('status', this.status()); }
   log(line) {
     let clean = String(line).replace(/\x1b\[[0-9;]*m/g, '');
     for (const channel of this.store.value.channels) if (channel.apiKey) clean = clean.replaceAll(channel.apiKey, '***');
-    clean = clean.replaceAll(this.providerToken || '\0', '***').replaceAll(this.serviceToken || '\0', '***').replace(/Bearer\s+[\w.\-/+=]+/gi, 'Bearer ***').replace(/"(apiKey|access_token|refresh_token|clientSecret|secretAccessKey)"\s*:\s*"[^"]*"/gi, '"$1":"***"');
+    clean = clean.replaceAll(this.gateway?.mcpToken || '\0', '***').replaceAll(this.providerToken || '\0', '***').replaceAll(this.serviceToken || '\0', '***').replace(/Bearer\s+[\w.\-/+=]+/gi, 'Bearer ***').replace(/"(apiKey|access_token|refresh_token|clientSecret|secretAccessKey)"\s*:\s*"[^"]*"/gi, '"$1":"***"');
     for (const text of clean.split(/\r?\n/).filter(Boolean)) this.lines.push(`[${new Date().toLocaleTimeString('zh-CN')}] ${text}`);
     this.lines = this.lines.slice(-600);
     this.emit('log', this.lines.slice(-30));
@@ -74,7 +74,7 @@ class Runtime extends EventEmitter {
       const publicPort = await freePort(this.store.value.port);
       const apiPort = await freePort(), webPort = await freePort(), cozyPort = await freePort(), livePort = await freePort();
       const serviceToken = crypto.randomBytes(32).toString('hex'), providerToken = crypto.randomBytes(32).toString('hex');
-      this.gateway = new Gateway({ store: this.store, root: this.root, apiPort, webPort, cozyPort, livePort, serviceToken, providerToken, log: line => this.log(line) });
+      this.gateway = new Gateway({ store: this.store, root: this.root, apiPort, webPort, cozyPort, livePort, serviceToken, providerToken, log: line => this.log(line), chooseFolder: this.chooseFolder });
       const origin = await this.gateway.listen(publicPort);
       this.gateway.onConfig = () => this.configureCanvas();
       this.apiPort = apiPort; this.serviceToken = serviceToken; this.providerToken = providerToken;
