@@ -207,7 +207,7 @@ class Gateway {
     if (channel.apiKey) req.headers.authorization = `Bearer ${channel.apiKey}`; else delete req.headers.authorization;
     return this.proxy.web(req, res, { target: channel.baseUrl, changeOrigin: true, secure: true, ...(buffer ? { buffer } : {}) });
   }
-  async close() { this.bridge.close(); await Promise.allSettled([...this.writes.values()]); this.proxy.close(); for (const socket of this.sockets) socket.destroy(); this.server?.closeAllConnections(); await new Promise(resolve => this.server ? this.server.close(resolve) : resolve()); }
+  async close({ force = false } = {}) { this.bridge.close(); if (!force) await Promise.race([Promise.allSettled([...this.writes.values()]), require('node:timers/promises').setTimeout(2000, undefined, { ref: false })]); this.proxy.close(); for (const socket of this.sockets) socket.destroy(); this.server?.closeAllConnections(); await new Promise(resolve => this.server ? this.server.close(resolve) : resolve()); }
 }
 
 module.exports = { Gateway, bodyJson };

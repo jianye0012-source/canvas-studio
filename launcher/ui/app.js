@@ -9,6 +9,8 @@ function page(name) { for (const node of document.querySelectorAll('.page')) nod
 function notice(text, error = false) { $('#notice').textContent = text; $('#notice').hidden = false; $('#notice').classList.toggle('error', error); }
 function status(value) {
   state = value;
+  for (const selector of ['#force-stop', '#force-stop-repair']) $(selector).disabled = value.forceStopping || (!(value.processes || []).length && !['starting','stopping'].includes(value.phase));
+  $('#service-processes').replaceChildren(...(value.processes?.length ? value.processes.map(entry => { const row = document.createElement('li'); row.textContent = `${entry.name} · PID ${entry.pid}`; return row; }) : [Object.assign(document.createElement('li'), { textContent: '没有本启动器管理的运行进程' })]));
   const running = value.phase === 'running', busy = ['starting', 'stopping'].includes(value.phase);
   $('#start').disabled = busy || running; $('#open').disabled = !running; $('#stop').disabled = busy || !['running', 'error'].includes(value.phase);
   $('#start').textContent = running ? '✓ 工作台运行中' : busy ? '正在处理…' : '▶ 一键启动工作台';
@@ -90,20 +92,29 @@ function renderModels() {
 }
 function renderUpdate(value) {
   updateState = value; const busy = ['checking', 'downloading', 'verifying'].includes(value.phase);
-  $('#update-version').textContent = `当前版本 ${value.currentVersion}${value.latestVersion ? ' · 发行版 ' + value.latestVersion : ''}`;
+  $('#update-version').textContent = `当前版本 ${value.currentVersion}${value.latestVersion ? ' · 最新正式版 ' + value.latestVersion : ''}${value.selectedVersion ? ' · 已选 ' + value.selectedVersion : ''}`;
   $('#update-message').textContent = value.message; $('#update-progress').hidden = !['downloading', 'verifying'].includes(value.phase); $('#update-progress').value = value.progress;
   $('#check-update').disabled = busy; $('#download-update').disabled = busy || value.phase !== 'available'; $('#install-update').disabled = value.phase !== 'ready'; $('#import-update').disabled = busy;
   $('#update-notes').hidden = !value.notes; $('#update-notes').textContent = value.notes || '';
+  const versions = $('#release-versions');
+  const previous = versions.value;
+  versions.replaceChildren(...(value.versions?.length ? value.versions.map(item => { const option = new Option(`${item.version} · ${{upgrade:'可升级',rollback:'可回退',repair:'当前版本'}[item.intent]}${item.installable ? '' : '（缺少完整整合包）'}`, item.version); option.disabled = !item.installable; return option; }) : [new Option('点击检查在线更新读取版本列表', '')]));
+  if (value.versions?.some(item => item.version === previous)) versions.value = previous; else if (value.selectedVersion && value.versions?.some(item => item.version === value.selectedVersion)) versions.value = value.selectedVersion;
+  versions.disabled = busy || !value.versions?.length; $('#select-release').disabled = busy || !versions.value || Boolean(versions.selectedOptions[0]?.disabled);
+  if (value.versions?.length && versions.value !== value.selectedVersion) { $('#download-update').disabled = true; $('#install-update').disabled = true; }
+  $('#download-update').textContent = value.intent === 'rollback' ? '下载并校验回退包' : value.intent === 'repair' ? '下载并校验重装包' : '下载并校验更新';
+  $('#install-update').textContent = value.intent === 'rollback' ? '回退并重启' : value.intent === 'repair' ? '重装并重启' : '重启安装更新';
   $('#update-hint').hidden = !['available', 'ready'].includes(value.phase);
 }
 function values(form) { return Object.fromEntries(new FormData(form).entries()); }
-async function invoke(channel, value) { try { return await window.launcher.invoke(channel, value); } catch (e) { notice(e.message.replace(/^Error invoking remote method '[^']+': Error: /, ''), true); throw e; } }
-function action(selector, channel, callback, prepare) { $(selector).addEventListener('click', async event => { const button = event.currentTarget; button.disabled = true; try { await prepare?.(); const result = await invoke(channel); callback?.(result); } catch {} finally { button.disabled = false; if (state) status(state); if (updateState) renderUpdate(updateState); } }); }
+async function invoke(channel, value) { try { return await window.launcher.invoke(channel, value); } catch (e) { notice(e.message.replace(/^Error invoking remote method '[^']+': (?:[\w.]*Error: )?/, ''), true); throw e; } }
+function action(selector, channel, callback, prepare) { $(selector).addEventListener('click', async event => { const button = event.currentTarget; button.disabled = true; $('#notice').hidden = true; try { await prepare?.(); const result = await invoke(channel); callback?.(result); } catch {} finally { button.disabled = false; if (state) status(state); if (updateState) renderUpdate(updateState); } }); }
 for (const node of document.querySelectorAll('[data-page],[data-goto]')) node.addEventListener('click', () => page(node.dataset.page || node.dataset.goto));
 action('#start', 'runtime:start', null, saveBrowserChoice); action('#stop', 'runtime:stop'); action('#open', 'runtime:open', null, saveBrowserChoice);
 action('#open-data', 'storage:open'); action('#open-log-dir', 'storage:open'); action('#choose-data', 'storage:choose'); action('#open-notice', 'about:open');
 action('#choose-browser', 'browser:choose', value => { if (value) { $('#browser-form').elements.browser.value = 'custom'; $('#browser-form').elements.browserPath.value = value; renderBrowserChoice(); } });
 action('#check', 'runtime:check', result => { $('#check-result').hidden = false; $('#check-result').textContent = `运行文件：${result.checked} 个文件校验通过\n数据目录：可读写\n浏览器：${result.browser}\n数据位置：${result.dataDir}`; notice('检查完成'); });
+action('#force-stop', 'runtime:force-stop'); action('#force-stop-repair', 'runtime:force-stop');
 action('#check-update', 'update:check'); action('#download-update', 'update:download'); action('#install-update', 'update:install'); action('#open-releases', 'update:open-release');
 $('#auto-check-updates').addEventListener('change', async event => { const enabled = event.target.checked; try { const saved = await invoke('config:save', { autoCheckUpdates: enabled }); config.autoCheckUpdates = saved.autoCheckUpdates; draft.autoCheckUpdates = saved.autoCheckUpdates; } catch { event.target.checked = config.autoCheckUpdates; } });
 action('#import-update', 'update:import', result => { if (result) notice('更新包已校验，启动器即将重新启动'); });
@@ -132,3 +143,6 @@ $('#skills-import').onclick = async () => { try { const skill = await invoke('sk
 $('#skill-form').onsubmit = async event => { event.preventDefault(); const button = event.submitter; button.disabled = true; try { const skill = await invoke('skills:save', values($('#skill-form'))); await loadSkills(); editSkill(skill); notice('Skill 已保存，下一次文字生成生效。'); } catch {} finally { button.disabled = false; } };
 $('#skills-delete').onclick = async () => { const id = $('#skill-form').elements.id.value; if (!id || !confirm('删除此 Skill？已生成的文字会保留。')) return; try { await invoke('skills:delete', id); await loadSkills(); editSkill(); notice('Skill 已删除'); } catch {} };
 $('#skills-export').onclick = async () => { try { if (await invoke('skills:export', $('#skill-form').elements.id.value)) notice('Skill 已导出'); } catch {} };
+
+$('#select-release').onclick = async () => { $('#notice').hidden = true; try { const value = await invoke('update:select', $('#release-versions').value); renderUpdate(value); } catch {} };
+$('#release-versions').onchange = () => { if ($('#release-versions').value !== updateState?.selectedVersion) { $('#download-update').disabled = true; $('#install-update').disabled = true; } $('#select-release').disabled = !$('#release-versions').value; const version = updateState?.versions?.find(v => v.version === $('#release-versions').value); if (version) { $('#update-notes').hidden = !version.notes; $('#update-notes').textContent = version.notes; } };

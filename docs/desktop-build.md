@@ -85,3 +85,12 @@ Skill 使用原有本机用户 Skill API 与 SQLite，不另建浏览器私有�
 新增验证脚本：`launcher/test/workspace-smoke.cjs`（需 headless 服务，CANVAS_SMOKE_FOLDER 指向含两个 UTF-8 文本的测试目录，work/video-fixture 放 H.264 8／10 位编码样例），`launcher/test/skills-launcher.cjs`（原生 Electron Skill 管理）。测试使用本地模型替身，不发起付费请求。
 
 导演台 MCP 的 open_project／save_project 只允许在启动器数据目录中读写 `.cclayproject` 文件。传入相对文件名即可；场景在线编辑仍由画布适配器自动保存完整项目与资源。
+
+
+## v1.3.3 更新网络与进程终止
+
+桌面启动器注入 Electron `net.fetch`，检查正式版本目录、读取 SHA-256 和流式下载均通过 Chromium 网络。该通道跟随系统代理／PAC，保留证书校验，不发送站点登录 Cookie。命令行测试仍可注入标准 fetch。参考：https://www.electronjs.org/docs/latest/api/net 。
+
+版本目录使用 GitHub Releases 分页接口，按语义版本排列正式发行版；不把普通 Git 标签当作发行版。显式选择历史版本后保存 upgrade／repair／rollback 安装意图，重新启动仍可恢复。安装前重新验证清单；旧版回退需要确认数据兼容性，项目和配置不会被替换为旧备份。
+
+运行时保存当前启动器创建的子进程对象，Windows 按 PID 使用 taskkill /T /F，Linux 开发使用独立进程组。不会按 node.exe 等通用名称批量结束进程。启动检查及等待支持取消，网关强制关闭连接，进程退出后才标记已停止。新增测试 `launcher/test/process-control.test.cjs` 在 Linux 和 Windows CI 执行；`launcher/test/update-proxy-launcher.cjs` 使用真实 Electron 网络与本机代理替身验证更新及停止流程，不访问付费模型接口。

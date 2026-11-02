@@ -1,10 +1,12 @@
-const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, net } = require('electron');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
+const semver = require('semver');
 const { ConfigStore } = require('./lib/config.cjs');
 const { Runtime } = require('./lib/runtime.cjs');
 const { ReleaseUpdater } = require('./lib/release-update.cjs');
+const { createUpdateFetch } = require('./lib/update-network.cjs');
 const updateSource = require('./update-source.json');
 
 const portableRoot = app.isPackaged ? path.dirname(process.execPath) : process.env.CANVAS_DEV_ROOT || path.resolve(__dirname, '..', 'work', 'portable-dev');
@@ -39,17 +41,24 @@ else {
     store = await new ConfigStore(portableRoot, encrypt, decrypt).initialize();
     const bundleRoot = process.env.CANVAS_BUNDLE_ROOT || (app.isPackaged ? path.join(portableRoot, 'resources', 'bundle') : path.resolve(__dirname, '..', 'work', 'bundle-linux'));
     runtime = new Runtime({ store, root: bundleRoot, development: !app.isPackaged, chooseFolder: async () => { const result = await dialog.showOpenDialog(window, { title: '选择 FOR 循环的输入文件夹', properties: ['openDirectory'] }); return result.canceled ? null : result.filePaths[0]; } });
-    updater = await new ReleaseUpdater({ dataDir: store.dataDir, currentVersion: app.getVersion(), source: updateSource }).initialize();
+    updater = await new ReleaseUpdater({ dataDir: store.dataDir, currentVersion: app.getVersion(), source: updateSource, fetchImpl: createUpdateFetch(net) }).initialize();
     window = new BrowserWindow({ width: 1120, height: 780, minWidth: 960, minHeight: 680, title: '画布工作台启动器', backgroundColor: '#f6f7fb', autoHideMenuBar: true, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true } });
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     window.webContents.on('will-navigate', event => event.preventDefault());
     const send = (event, value) => { if (window && !window.isDestroyed()) window.webContents.send(event, value); };
     runtime.on('status', value => send('runtime:status', value)); runtime.on('log', value => send('runtime:logs', value));
     updater.on('status', value => send('update:status', value));
+    const confirmRollback = async version => {
+      if (!semver.valid(version)) throw new Error('发行包版本无效');
+      if (!semver.lt(version, app.getVersion())) return true;
+      const choice = await dialog.showMessageBox(window, { type: 'warning', title: '确认回退程序版本', message: `将程序回退至 ${version}？`, detail: '项目和模型配置会保留，数据格式不会随程序回退。旧版可能无法打开新版创建的项目。', buttons: ['取消', '回退并重启'], defaultId: 0, cancelId: 0 });
+      return choice.response === 1;
+    };
     const handlers = {
       'app:load': () => ({ config: store.public(), status: runtime.status(), logs: runtime.lines, update: updater.status() }),
       'runtime:start': () => runtime.start(),
       'runtime:stop': () => runtime.stop(),
+      'runtime:force-stop': () => runtime.forceStop(),
       'runtime:open': () => runtime.open(),
       'runtime:check': () => runtime.check(),
       'skills:list': async () => { await runtime.start({ open: false }); return runtime.api('v1/agent-skills'); },
@@ -77,11 +86,14 @@ else {
       },
       'browser:choose': async () => { const result = await dialog.showOpenDialog(window, { title: '选择浏览器主程序（Chrome、Edge、Firefox 或其他 Chromium 浏览器）', properties: ['openFile'], ...(process.platform === 'win32' ? { filters: [{ name: '浏览器程序', extensions: ['exe'] }] } : {}) }); return result.canceled ? '' : result.filePaths[0]; },
       'update:check': () => updater.check(),
+      'update:select': (_event, version) => updater.selectVersion(version),
       'update:download': () => updater.download(),
       'update:open-release': () => shell.openExternal(updater.releaseUrl),
       'update:install': async () => {
         if (process.platform !== 'win32' || !app.isPackaged) throw new Error('重启安装需要在 Windows 整合包中执行');
-        const staged = await updater.installation(); await runtime.stop();
+        const staged = await updater.installation();
+        if (!await confirmRollback(updater.staged.version)) return false;
+        await runtime.stop();
         await require('./lib/update.cjs').applyUpdate(staged, portableRoot, process.pid, store.dataDir); app.quit();
       },
       'update:import': async () => {
@@ -90,6 +102,8 @@ else {
         const { stageUpdate, applyUpdate } = require('./lib/update.cjs');
         runtime.log('正在校验导入的发行包');
         const staged = await stageUpdate(result.filePaths[0], store.dataDir);
+        const manifest = JSON.parse(await fsp.readFile(path.join(staged, 'package-manifest.json'), 'utf8'));
+        if (!await confirmRollback(manifest.version)) { await fsp.rm(staged, { recursive: true, force: true }); return null; }
         await runtime.stop(); await applyUpdate(staged, portableRoot, process.pid, store.dataDir);
         app.quit(); return { restartRequired: true };
       },

@@ -30,6 +30,12 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --prefix launcher
           exit $LASTEXITCODE
+      - name: Verify owned process termination on Windows
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force work/tmp | Out-Null
+          node --test launcher/test/process-control.test.cjs
+          exit $LASTEXITCODE
       - name: Build portable package
         run: node launcher/scripts/package.mjs
       - name: Verify and publish release

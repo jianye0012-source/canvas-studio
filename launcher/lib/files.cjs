@@ -27,18 +27,19 @@ async function writableDirectory(directory) {
   await fs.unlink(probe);
 }
 
-async function verifyManifest(root, { required = true, filename = 'bundle-manifest.json' } = {}) {
+async function verifyManifest(root, { required = true, filename = 'bundle-manifest.json', signal } = {}) {
   let manifest;
   try { manifest = JSON.parse(await fs.readFile(path.join(root, filename), 'utf8')); }
   catch (e) { if (!required && e.code === 'ENOENT') return { development: true, checked: 0 }; throw new Error('整合包清单缺失或损坏，请导入完整发行包'); }
   if (manifest.format !== 1 || !Array.isArray(manifest.files) || !manifest.files.length) throw new Error('发行包清单格式无效');
   let checked = 0;
   for (const entry of manifest.files) {
+    signal?.throwIfAborted();
     const file = contained(root, entry.path);
     const stat = await fs.lstat(file);
     if (!stat.isFile() || stat.size !== entry.size) throw new Error(`文件大小不匹配：${entry.path}`);
     const digest = crypto.createHash('sha256');
-    for await (const chunk of require('node:fs').createReadStream(file)) digest.update(chunk);
+    for await (const chunk of require('node:fs').createReadStream(file)) { signal?.throwIfAborted(); digest.update(chunk); }
     if (digest.digest('hex') !== entry.sha256) throw new Error(`文件校验失败：${entry.path}`);
     checked++;
   }
