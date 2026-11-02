@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes, randomUUID } from "node:crypto";
+import { realpath } from 'node:fs/promises';
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import * as defaultAuth from "../codex-auth.mjs";
@@ -263,7 +264,7 @@ function liveToolsRuntime(mcpRuntime) {
 		// pane would answer every turn with a misleading capability error.
 		if (!liveHub) console.error(`cozyclay: live hub port ${livePort} is already in use (another CozyClay or its dev server?); the Agent pane cannot drive this Studio until that port is free.`);
 		registry.setLiveHub(liveHub);
-		const handlers = registry.createToolHandlers().map((tool) => ({
+		const handlers = registry.createToolHandlers({ projectRootPromise: realpath(process.cwd()) }).map((tool) => ({
 			...tool,
 			handler: async (args, { workspaceHandle } = {}) => {
 				const parsed = Object.fromEntries(Object.entries(tool.inputSchema).map(([key, schema]) => [key, schema.parse(args[key])]));

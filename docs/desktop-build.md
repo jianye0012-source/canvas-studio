@@ -83,3 +83,5 @@ Skill 使用原有本机用户 Skill API 与 SQLite，不另建浏览器私有�
 视频运行环境由 `launcher/scripts/media-runtime.mjs` 从固定发行资产下载并校验 SHA-256，随包提供 FFmpeg 及原发行者许可／构建说明；不会要求用户安装 FFmpeg。浏览器将视频流传到本机临时目录解码，限定协议、格式、并发和超时，结束即删除临时文件。视频原始字节不会自动发给 AI，只在用户发送时携带抽帧图。
 
 新增验证脚本：`launcher/test/workspace-smoke.cjs`（需 headless 服务，CANVAS_SMOKE_FOLDER 指向含两个 UTF-8 文本的测试目录，work/video-fixture 放 H.264 8／10 位编码样例），`launcher/test/skills-launcher.cjs`（原生 Electron Skill 管理）。测试使用本地模型替身，不发起付费请求。
+
+导演台 MCP 的 open_project／save_project 只允许在启动器数据目录中读写 `.cclayproject` 文件。传入相对文件名即可；场景在线编辑仍由画布适配器自动保存完整项目与资源。

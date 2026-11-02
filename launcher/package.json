@@ -1,7 +1,7 @@
 {
   "name": "canvas-studio-launcher",
   "productName": "画布工作台启动器",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "private": true,
   "main": "main.cjs",
   "scripts": {
