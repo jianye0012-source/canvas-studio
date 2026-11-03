@@ -150,6 +150,28 @@ const path = require('node:path');
       assert.equal(JSON.parse(scene).resources.assets.length, envelope.project.resources.assets.length);
       results.push('画布 ZIP 在独立数据目录导入，视频分段读取与白模道具、模型及动作完整恢复');
       await clean.close();
+
+      await another.goto(runtime.url + '/canvas/' + projectId);
+      await another.getByLabel('重置视图', { exact: true }).click();
+      await another.getByLabel('FOR 文件夹循环', { exact: true }).click();
+      const loop = another.locator('[data-node-id]').filter({ has: another.getByText('FOR · 逐文件工作流', { exact: true }) }).last();
+      const heading = loop.getByText('FOR · 逐文件工作流', { exact: true });
+      await heading.waitFor();
+      const before = await loop.boundingBox();
+      const start = await heading.boundingBox();
+      await another.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+      await another.mouse.down();
+      await another.mouse.move(start.x + start.width / 2 + 90, start.y + start.height / 2 - 65, { steps: 8 });
+      await another.mouse.up();
+      const moved = await loop.boundingBox();
+      assert.ok(moved.x - before.x > 70 && moved.y - before.y < -45, 'FOR 节点面板应像普通节点一样可拖动');
+      await another.route('**/local/folders/select', route => route.fulfill({ json: null }));
+      await Promise.all([
+        another.waitForRequest('**/local/folders/select'),
+        loop.getByRole('button', { name: '选文件夹' }).click(),
+      ]);
+      assert.deepEqual(await loop.boundingBox(), moved, '选文件夹按钮不应移动节点');
+      results.push('FOR 节点面板可拖动，选文件夹按钮仍可操作');
     }
     assert.deepEqual(errors, []);
     results.push('浏览器脚本运行无未处理异常');
