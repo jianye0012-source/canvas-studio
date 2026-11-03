@@ -326,6 +326,7 @@ export function transcriptFromHistory(history = []) {
 
 		// pi Message.
 		if (item?.role === "user") {
+			if (item.studioContinuation) continue;
 			const { text, attachments } = piUserContentParts(item.content, item.attachmentNames);
 			if (attachments.length) piPendingAttachments.push(...attachments);
 			const cleaned = cleanUserText(text);

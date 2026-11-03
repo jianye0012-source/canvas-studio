@@ -420,6 +420,25 @@ export function createAgentRunner({ models: suppliedModels, sessionStore, tools 
 					// keeps the output limit this request really sent, for a turn that runs out of it (finish)
 					onPayload: (payload, model) => { if (state.active) state.active.maxTokens = payload?.max_tokens ?? payload?.max_completion_tokens ?? payload?.max_output_tokens; return model?.api === "anthropic-messages" ? withAnthropicCacheBreakpoints(payload, model) : undefined; },
 					onResponse: (response) => { if (state.active && response?.headers) state.active.lastResponseHeaders = response.headers; },
+					finishTurn: ({ message, toolResults }, signal) => {
+						const pendingSteps = state.lastInput?.pendingStudioSteps;
+						if (!pendingSteps || !state.active || state.active.abortRequested || signal?.aborted) return;
+						const truncated = message.stopReason === "length";
+						if (state.active.continued && truncated) return { action: "end" };
+						state.active.sceneChanged ||= toolResults.some(result => result.details?.authored === true ||
+							result.details?.calls?.some?.(call => call.ok && Number.isSafeInteger(call.revision?.after) && call.revision.after !== call.revision.before));
+						if (state.active.continued) return;
+						const steps = state.active.sceneChanged ? pendingSteps() : [];
+						if (!truncated && !(message.stopReason === "stop" && !toolResults.length && steps.length)) return;
+						state.active.continued = true;
+						if (truncated && toolResults.length) return; // Pi already schedules a retry from the failed tool results.
+						const reason = truncated ? "The previous response reached its output limit." : "The current plan still has unfinished steps.";
+						const unfinished = steps.length ? ` Unfinished steps: ${steps.join(" / ")}.` : "";
+						state.agent.followUp({
+							role: "user", studioContinuation: true, timestamp: Date.now(),
+							content: [{ type: "text", text: `${reason}${unfinished} Continue the original task from the existing scene and tool results. Verify what already landed before editing. Complete only the remaining work, update the plan when each step is verified, and report anything that still requires the user's action.` }],
+						});
+					},
 					sessionId,
 					// pi-agent-core's Agent attributes requests to pi (OpenRouter, NVIDIA NIM and OpenCode headers); these are
 					// CozyClay's requests, and pi 0.99 sent no attribution, so none is sent.
@@ -484,11 +503,12 @@ export function createAgentRunner({ models: suppliedModels, sessionStore, tools 
 				// The run's outcome is its last assistant message: the Agent ends a
 				// failed or cancelled request there (stopReason error/aborted).
 				const last = event.messages.findLast((message) => message.role === "assistant");
-				// #947: a request that hit its output limit before any answer or tool call (reasoning alone can use it up)
-				// is a failure, not an empty success; with some text or a tool call it completes as before.
-				const outOfTokens = last?.stopReason === "length" && !last.content?.some((part) => part?.type === "toolCall" || (part?.type === "text" && part.text))
-					? `The model used all ${state.active?.maxTokens ?? state.currentModel?.maxTokens} output tokens before answering. Lower the reasoning effort or raise the output limit.` : null;
-				const status = last?.stopReason === "aborted" ? "aborted" : last?.stopReason === "error" || outOfTokens ? "error" : "completed";
+				const pendingSteps = state.lastInput?.pendingStudioSteps;
+				const remaining = last?.stopReason === "stop" && state.active.sceneChanged ? pendingSteps?.() : null;
+				const incomplete = remaining?.length ? `导演台还有以下步骤未完成。${remaining.join("、")}。已执行的修改已保留，可以继续处理剩余步骤。` : null;
+				const outOfTokens = last?.stopReason === "length" && (pendingSteps || !last.content?.some((part) => part?.type === "toolCall" || (part?.type === "text" && part.text)))
+					? pendingSteps ? "模型达到输出上限，导演台任务尚未完成。已执行的修改已保留，可以继续处理剩余步骤。" : `The model used all ${state.active?.maxTokens ?? state.currentModel?.maxTokens} output tokens before answering. Lower the reasoning effort or raise the output limit.` : null;
+				const status = last?.stopReason === "aborted" ? "aborted" : last?.stopReason === "error" || outOfTokens || incomplete ? "error" : "completed";
 				// #379 / 16q: an acknowledged Studio Stop whose held tool already settled
 				// with a real structured outcome (tool.done above) calls `abort(reason,
 				// { quiet: true })` purely to stop the model from being prompted again —
@@ -501,10 +521,10 @@ export function createAgentRunner({ models: suppliedModels, sessionStore, tools 
 					const rawMessage = last?.errorMessage || (status === "aborted" ? "The turn was aborted." : "The model or live editor could not complete this turn.");
 					const truncated = /ended before a terminal response event/i.test(rawMessage);
 					const classified = status === "aborted" ? { code: "aborted", status: undefined } : classifyError({ message: rawMessage, errorCode: last?.errorCode });
-					const code = status === "aborted" ? "aborted" : truncated || outOfTokens ? "truncated" : classified.code;
+					const code = status === "aborted" ? "aborted" : truncated || outOfTokens ? "truncated" : incomplete ? "tool_failed" : classified.code;
 					const detail = sanitizeUpstreamDetail(JSON.stringify({ message: rawMessage }));
 					const fallback = code === "aborted" ? "The turn was aborted." : code === "truncated" ? "The model stream ended before a terminal response event." : "The model or live editor could not complete this turn.";
-					queue.push({ type: "error", code, message: outOfTokens || detail || fallback, ...(classified.status ? { status: classified.status } : {}) });
+					queue.push({ type: "error", code, message: outOfTokens || incomplete || detail || fallback, ...(classified.status ? { status: classified.status } : {}) });
 				}
 				queue.push({ type: "done", usage: { ...state.active.usage }, ...(state.lastInput?.reportCost ? { cost: state.active.cost ?? 0 } : {}) });
 				queue.close();
@@ -598,6 +618,7 @@ export function createAgentRunner({ models: suppliedModels, sessionStore, tools 
 					if (!queue.closed) { queue.push(errorFrame(error, signal.aborted)); queue.push({ type: "done" }); queue.close(); }
 				} finally {
 					signal.removeEventListener("abort", cancel);
+					if (state.active?.continued) state.agent?.clearFollowUpQueue();
 					removeEventListeners?.();
 				}
 			})();

@@ -289,6 +289,37 @@ for (const token of ["AIza-secret-0123456789abcdefghijk", "sk-or-secret", "sk-an
 	expect("401 attachment retry still completes without an error frame", frames.every((frame) => frame.type !== "error") && frames.at(-1)?.type === "done", JSON.stringify(frames));
 }
 
+// Canvas Studio can finish the rest of a partially executed turn in one follow-up.
+for (const reason of ["length", "stop", "repeated-length"]) {
+	const models = createModels();
+	const faux = fauxProvider({ provider: "faux", models: [{ id: "scripted", name: "Scripted", input: ["text", "image"] }] });
+	models.setProvider(faux.provider);
+	const mutations = [];
+	const mutate = (id) => fauxAssistantMessage([fauxToolCall("mutate", { id }, { id })], { stopReason: "toolUse" });
+	const partial = fauxAssistantMessage([fauxText("Part of the scene is ready")], { stopReason: reason === "stop" ? "stop" : "length" });
+	const steps = [mutate("first"), partial, ...(reason === "repeated-length" ? [partial] : [mutate("second"), fauxAssistantMessage([fauxText("Both steps are done")])])];
+	const calls = installScripts(faux, steps);
+	const sessionStore = createSessionStore(process.env.COZYCLAY_AGENT_SESSIONS_DIR);
+	const runner = createAgentRunner({ models, sessionStore, tools: [{
+		name: "mutate", parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+		handler: async ({ id }) => { mutations.push(id); return { ok: true, authored: true }; },
+	}] });
+	const id = `studio-continuation-${reason}`;
+	try {
+		const session = await runner.openSession(id, { surface: "studio" });
+		const frames = await collect(session, { surface: "studio", text: "Build both pieces", model: "faux/scripted", pendingStudioSteps: () => mutations.includes("second") ? [] : ["Second piece"] });
+		assert.equal(calls.length, steps.length);
+		assert.ok(calls[2].messages.some(message => message.role === "toolResult" && message.toolCallId === "first"));
+		assert.match(JSON.stringify(calls[2].messages.at(-1).content), /Unfinished steps: Second piece/);
+		assert.deepEqual(mutations, reason === "repeated-length" ? ["first"] : ["first", "second"]);
+		assert.deepEqual(frames.filter(frame => frame.type === "error").map(frame => frame.code), reason === "repeated-length" ? ["truncated"] : []);
+		assert.equal(frames.filter(frame => frame.type === "done").length, 1);
+		const history = sessionStore.read(id).history;
+		assert.equal(transcriptFromHistory(history).filter(item => item.kind === "user").length, 1);
+		console.log(`PASS Studio continuation: ${reason}`);
+	} finally { await runner.close(); }
+}
+
 // --- auth retry after a completed tool must not execute that tool again ---
 {
 	const sessionsDir = mkdtempSync(join(tmpdir(), "cozyclay-agent-runner-errors-post-tool-auth-"));

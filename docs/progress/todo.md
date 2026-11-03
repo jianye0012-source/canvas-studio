@@ -20,3 +20,5 @@ description: 当前项目后续值得处理的事项
 - RunningHub 标准模型在线目录和图片／视频多模型已移至 [待测试](pending-test.md)，待真实账户和 Windows 网络环境验收。
 
 - 正式版本直接安装和源码分发调整已移至 [待测试](pending-test.md)，待用户在原机器验收。
+
+- 导演台任务续做已移至 [待测试](pending-test.md)，待用原模型渠道和用户原指令验收。

@@ -602,6 +602,7 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 				surface: "studio", sessionId: value.sessionId, model: modelKey, effort: value.effort,
 				text: value.text, attachments: value.attachments, contextText: encodeStudioContext(value.context) + (value.main?.contextText() ?? ""), frameObservation,
 				reportCost: Boolean(value.task || value.main), context: value.context, tools: value.main ? value.main.tools({ studio: modelTools, hub, admission }) : [...modelTools, plan.track(scriptTool), plan], systemPrompt: value.main?.systemPrompt ?? (value.context.scene?.previsMode === "storyboard" ? STUDIO_SYSTEM_PROMPT_STORYBOARD : undefined), signal: controller.signal, emit: send,
+				pendingStudioSteps: process.env.CANVAS_LOCAL_PROVIDER_BASE && !value.main ? plan.remaining : undefined,
 				meta: persistenceMeta,
 				quotaEvent: headers => codex?.parseQuotaHeaders ? quotaEvent(codex, headers) : { type: "quota", plan: null, primary: { usedPercent: null, windowMinutes: null, resetAt: null }, credits: { has: null } },
 			})) emitFrame(frame);

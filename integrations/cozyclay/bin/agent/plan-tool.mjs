@@ -98,6 +98,7 @@ export function createPlanTool({ emit } = {}) {
 	const tool = { name: "plan", label: "Plan", description: DESCRIPTION, parameters: PARAMETERS, handler: async args => apply(args) };
 	return {
 		...tool,
+		remaining: () => steps.filter(step => step.status !== "done").map(step => step.text),
 		nested: { ...tool, quiet: true, handler: async args => {
 			try { return apply(args); } catch (error) {
 				refused.push(error.message);
