@@ -1092,6 +1092,17 @@ async function createCanvasImageTaskRequest(config: AiConfig & { seedIndex?: num
     const tokenHeaders = { ...aiHeaders(config), ...taskChannelHeader };
     const jsonHeaders = { ...aiHeaders(config, "application/json"), ...taskChannelHeader };
     const meta = { nodeId: options.nodeId || "", source: options.source || "canvas", sourceId: options.sourceId || "", clientTaskId: options.clientTaskId || "", prompt, channelId: taskChannelId };
+    if (channelProtocolForConfig(config) === "runninghub-standard") {
+        if (!references.length || references.length > 10) throw new ImageRequestError("RunningHub 图生图需要 1 至 10 张参考图");
+        const imageUrls = await Promise.all(references.map(image => imageToDataUrl(image)));
+        if (imageUrls.reduce((total, image) => total + image.length, 0) > 95 * 1024 * 1024) throw new ImageRequestError("RunningHub 参考图合计过大，请压缩或减少参考图");
+        const [width, height] = (params.size || "").split("x").map(Number);
+        const divisor = width && height ? greatestCommonDivisor(width, height) : 1;
+        const aspectRatio = config.size.includes(":") ? config.size : width && height ? `${width / divisor}:${height / divisor}` : "1:1";
+        const resolution = params.quality === "high" ? "4k" : ["medium", "hd"].includes(params.quality) ? "2k" : "1k";
+        const request = { model: config.model, prompt: withSystemPrompt(config, prompt), imageUrls, aspectRatio, resolution };
+        return { method: "POST", headers: jsonHeaders, body: JSON.stringify({ endpoint: "/images/edits", ...meta, request }) };
+    }
     if (isGeminiConfig(config)) {
         const body = await createGeminiImageBody(config, prompt, references, params);
         return {

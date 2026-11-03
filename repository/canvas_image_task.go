@@ -1,10 +1,48 @@
 package repository
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/tigerowo/infinite-canvas/model"
+	"gorm.io/gorm/clause"
 )
+
+func InsertCanvasImageTask(task model.CanvasImageTask) (model.CanvasImageTask, bool, error) {
+	db, err := DB()
+	if err != nil {
+		return task, false, err
+	}
+	result := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&task)
+	if result.Error != nil || result.RowsAffected != 0 {
+		return task, result.RowsAffected != 0, result.Error
+	}
+	existing, found, err := GetUserCanvasImageTask(task.UserID, task.ID)
+	if !found && err == nil {
+		err = errors.New("图片任务编号已被使用")
+	}
+	return existing, false, err
+}
+
+func ListRunningHubStandardImageTasks(endpoint string) ([]model.CanvasImageTask, error) {
+	db, err := DB()
+	if err != nil {
+		return nil, err
+	}
+	var tasks []model.CanvasImageTask
+	err = db.Where("endpoint = ? AND status = ? AND response_body <> ''", endpoint, "processing").Find(&tasks).Error
+	return tasks, err
+}
+
+func MarkUnconfirmedImageSubmissions(endpoint string, at string) error {
+	db, err := DB()
+	if err != nil {
+		return err
+	}
+	return db.Model(&model.CanvasImageTask{}).
+		Where("endpoint = ? AND status IN ? AND response_body = ''", endpoint, []string{"queued", "processing"}).
+		Updates(map[string]any{"status": "failed", "completed_at": at, "updated_at": at, "error": "RunningHub 提交状态未确认，请核对任务记录后再重试"}).Error
+}
 
 func SaveCanvasImageTask(task model.CanvasImageTask) (model.CanvasImageTask, error) {
 	db, err := DB()

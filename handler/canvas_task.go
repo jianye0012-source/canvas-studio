@@ -78,7 +78,23 @@ func CreateCanvasImageTask(w http.ResponseWriter, r *http.Request) {
 		failAIChannelSelect(w, err, "AI 接口请求失败")
 		return
 	}
-	task, err := service.CreateCanvasImageTask(service.CanvasImageTaskCreateInput{
+	generationType := strings.TrimPrefix(endpoint, "/images/")
+	runningHub := channel.Protocol == service.RunningHubStandardImageProtocol
+	if runningHub {
+		if endpoint != "/images/edits" || contentType != "application/json" {
+			Fail(w, "RunningHub 图生图需要提供参考图")
+			return
+		}
+		endpoint = service.RunningHubStandardImageEndpoint
+	} else if endpoint == service.RunningHubStandardImageEndpoint {
+		Fail(w, "请选择 RunningHub 标准模型渠道")
+		return
+	}
+	requestBody := "[RunningHub 参考图未写入任务记录]"
+	if !runningHub {
+		requestBody = summarizeAIRequest(body, contentType)
+	}
+	task, created, err := service.CreateCanvasImageTaskOnce(service.CanvasImageTaskCreateInput{
 		UserID:          user.ID,
 		UserDisplayName: firstNonEmpty(user.DisplayName, user.Username),
 		Source:          source,
@@ -90,10 +106,10 @@ func CreateCanvasImageTask(w http.ResponseWriter, r *http.Request) {
 		UserChannelID:   resolvedUserChannelID,
 		ChannelName:     channel.Name,
 		Prompt:          prompt,
-		GenerationType:  strings.TrimPrefix(endpoint, "/images/"),
+		GenerationType:  generationType,
 		Endpoint:        endpoint,
 		ContentType:     contentType,
-		RequestBody:     summarizeAIRequest(body, contentType),
+		RequestBody:     requestBody,
 	})
 	if err != nil {
 		log.Printf("create canvas image task failed: user=%s err=%v", user.ID, err)
@@ -101,6 +117,13 @@ func CreateCanvasImageTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	OK(w, service.CanvasImageTaskResponse(task))
+	if !created {
+		return
+	}
+	if runningHub {
+		go runRunningHubStandardImageTask(task, channel, body)
+		return
+	}
 	go runCanvasImageTask(task, user, body, contentType, task.ChannelID, task.UserChannelID)
 }
 
@@ -247,6 +270,21 @@ func GetCanvasAudioTask(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	OK(w, service.CanvasAudioTaskResponse(task))
+}
+
+func runRunningHubStandardImageTask(task model.CanvasImageTask, channel model.ModelChannel, body []byte) {
+	ctx, cleanup, err := service.CanvasTaskContext("image", task.UserID, task.ID)
+	if err != nil {
+		return
+	}
+	defer cleanup()
+	task.Status, task.StartedAt, task.Progress = "processing", taskTime(), 10
+	if task, err = service.SaveCanvasImageTask(task); err != nil || ctx.Err() != nil {
+		return
+	}
+	if err := service.SubmitRunningHubStandardImage(ctx, task, channel, body); err != nil && ctx.Err() == nil {
+		saveFailedCanvasImageTask(task, err.Error(), "")
+	}
 }
 
 func runCanvasImageTask(task model.CanvasImageTask, user model.AuthUser, body []byte, contentType string, channelID string, userChannelID string) {

@@ -248,7 +248,7 @@ S3/R2 与 WebDAV 共用的媒体文件索引表，不保存画布、素材列表
 
 ### canvas_image_tasks
 
-画布图片生成任务表。只用于画布节点生成恢复，不影响生图工作台原接口。
+画布和生图工作台的图片任务记录。用于生成进度查询与恢复。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -264,6 +264,7 @@ S3/R2 与 WebDAV 共用的媒体文件索引表，不保存画布、素材列表
 | `progress` | number | 生成进度 |
 | `prompt` | text | 提示词 |
 | `generation_type` | string | `generation` 或 `edit` |
+| `response_body` | text | 上游响应摘要。RunningHub 标准图生图保存任务编号供重启恢复查询 |
 | `image_url` | text | 完成后图片 URL或第一张图片 URL |
 | `image_urls` | JSON | 完成后全部图片 URL，第一项与 `image_url` 一致 |
 | `storage_key` | string | 存储对象 key |

@@ -1,5 +1,6 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const runningHub = require('./runninghub-standard.cjs');
 const { atomicJson, writableDirectory } = require('./files.cjs');
 
 const roles = { director: '白模导演', text: '画布文字', image: '图片生成', video: '视频生成' };
@@ -32,7 +33,12 @@ function validateConfig(value) {
     ids.add(id);
     const name = text(channel.name, '渠道名称', 100);
     if (!name) throw new Error('请填写渠道名称');
+    const protocol = channel.protocol ?? 'openai';
+    if (!['openai', runningHub.protocol].includes(protocol)) throw new Error('请选择有效的渠道类型');
     let baseUrl = text(channel.baseUrl || '', '接口地址');
+    if (protocol === runningHub.protocol) {
+      return { id, name, protocol, baseUrl: runningHub.normalizeRunningHubURL(baseUrl), apiKey: text(channel.apiKey || '', 'API Key'), enabled: channel.enabled !== false, models: [runningHub.model], modelCapabilities: { [runningHub.model]: 'image' } };
+    }
     if (baseUrl) {
       const url = new URL(baseUrl);
       if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error(`渠道「${name}」接口地址无效`);
@@ -45,7 +51,7 @@ function validateConfig(value) {
       if (!model || !['text', 'image', 'video'].includes(capability)) throw new Error(`请为渠道「${name}」的模型选择文字、图片或视频类型`);
       return [model, capability];
     }));
-    return { id, name, baseUrl, apiKey: text(channel.apiKey || '', 'API Key'), enabled: channel.enabled !== false, models, modelCapabilities };
+    return { id, name, protocol, baseUrl, apiKey: text(channel.apiKey || '', 'API Key'), enabled: channel.enabled !== false, models, modelCapabilities };
   });
   for (const [role, label] of Object.entries(roles)) {
     const model = next[role + 'Model'] = text(next[role + 'Model'], label + '模型', 500);
@@ -58,7 +64,7 @@ function validateConfig(value) {
 }
 
 class ConfigStore {
-  constructor(root, encrypt, decrypt) { this.root = root; this.encrypt = encrypt; this.decrypt = decrypt; this.unavailable = new Set(); }
+  constructor(root, encrypt, decrypt, fetchImpl = fetch) { this.root = root; this.encrypt = encrypt; this.decrypt = decrypt; this.fetchImpl = fetchImpl; this.unavailable = new Set(); }
   async initialize() {
     let locator;
     try { locator = JSON.parse(await fs.readFile(path.join(this.root, 'portable.json'), 'utf8')); }
@@ -101,9 +107,12 @@ class ConfigStore {
     const channel = validateConfig({ ...defaults, channels: [this.channelInput(input)] }).channels[0];
     if (!channel.baseUrl) throw new Error('请先填写接口地址');
     if (this.unavailable.has(channel.id) && !channel.apiKey && !input.clearApiKey) throw new Error('该渠道密钥无法解密，请重新填写');
-    const response = await fetch(channel.baseUrl + '/v1/models', { headers: channel.apiKey ? { Authorization: 'Bearer ' + channel.apiKey } : {}, signal: AbortSignal.timeout(15000) });
+    if (channel.protocol === runningHub.protocol) return runningHub.readSupportedModels(channel, { fetchImpl: this.fetchImpl });
+    if (/^https:\/\/(?:www\.)?runninghub\.ai(?:\/|$)/.test(channel.baseUrl)) throw new Error('RunningHub 标准生图请选择 RunningHub 标准模型渠道；文字模型使用 https://llm.runninghub.ai/v1');
+    const response = await this.fetchImpl(channel.baseUrl + '/v1/models', { headers: channel.apiKey ? { Authorization: 'Bearer ' + channel.apiKey } : {}, signal: AbortSignal.timeout(15000) });
     if (!response.ok) throw new Error(`渠道「${channel.name}」返回 ${response.status}，请检查地址与 API Key`);
-    const result = await response.json();
+    const result = await response.json().catch(() => null);
+    if (!result || !Array.isArray(result.data || result.models)) throw new Error('接口未返回模型列表，请填写 OpenAI 兼容 API 地址');
     return [...new Set((result.data || result.models || []).map(entry => typeof entry === 'string' ? entry : entry.id).filter(id => typeof id === 'string' && id && id.length <= 500))];
   }
   async selectDataDir(directory) { await writableDirectory(directory); await atomicJson(path.join(this.root, 'portable.json'), { dataDir: path.resolve(directory) }); return { restartRequired: true, dataDir: directory }; }

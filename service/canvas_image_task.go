@@ -31,6 +31,11 @@ type CanvasImageTaskCreateInput struct {
 }
 
 func CreateCanvasImageTask(input CanvasImageTaskCreateInput) (model.CanvasImageTask, error) {
+	task, _, err := CreateCanvasImageTaskOnce(input)
+	return task, err
+}
+
+func CreateCanvasImageTaskOnce(input CanvasImageTaskCreateInput) (model.CanvasImageTask, bool, error) {
 	current := now()
 	task := model.CanvasImageTask{
 		ID:              firstVideoTaskValue(input.ClientTaskID, "canvas_image_task_"+uuid.NewString()),
@@ -56,16 +61,19 @@ func CreateCanvasImageTask(input CanvasImageTaskCreateInput) (model.CanvasImageT
 		UpdatedAt:       current,
 	}
 	saved := task
+	created := true
 	var err error
 	if input.WorkflowRef != "" {
 		err = ConsumeUserCredits(task.UserID, input.BillingName, task.Credits, input.BillingPath, &task)
+	} else if task.Endpoint == RunningHubStandardImageEndpoint {
+		saved, created, err = repository.InsertCanvasImageTask(task)
 	} else {
 		saved, err = repository.SaveCanvasImageTask(task)
 	}
 	if err == nil {
 		WakeVideoTaskPoller()
 	}
-	return saved, err
+	return saved, created, err
 }
 
 func GetUserCanvasImageTask(userID string, id string) (model.CanvasImageTask, bool, error) {
@@ -138,6 +146,11 @@ func CanvasImageTaskResponse(task model.CanvasImageTask) map[string]any {
 	}
 	if task.WorkflowRef != "" {
 		result["workflowRef"] = task.WorkflowRef
+	}
+	if task.Endpoint == RunningHubStandardImageEndpoint {
+		if providerID := runningHubStandardProviderID(task); providerID != "" {
+			result["provider_task_id"] = providerID
+		}
 	}
 	if task.Error != "" || task.ErrorDetail != "" {
 		result["error"] = map[string]any{"message": firstVideoTaskValue(task.Error, task.ErrorDetail)}

@@ -14,3 +14,5 @@ description: 当前项目后续值得处理的事项
 - v1.3.3 更新网络、正式版本选择和进程停止已移至 [待测试](pending-test.md)；继续核对用户 Windows 网络环境与实际更新／回退。
 
 - v1.3.4 更新恢复、完整画布迁移、编辑互斥和大文件导入已移至 [待测试](pending-test.md)。验收时重点关注 Windows 10/11 机械盘、受限空间与用户真实大项目。
+
+- RunningHub GPT Image 2 经济版图生图适配已移至 [待测试](pending-test.md)，待真实账户验收。

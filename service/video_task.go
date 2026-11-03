@@ -197,6 +197,9 @@ func StartVideoTaskPoller(poll VideoTaskPollFunc) {
 	videoTaskPoller = poll
 	videoTaskPollerMu.Unlock()
 	videoTaskPollerOnce.Do(func() {
+		if err := resumeRunningHubStandardImageTasks(); err != nil {
+			log.Printf("resume RunningHub image tasks failed err=%v", err)
+		}
 		go runVideoTaskPoller()
 	})
 	WakeVideoTaskPoller()
@@ -253,6 +256,29 @@ func runVideoTaskPoller() {
 			hasImageTasks, imageErr := repository.HasActiveCanvasImageTasks()
 			if imageErr != nil {
 				log.Printf("check active canvas image tasks failed err=%v", imageErr)
+			}
+			if hasImageTasks {
+				images, err := repository.ListRunningHubStandardImageTasks(RunningHubStandardImageEndpoint)
+				if err != nil {
+					log.Printf("list RunningHub image tasks failed err=%v", err)
+				}
+				for _, task := range images {
+					key := "runninghub-image:" + task.ID
+					if _, loaded := inFlight.LoadOrStore(key, true); loaded {
+						continue
+					}
+					go func(task model.CanvasImageTask, key string) {
+						defer inFlight.Delete(key)
+						ctx, cleanup, err := CanvasTaskContext("image", task.UserID, task.ID)
+						if err != nil {
+							return
+						}
+						defer cleanup()
+						if err := pollRunningHubStandardImage(ctx, task); err != nil && ctx.Err() == nil {
+							log.Printf("poll RunningHub image task failed id=%s err=%v", task.ID, err)
+						}
+					}(task, key)
+				}
 			}
 			hasAudioTasks, audioErr := repository.HasActiveCanvasAudioTasks()
 			if audioErr != nil {

@@ -14,7 +14,7 @@ export const modelChannelProtocols = [
     { value: "mimo", label: "MiMo", baseUrl: "https://api.xiaomimimo.com", apiKeyUrl: "https://platform.xiaomimimo.com/?ref=JFZQR2" },
 ] as const;
 
-export type ModelChannelProtocol = (typeof modelChannelProtocols)[number]["value"];
+export type ModelChannelProtocol = (typeof modelChannelProtocols)[number]["value"] | "runninghub-standard";
 export type DirectAIProvider = Extract<(typeof modelChannelProtocols)[number], { directRequestPlan: true }>["value"];
 export const modelChannelProtocolOptions = modelChannelProtocols.map(({ value, label }) => ({ label, value }));
 export const modelChannelDefaultBaseUrls = Object.fromEntries(modelChannelProtocols.map(({ value, baseUrl }) => [value, baseUrl])) as Record<ModelChannelProtocol, string>;

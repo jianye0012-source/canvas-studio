@@ -120,7 +120,7 @@ class Runtime extends EventEmitter {
   async configureCanvas() {
     const config = this.store.value;
     const settings = await this.api('admin/settings');
-    settings.private.channels = config.channels.map(channel => ({ ...channel, protocol: 'openai', baseUrl: this.gateway.origin + '/local-ai/channels/' + channel.id, apiKey: this.providerToken, weight: 1, timeout: 600 }));
+    settings.private.channels = config.channels.map(channel => ({ ...channel, protocol: channel.protocol || 'openai', baseUrl: this.gateway.origin + '/local-ai/channels/' + channel.id, apiKey: this.providerToken, weight: 1, timeout: 600 }));
     settings.public.modelChannel = { ...settings.public.modelChannel, allowCustomChannel: true, allowUserRemoteChannel: true, defaultModel: config.imageModel, defaultImageModel: config.imageModel, defaultTextModel: config.textModel || config.directorModel, defaultVideoModel: config.videoModel, modelCosts: [] };
     settings.public.auth = { allowRegister: false, linuxDo: { enabled: false } };
     settings.private.promptSync = { ...settings.private.promptSync, enabled: false };

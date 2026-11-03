@@ -4,6 +4,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const proxyFactory = require('http-proxy');
 const mime = require('mime-types');
+const runningHub = require('./runninghub-standard.cjs');
 const { Readable } = require('node:stream');
 const { pathToFileURL } = require('node:url');
 const { ProjectEditors, editorIdPattern } = require('./project-editor.cjs');
@@ -243,6 +244,21 @@ class Gateway {
     if (!channel.baseUrl) return json(res, 503, { error: { message: `请先配置渠道「${channel.name}」的接口地址` } });
     if (req.method === 'GET' && route === '/models') {
       return json(res, 200, { object: 'list', data: channel.models.map(id => ({ id, object: 'model', owned_by: channel.name })) });
+    }
+    if (channel.protocol === runningHub.protocol) {
+      if (!jsonEqual(req.headers.authorization, `Bearer ${this.providerToken}`) || req.method !== 'POST' || !['/runninghub/submit', '/runninghub/query'].includes(route)) {
+        return json(res, 403, { error: { message: '请选择画布图生图任务使用 RunningHub 标准模型' } });
+      }
+      const controller = new AbortController();
+      res.once('close', () => controller.abort());
+      try {
+        const input = await bodyJson(req, 96 * 1024 * 1024);
+        const result = await runningHub.callStandardImage(channel, route, input, { fetchImpl: this.store.fetchImpl, signal: controller.signal });
+        return json(res, 200, result);
+      } catch (error) {
+        if (!res.destroyed) return json(res, 502, { error: { message: error.message } });
+        return;
+      }
     }
     if (!/^\/(chat\/completions|responses|images\/(generations|edits)|videos(?:\/[^/?]+(?:\/content)?)?|audio\/(speech|transcriptions)|models)(?:\?|$)/.test(route)) return json(res, 404, { error: { message: '不支持的模型接口' } });
     req.url = '/v1' + route + url.search;
