@@ -1,6 +1,5 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const unzipper = require('unzipper');
 const { contained, verifyManifest, writableDirectory, requireFreeSpace, atomicJson } = require('./files.cjs');
@@ -43,7 +42,6 @@ async function stageUpdate(zipFile, dataDir) {
 
 const versionDirectory = /^[a-f0-9-]{36}$/;
 const executableName = '画布工作台启动器.exe';
-const psLiteral = value => "'" + String(value).replaceAll("'", "''") + "'";
 
 function installationPaths(program) {
   const container = path.dirname(program);
@@ -74,66 +72,17 @@ async function prepareInstallation(staging, root, dataDir) {
   }
 }
 
-function installationScript({ id, directory, version }, root, parentPid, dataDir, staging, previousProgram) {
-  return `$ErrorActionPreference = 'Stop'
-$target = ${psLiteral(path.join(directory, executableName))}
-$ack = ${psLiteral(path.join(directory, 'launch-ready'))}
-$active = ${psLiteral(path.join(root, '.versions', 'active.json'))}
-$next = ${psLiteral(path.join(directory, 'next-active.json'))}
-$log = ${psLiteral(path.join(dataDir, 'logs', 'update.log'))}
-$stage = ${psLiteral(staging)}
-$child = $null
-$committed = $false
-try {
-  ${parentPid > 0 ? `Wait-Process -Id ${Number(parentPid)} -ErrorAction SilentlyContinue` : ''}
-  $env:CANVAS_STUDIO_TRIAL = ${psLiteral(id)}
-  $child = Start-Process -FilePath $target -PassThru
-  Remove-Item Env:CANVAS_STUDIO_TRIAL
-  $deadline = [DateTime]::UtcNow.AddSeconds(90)
-  while (!(Test-Path -LiteralPath $ack)) {
-    $child.Refresh()
-    if ($child.HasExited) { throw 'The new launcher exited during startup.' }
-    if (${psLiteral(version)} -in @('1.2.0','1.3.2','1.3.3')) {
-      if ($child.MainWindowHandle -ne 0 -and $child.MainWindowTitle -eq '画布工作台启动器') {
-        Start-Sleep -Milliseconds 1200
-        $child.Refresh()
-        if ($child.HasExited) { throw 'The historical launcher exited during startup.' }
-        break
-      }
-    }
-    if ([DateTime]::UtcNow -gt $deadline) { throw 'The new launcher did not become ready.' }
-    Start-Sleep -Milliseconds 250
+async function applyUpdate(staging, root, dataDir) {
+  await writableDirectory(dataDir);
+  await writableDirectory(root);
+  const prepared = await prepareInstallation(staging, root, dataDir);
+  try {
+    await atomicJson(installationPaths(root).pointer, { id: prepared.id, version: prepared.version });
+  } catch (error) {
+    await fs.rm(prepared.directory, { recursive: true, force: true }).catch(() => {});
+    throw error;
   }
-  [IO.File]::WriteAllText($next, ${psLiteral(JSON.stringify({ id }))})
-  if ([IO.File]::Exists($active)) { [IO.File]::Replace($next, $active, [NullString]::Value) }
-  else { [IO.File]::Move($next, $active) }
-  $committed = $true
-  $pendingFile = ${psLiteral(path.join(dataDir, 'updates', 'pending.json'))}
-  if (Test-Path -LiteralPath $pendingFile) {
-    $pending = Get-Content -LiteralPath $pendingFile -Raw | ConvertFrom-Json
-    if ($pending.id -eq (Split-Path -Leaf $stage)) { Remove-Item -LiteralPath $pendingFile -Force }
-  }
-  Remove-Item -LiteralPath $stage -Recurse -Force
-} catch {
-  $_ | Out-File -LiteralPath $log -Encoding UTF8
-  if (!$committed) {
-    Remove-Item Env:CANVAS_STUDIO_TRIAL -ErrorAction SilentlyContinue
-    if ($child -and !$child.HasExited) { Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue; Wait-Process -Id $child.Id -ErrorAction SilentlyContinue }
-    Remove-Item -LiteralPath ${psLiteral(directory)} -Recurse -Force -ErrorAction SilentlyContinue
-    $env:CANVAS_STUDIO_UPDATE_FAILED = '1'
-    Start-Process -FilePath ${psLiteral(path.join(previousProgram, executableName))}
-  }
-}
-`;
-}
-
-async function applyUpdate(staging, destination, parentPid, dataDir, previousProgram = destination) {
-  if (process.platform !== 'win32') throw new Error('自动应用更新需要在 Windows 整合包内执行');
-  const prepared = await prepareInstallation(staging, destination, dataDir);
-  const script = installationScript(prepared, destination, parentPid, dataDir, staging, previousProgram);
-  const child = spawn('powershell.exe', ['-NoProfile', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { detached: true, windowsHide: true, stdio: 'ignore' });
-  try { await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); }); child.unref(); }
-  catch (error) { await fs.rm(prepared.directory, { recursive: true, force: true }); throw error; }
+  return prepared;
 }
 
 async function containsOnlyProgramFiles(directory, manifest) {
@@ -170,4 +119,4 @@ async function clearInactiveVersions(root, program, dataDir) {
   return removed;
 }
 
-module.exports = { stageUpdate, applyUpdate, installationPaths, installationScript, prepareInstallation, clearInactiveVersions, executableName, versionDirectory };
+module.exports = { stageUpdate, applyUpdate, installationPaths, prepareInstallation, clearInactiveVersions, executableName, versionDirectory };

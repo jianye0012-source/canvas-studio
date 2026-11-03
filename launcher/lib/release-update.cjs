@@ -42,7 +42,7 @@ class ReleaseUpdater extends EventEmitter {
       const staged = path.join(this.root, pending.id), manifest = await verifyManifest(staged, { filename: 'package-manifest.json' });
       if (manifest.version !== pending.version) throw new Error('待安装更新版本不匹配');
       this.staged = { path: staged, version: pending.version, intent };
-      this.update({ phase: 'ready', selectedVersion: pending.version, intent, progress: 100, message: `版本 ${pending.version} 已校验，可以重启安装` });
+      this.update({ phase: 'ready', selectedVersion: pending.version, intent, progress: 100, message: `版本 ${pending.version} 已校验，可以安装` });
     } catch (error) { if (error.code !== 'ENOENT') this.update({ phase: 'error', message: `上次更新不可用：${error.message}，请重新下载或导入发行包` }); }
     return this;
   }
@@ -79,9 +79,9 @@ class ReleaseUpdater extends EventEmitter {
     const versions = [...releases.keys()].sort(semver.rcompare).map(version => ({ version, publishedAt: releases.get(version).published_at || '', notes: String(releases.get(version).body || '').slice(0, 20000), intent: this.intent(version), installable: this.hasAssets(releases.get(version), version) }));
     const version = versions[0]?.version || '';
     this.update({ versions, latestVersion: version });
-    if (!version) { this.update({ phase: this.staged ? 'ready' : 'current', message: this.staged ? '已有校验好的更新，可重启安装' : '尚无公开正式版本，可继续使用当前版本或导入发行包' }); return this.status(); }
+    if (!version) { this.update({ phase: this.staged ? 'ready' : 'current', message: this.staged ? '已有校验好的更新，可直接安装' : '尚无公开正式版本，可继续使用当前版本或导入发行包' }); return this.status(); }
     if (this.staged && releases.has(this.staged.version)) return this.prepareVersion(this.staged.version);
-    if (this.staged) { this.update({ phase: 'ready', selectedVersion: this.staged.version, intent: this.staged.intent, message: `版本 ${this.staged.version} 已校验，可以重启安装；也可选择其他正式版本` }); return this.status(); }
+    if (this.staged) { this.update({ phase: 'ready', selectedVersion: this.staged.version, intent: this.staged.intent, message: `版本 ${this.staged.version} 已校验，可以安装；也可选择其他正式版本` }); return this.status(); }
     if (!semver.gt(version, this.currentVersion)) { this.update({ phase: 'current', message: '当前已是最新版本；可在版本列表选择重装或回退' }); return this.status(); }
     return this.prepareVersion(version);
   }
@@ -106,7 +106,7 @@ class ReleaseUpdater extends EventEmitter {
     if (asset.digest && asset.digest !== 'sha256:' + expected) throw new Error('GitHub 文件摘要与发行校验值不一致');
     const intent = this.intent(version);
     this.candidate = { version, name, size: asset.size, expected, url: downloadUrl, intent };
-    this.update({ phase: this.staged?.version === version ? 'ready' : 'available', selectedVersion: version, intent, notes: String(release.body || '').slice(0, 20000), progress: this.staged?.version === version ? 100 : 0, message: this.staged?.version === version ? `版本 ${version} 已校验，可以重启安装` : intent === 'upgrade' ? `发现新版本 ${version}，可下载并校验后安装` : `已选择${intent === 'rollback' ? '回退' : '重装'}版本 ${version}，下载校验后可安装` });
+    this.update({ phase: this.staged?.version === version ? 'ready' : 'available', selectedVersion: version, intent, notes: String(release.body || '').slice(0, 20000), progress: this.staged?.version === version ? 100 : 0, message: this.staged?.version === version ? `版本 ${version} 已校验，可以安装` : intent === 'upgrade' ? `发现新版本 ${version}，可下载并校验后安装` : `已选择${intent === 'rollback' ? '回退' : '重装'}版本 ${version}，下载校验后可安装` });
     return this.status();
   }
   async download() {
@@ -173,7 +173,7 @@ class ReleaseUpdater extends EventEmitter {
       this.staged = { path: staged, version: candidate.version, intent: candidate.intent };
       if (previous && previous.path !== staged) await fs.rm(previous.path, { recursive: true, force: true }).catch(() => {});
     } catch (error) { await fs.rm(staged, { recursive: true, force: true }); throw error; }
-    this.update({ phase: 'ready', message: `更新 ${candidate.version} 已校验，点击“重启安装更新”应用` }); return this.status();
+    this.update({ phase: 'ready', message: `更新 ${candidate.version} 已校验，正在准备安装` }); return this.status();
   }
   async clearCache() {
     if (this.downloadPromise || this.clearingCache) throw new Error('请等待当前更新操作完成');
@@ -197,6 +197,14 @@ class ReleaseUpdater extends EventEmitter {
     const manifest = await verifyManifest(this.staged.path, { filename: 'package-manifest.json' });
     if (manifest.version !== this.staged.version || this.intent(manifest.version) !== this.staged.intent) throw new Error('待安装版本无效');
     return this.staged.path;
+  }
+  async finishInstallation(staged, version) {
+    if (this.staged?.path === staged) {
+      this.staged = null;
+      await fs.rm(this.pendingFile, { force: true }).catch(() => {});
+    }
+    await fs.rm(staged, { recursive: true, force: true }).catch(() => {});
+    this.update({ phase: 'installed', installedVersion: version, selectedVersion: version, progress: 100, message: `版本 ${version} 已安装，关闭后再次打开启动器即可使用。` });
   }
   async close() { this.controller.abort(); await Promise.allSettled([this.checkPromise, this.selectPromise, this.downloadPromise].filter(Boolean)); }
 }

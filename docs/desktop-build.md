@@ -31,7 +31,7 @@ npm ci --prefix launcher
 node launcher/scripts/package.mjs
 ```
 
-也可用 `GO_BINARY` 指定 Go 程序路径。脚本下载并校验 Node Windows 运行时，交叉编译 Go 服务，构建前端和导演台，加入 Windows 原生依赖，生成 Electron 程序、文件清单、对应源码 ZIP 和 SHA-256 文件。打包无需 Bun。
+也可用 `GO_BINARY` 指定 Go 程序路径。脚本下载并校验 Node Windows 运行时，交叉编译 Go 服务，构建前端和导演台，加入 Windows 原生依赖，生成 Electron 程序、文件清单与 SHA-256 文件。对应源码与构建脚本在 GitHub 同版本发布页提供。打包无需 Bun。
 
 发行包不会携带用户 `data/` 或 `portable.json`。更新先在数据目录下解压和校验，再在整合包根目录的 `.versions/` 中准备独立程序目录。Windows 等待原启动器退出并确认新版启动成功后切换活动版本。原启动入口和数据目录保留，失败原因写入 `data/logs/update.log`。
 
@@ -65,7 +65,7 @@ Windows 10/11 实机启动、Windows 密钥加密、真实服务商调用和 Win
 
 更新源固定在 `launcher/update-source.json`，当前为 `jianye0012-source/canvas-studio`。启动器只读取本仓库的正式 GitHub Release，不拉取两个上游项目的新代码。可关闭启动时检查，也可随时手动检查。断网或 GitHub 限流不会阻止已有工作区运行。
 
-发行版 tag 使用 `v<launcher/package.json 的 version>`，同时上传 `CanvasStudio-Windows-x64-<version>.zip` 与同名 `.sha256`。框架核对版本、来源、大小、GitHub 文件摘要、SHA-256 和解压后的全部文件清单，再允许重启安装；已校验的待安装更新保存在数据目录，关闭后可恢复。
+发行版 tag 使用 `v<launcher/package.json 的 version>`，同时上传 `CanvasStudio-Windows-x64-<version>.zip` 与同名 `.sha256`。安装所选版本时核对来源、大小、GitHub 文件摘要、SHA-256 和解压后的文件清单。校验完成后写入独立程序目录，并切换下次启动使用的版本入口。
 
 仓库的 `Build Windows release` 工作流支持手动运行，也在版本 tag 推送后构建并发布。发布前同步更新 `launcher/package.json`、锁文件、根目录 `VERSION` 和变更记录。下载页为 <https://github.com/jianye0012-source/canvas-studio/releases>。Windows 发布任务在上传前执行独立数据目录的项目导出导入，以及实际启动、版本切换、中断和回退验收。用户的系统代理、磁盘与模型连接仍需在目标电脑验收。
 

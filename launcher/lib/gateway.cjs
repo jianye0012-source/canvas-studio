@@ -150,9 +150,10 @@ class Gateway {
     if (url.pathname === '/local/channels/test' && req.method === 'POST') return json(res, 200, await this.store.testChannel(await bodyJson(req)));
     if (url.pathname === '/local/channels/runninghub-model' && req.method === 'POST') return json(res, 200, await this.store.readRunningHubModel((await bodyJson(req)).id));
     if (url.pathname === '/local/source' && req.method === 'GET') {
-      const file = path.resolve(this.root, '..', '..', '对应源码.zip');
-      try { const stat = await fs.stat(file); res.writeHead(200, { 'content-type': 'application/zip', 'content-length': stat.size, 'content-disposition': 'attachment; filename="corresponding-source.zip"' }); return require('node:fs').createReadStream(file).pipe(res); }
-      catch { return json(res, 404, { msg: '开发模式请使用当前源码目录；发行包源码位于整合包根目录的对应源码.zip' }); }
+      const { owner, repository } = require('../update-source.json');
+      const { version } = require('../package.json');
+      res.writeHead(302, { location: `https://github.com/${owner}/${repository}/releases/tag/v${version}` });
+      return res.end();
     }
     if (url.pathname.startsWith('/local/director/')) {
       const id = url.pathname.slice('/local/director/'.length);

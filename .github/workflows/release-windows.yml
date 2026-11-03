@@ -42,7 +42,7 @@ jobs:
         run: node launcher/test/portable-browser-smoke.cjs
         env:
           TMPDIR: ${{ github.workspace }}/work/tmp
-      - name: Verify update switch, interruption and official rollback on Windows
+      - name: Verify direct installation and official rollback on Windows
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}

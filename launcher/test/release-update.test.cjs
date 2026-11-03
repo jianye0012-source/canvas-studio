@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const archiver = require('archiver');
 const { createWriteStream } = require('node:fs');
 const { ReleaseUpdater } = require('../lib/release-update.cjs');
+const { applyUpdate, installationPaths } = require('../lib/update.cjs');
 const source = { owner: 'jianye0012-source', repository: 'canvas-studio' };
 
 async function fixture(t, { corrupt = false, prerelease = false } = {}) {
@@ -52,6 +53,30 @@ test('损坏下载被拒绝、清除中间文件，原程序与用户项目不�
   assert.equal(updater.status().phase, 'error'); assert.equal(await fs.readFile(path.join(dataDir, '我的项目.json'), 'utf8'), '{"saved":true}');
   assert.deepEqual(await fs.readdir(path.join(dataDir, 'updates/downloads')), []);
   await assert.rejects(() => updater.installation(), /先下载/);
+});
+
+test('安装所选版本立即提交程序入口，保留原程序与项目，失败时保留上次入口', async t => {
+  const { updater, dataDir } = await fixture(t);
+  const root = path.join(dataDir, '程序目录');
+  await fs.mkdir(root);
+  await fs.writeFile(path.join(root, '画布工作台启动器.exe'), 'original');
+  await fs.writeFile(path.join(dataDir, '项目.json'), 'saved');
+  await updater.check();
+  await updater.download();
+  const staged = await updater.installation();
+  const pointer = installationPaths(root).pointer;
+  const prepared = await applyUpdate(staged, root, dataDir);
+  const chosen = JSON.parse(await fs.readFile(pointer, 'utf8'));
+  assert.deepEqual(chosen, { id: prepared.id, version: '1.3.0' });
+  await fs.writeFile(path.join(staged, '画布工作台启动器.exe'), 'corrupt');
+  await assert.rejects(() => applyUpdate(staged, root, dataDir), /匹配/);
+  assert.deepEqual(JSON.parse(await fs.readFile(pointer, 'utf8')), chosen);
+  await updater.finishInstallation(staged, prepared.version);
+  assert.equal(updater.status().phase, 'installed');
+  assert.equal(updater.status().installedVersion, '1.3.0');
+  assert.equal(await fs.readFile(path.join(root, '画布工作台启动器.exe'), 'utf8'), 'original');
+  assert.equal(await fs.readFile(path.join(dataDir, '项目.json'), 'utf8'), 'saved');
+  await assert.rejects(fs.access(updater.pendingFile), { code: 'ENOENT' });
 });
 
 test('拒绝预发行、外部下载地址与不一致摘要；断网和无发行版有明确状态', async t => {

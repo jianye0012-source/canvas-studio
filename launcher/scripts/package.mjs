@@ -39,9 +39,14 @@ for (const name of ['main.cjs', 'preload.cjs', 'ui', 'lib', 'package.json', 'pac
 await run('npm', ['ci', '--prefix', app, '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund']);
 const paths = await packager({ dir: app, out: path.join(taskWork, 'packaged'), name: '画布工作台启动器', executableName: '画布工作台启动器', platform: 'win32', arch: 'x64', electronVersion: '45.1.0', appVersion, overwrite: true, asar: false, prune: false, tmpdir: path.join(taskWork, 'tmp'), download: { cacheRoot: path.join(taskWork, 'cache/electron') }, win32metadata: { ProductName: '画布工作台启动器', FileDescription: '本地画布与动态白模创作工作台', CompanyName: 'Canvas Studio' } });
 const packaged = paths[0]; await fs.cp(bundle, path.join(packaged, 'resources/bundle'), { recursive: true });
-for (const name of ['使用说明.txt', '恢复原启动器.cmd']) await fs.copyFile(path.join(sourceRoot, 'launcher', name), path.join(packaged, name));
+const { owner, repository } = createRequire(import.meta.url)('../update-source.json');
+const sourcePage = `https://github.com/${owner}/${repository}/releases/tag/v${appVersion}`;
+for (const [source, target] of [['使用说明.txt', '使用说明.txt'], ['SOURCE-NOTICE.txt', 'resources/bundle/SOURCE-NOTICE.txt']]) {
+  const contents = await fs.readFile(path.join(sourceRoot, 'launcher', source), 'utf8');
+  await fs.writeFile(path.join(packaged, target), contents.replaceAll('https://github.com/jianye0012-source/canvas-studio/releases', sourcePage));
+}
+await fs.copyFile(path.join(sourceRoot, 'launcher/恢复原启动器.cmd'), path.join(packaged, '恢复原启动器.cmd'));
 async function zip(output, populate) { const writer = createWriteStream(output); const archive = archiver('zip', { zlib: { level: 6 } }); const finished = new Promise((resolve, reject) => { writer.once('close', resolve); writer.once('error', reject); archive.once('error', reject); }); archive.pipe(writer); populate(archive); await archive.finalize(); await finished; }
-await zip(path.join(packaged, '对应源码.zip'), archive => archive.glob('**/*', { cwd: sourceRoot, dot: true, ignore: ['.git/**', '.agents/**', '**/node_modules/**', '**/.next/**', 'work/**', 'outputs/**', '**/dist/**', '**/*.log', '**/*.tsbuildinfo'] }));
 await fs.writeFile(path.join(packaged, 'resources/bundle/bundle-manifest.json'), JSON.stringify({ format: 1, version: appVersion, files: await fileManifest(path.join(packaged, 'resources/bundle'), ['bundle-manifest.json']) }));
 await fs.writeFile(path.join(packaged, 'package-manifest.json'), JSON.stringify({ application: 'canvas-studio', format: 1, platform: 'win32-x64', version: appVersion, files: await fileManifest(packaged, ['package-manifest.json']) }));
 const output = path.join(outputs, `CanvasStudio-Windows-x64-${appVersion}.zip`);

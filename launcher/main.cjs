@@ -75,15 +75,19 @@ else {
     const confirmRollback = async version => {
       if (!semver.valid(version)) throw new Error('发行包版本无效');
       if (!semver.lt(version, app.getVersion())) return true;
-      const choice = await dialog.showMessageBox(window, { type: 'warning', title: '确认回退程序版本', message: `将程序回退至 ${version}？`, detail: '项目和模型配置会保留，数据格式不会随程序回退。旧版可能无法打开新版创建的项目。', buttons: ['取消', '回退并重启'], defaultId: 0, cancelId: 0 });
+      const choice = await dialog.showMessageBox(window, { type: 'warning', title: '确认回退程序版本', message: `将程序回退至 ${version}？`, detail: '下次打开启动器时使用所选版本。项目和模型配置会保留，旧版可能无法打开新版创建的项目。', buttons: ['取消', '安装所选版本'], defaultId: 0, cancelId: 0 });
       return choice.response === 1;
     };
     const install = async staged => {
-      if (!await confirmRollback(JSON.parse(await fsp.readFile(path.join(staged, 'package-manifest.json'), 'utf8')).version)) return false;
-      await runtime.stop();
-      await applyUpdate(staged, portableRoot, process.pid, store.dataDir, programRoot);
-      app.quit();
-      return true;
+      updater.update({ phase: 'installing', message: '正在写入所选版本的程序文件…' });
+      try {
+        const prepared = await applyUpdate(staged, portableRoot, store.dataDir);
+        await updater.finishInstallation(staged, prepared.version);
+        return updater.status();
+      } catch (error) {
+        updater.update({ phase: updater.staged ? 'ready' : 'error', message: '安装失败：' + error.message });
+        throw error;
+      }
     };
     const installOnce = async action => {
       if (installing) throw new Error('正在安装发行包，请稍候');
@@ -123,16 +127,20 @@ else {
       },
       'browser:choose': async () => { const result = await dialog.showOpenDialog(window, { title: '选择浏览器主程序（Chrome、Edge、Firefox 或其他 Chromium 浏览器）', properties: ['openFile'], ...(process.platform === 'win32' ? { filters: [{ name: '浏览器程序', extensions: ['exe'] }] } : {}) }); return result.canceled ? '' : result.filePaths[0]; },
       'update:check': () => updater.check(),
-      'update:select': (_event, version) => updater.selectVersion(version),
-      'update:download': () => updater.download(),
       'update:clear-cache': () => installOnce(async () => {
         const downloads = await updater.clearCache();
         const versions = app.isPackaged && !trial ? await clearInactiveVersions(portableRoot, programRoot, store.dataDir) : 0;
         return { downloads, versions };
       }),
       'update:open-release': () => shell.openExternal(updater.releaseUrl),
-      'update:install': () => installOnce(async () => {
-        if (process.platform !== 'win32' || !app.isPackaged) throw new Error('重启安装需要在 Windows 整合包中执行');
+      'update:install': (_event, version) => installOnce(async () => {
+        if (process.platform !== 'win32' || !app.isPackaged) throw new Error('安装更新需要在 Windows 整合包中执行');
+        if (!semver.valid(version)) throw new Error('请选择正式版本');
+        if (!await confirmRollback(version)) return updater.status();
+        if (updater.staged?.version !== version) {
+          await updater.selectVersion(version);
+          await updater.download();
+        }
         return install(await updater.installation());
       }),
       'update:import': () => installOnce(async () => {
@@ -140,12 +148,16 @@ else {
         if (result.canceled) return null;
         runtime.log('正在校验导入的发行包');
         const staged = await stageUpdate(result.filePaths[0], store.dataDir);
-        try { if (await install(staged)) return { restartRequired: true }; }
+        try {
+          const { version } = JSON.parse(await fsp.readFile(path.join(staged, 'package-manifest.json'), 'utf8'));
+          if (await confirmRollback(version)) return await install(staged);
+        }
         catch (error) { await fsp.rm(staged, { recursive: true, force: true }); throw error; }
         await fsp.rm(staged, { recursive: true, force: true });
         return null;
       }),
       'about:open': () => shell.openPath(path.join(bundleRoot, 'SOURCE-NOTICE.txt')),
+      'about:source': () => shell.openExternal(`https://github.com/${updateSource.owner}/${updateSource.repository}/releases/tag/v${app.getVersion()}`),
     };
     for (const [channel, handler] of Object.entries(handlers)) ipcMain.handle(channel, async (event, ...args) => {
       if (event.sender !== window.webContents || !event.senderFrame?.url.startsWith('file:')) throw new Error('请求来源无效');
@@ -155,7 +167,7 @@ else {
     await window.loadFile(path.join(__dirname, 'ui', 'index.html'));
     if (trial) await fsp.writeFile(path.join(programRoot, 'launch-ready'), 'ready', { flag: 'wx' });
     if (updateFailed) void dialog.showMessageBox(window, { type: 'warning', title: '更新未完成', message: '已重新打开原程序', detail: '项目仍在原数据目录。可以在“检查与修复”重试。安装记录位于 ' + path.join(store.dataDir, 'logs', 'update.log') });
-    if (store.value.autoCheckUpdates) setTimeout(() => { if (store.value.autoCheckUpdates) updater.check().catch(error => runtime.log('检查更新：' + error.message)); }, 2000);
+    if (store.value.autoCheckUpdates) setTimeout(() => { if (store.value.autoCheckUpdates && !installing) updater.check().catch(error => runtime.log('检查更新：' + error.message)); }, 2000);
   }).catch(error => { dialog.showErrorBox('启动器无法启动', error.message); app.quit(); });
   app.on('before-quit', event => {
     if (!quitting && runtime) { event.preventDefault(); quitting = true; Promise.allSettled([runtime.stop(), updater?.close()]).finally(() => app.quit()); }
