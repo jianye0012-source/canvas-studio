@@ -11,12 +11,12 @@ test('RunningHub 标准模型用账户接口验证密钥和内置图生图，其
     return Response.json(url.endsWith('/v1/models') ? { data: [{ id: 'other-model' }] } : { code: 0, data: { apiType: 'NORMAL' } });
   });
   store.value = validateConfig({ channels: [] });
-  assert.deepEqual(await store.testChannel(channel), [model]);
+  assert.deepEqual((await store.testChannel(channel)).models, [model]);
   assert.equal(calls[0].url, 'https://www.runninghub.ai/uc/openapi/accountStatus');
   assert.deepEqual(JSON.parse(calls[0].request.body), { apikey: 'fixture-key' });
   assert.equal(calls[0].request.headers.authorization, 'Bearer fixture-key');
   const compatible = { id: 'compatible', name: '兼容', baseUrl: 'https://example.com/v1', models: [], modelCapabilities: {} };
-  assert.deepEqual(await store.testChannel(compatible), ['other-model']);
+  assert.deepEqual((await store.testChannel(compatible)).models, ['other-model']);
   assert.equal(calls[1].url, 'https://example.com/v1/models');
   await assert.rejects(() => store.testChannel({ ...compatible, baseUrl: 'https://www.runninghub.ai/runninghub-api-doc-en/' }), /请选择 RunningHub 标准模型/);
   await assert.rejects(() => store.testChannel({ ...channel, baseUrl: 'https://example.com' }), /标准模型请使用/);

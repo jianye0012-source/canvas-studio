@@ -8,7 +8,7 @@ import { App } from "antd";
 import { fetchUserConfig } from "@/services/api/user-config";
 import { replaceWorkflowChannels } from "@/services/workflow-channel-storage";
 import { STORAGE_SYNC_FAILED_EVENT, defaultUserStorageProvider, defaultUserWebDAVStorageProvider, saveUserStorageProvider, saveUserWebDAVStorageProvider } from "@/services/image-storage";
-import { defaultConfig, useConfigStore, type AiConfig } from "@/stores/use-config-store";
+import { defaultConfig, desktopModelChoiceKeys, useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { useChannelTranslationStore } from "@/stores/use-channel-translation-store";
 
@@ -93,6 +93,7 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
 					}
                     if (canceled || useUserStore.getState().token !== accountToken || useUserStore.getState().user?.id !== accountId) return;
 					Object.entries(modelConfig)
+						.filter(([key]) => accountId !== "local-owner" || !desktopModelChoiceKeys.has(key))
 						.forEach(([key, value]) => updateConfig(key as keyof AiConfig, value as never));
 				}
 				updateConfig("workflowSyncTouched", workflowsReady);

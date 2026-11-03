@@ -15,4 +15,4 @@ description: 当前项目后续值得处理的事项
 
 - v1.3.4 更新恢复、完整画布迁移、编辑互斥和大文件导入已移至 [待测试](pending-test.md)。验收时重点关注 Windows 10/11 机械盘、受限空间与用户真实大项目。
 
-- RunningHub GPT Image 2 经济版图生图适配已移至 [待测试](pending-test.md)，待真实账户验收。
+- 模型目录自动分类、渠道选择保留和 RunningHub GPT Image 2 经济版图生图适配已移至 [待测试](pending-test.md)，待真实账户验收。

@@ -5,6 +5,7 @@ const roles = { director: '白模导演', text: '画布文字', image: '图片�
 const capabilities = { text: '文字 / 白模', image: '图片', video: '视频' };
 const catalogues = new Map();
 const runningHubModel = 'rhart-image-g-2/image-to-image';
+const roleIncludes = (channel, model, role) => channel.modelCapabilities[model] === (role === 'director' ? 'text' : role) && (role !== 'director' || channel.modelToolSupport?.[model] !== false);
 const isRunningHub = channel => channel.protocol === 'runninghub-standard';
 const activeChannel = () => draft?.channels.find(channel => channel.id === activeId);
 function page(name) { for (const node of document.querySelectorAll('.page')) node.hidden = node.id !== 'page-' + name; for (const node of document.querySelectorAll('nav button')) node.classList.toggle('active', node.dataset.page === name); $('#page-title').textContent = titles[name]; if (name === 'skills') void loadSkills().catch(() => {}); }
@@ -52,7 +53,7 @@ async function saveBrowserChoice() {
 function repairSelections() {
   for (const role of Object.keys(roles)) {
     const channel = draft.channels.find(entry => entry.id === draft[role + 'ChannelId'] && entry.enabled);
-    if (!channel?.models.some(model => model === draft[role + 'Model'] && channel.modelCapabilities[model] === (role === 'director' ? 'text' : role))) { draft[role + 'Model'] = ''; draft[role + 'ChannelId'] = ''; }
+    if (!channel?.models.some(model => model === draft[role + 'Model'] && roleIncludes(channel, model, role))) { draft[role + 'Model'] = ''; draft[role + 'ChannelId'] = ''; }
   }
 }
 function renderRoleSelectors() {
@@ -62,7 +63,7 @@ function renderRoleSelectors() {
     select.add(new Option('暂不设置', ''));
     for (const channel of draft.channels.filter(entry => entry.enabled)) {
       const group = document.createElement('optgroup'); group.label = channel.name;
-      for (const model of channel.models.filter(model => channel.modelCapabilities[model] === (role === 'director' ? 'text' : role))) group.append(new Option(`${channel.name} · ${model}`, JSON.stringify([channel.id, model])));
+      for (const model of channel.models.filter(model => roleIncludes(channel, model, role))) group.append(new Option(`${channel.name} · ${model}`, JSON.stringify([channel.id, model])));
       if (group.children.length) select.append(group);
     }
     select.value = draft[role + 'Model'] ? JSON.stringify([draft[role + 'ChannelId'], draft[role + 'Model']]) : '';
@@ -87,11 +88,11 @@ function renderModels() {
   const runningHub = isRunningHub(channel);
   $('#custom-model-entry').hidden = runningHub;
   $('#test-models').textContent = runningHub ? '检查 RunningHub 密钥' : '测试此渠道 / 读取模型';
-  $('#model-entry-help').textContent = runningHub ? '内置 GPT Image 2 经济版图生图。生成时需要参考图和企业级共享 API Key。' : '加入可选模型；可从接口列表选取，也可手动填写。白模导演使用文字模型，参考图需支持视觉输入。';
+  $('#model-entry-help').textContent = runningHub ? '内置 GPT Image 2 经济版图生图。生成时需要参考图和企业级共享 API Key。' : '加入可选模型；无法识别类型的模型可从列表选取并手动分类。白模导演使用文字模型，参考图需支持视觉输入。';
   $('#model-list').replaceChildren(...(catalogues.get(channel.id) || []).map(model => new Option(model, model)));
   $('#channel-models').replaceChildren(...channel.models.map(model => {
     const item = document.createElement('li'); const name = document.createElement('span'); name.textContent = model;
-    const type = document.createElement('small'); type.textContent = capabilities[channel.modelCapabilities[model]];
+    const type = document.createElement('small'); type.textContent = channel.modelToolSupport?.[model] === false ? '文字' : capabilities[channel.modelCapabilities[model]];
     const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '移除'; remove.setAttribute('aria-label', '移除模型 ' + model);
     remove.onclick = () => { channel.models = channel.models.filter(entry => entry !== model); repairSelections(); renderModels(); }; item.append(name, type); if (!runningHub) item.append(remove); return item;
   }));
@@ -134,6 +135,7 @@ $('#model-form').elements.protocol.addEventListener('change', event => {
   channel.baseUrl = runningHub ? 'https://www.runninghub.ai' : '';
   channel.models = runningHub ? [runningHubModel] : [];
   channel.modelCapabilities = runningHub ? { [runningHubModel]: 'image' } : {};
+  channel.modelToolSupport = {};
   catalogues.delete(channel.id); repairSelections(); renderModels();
 });
 $('#add-channel').onclick = () => { const channel = { id: crypto.randomUUID(), name: `渠道 ${draft.channels.length + 1}`, protocol: 'openai', baseUrl: '', apiKey: '', enabled: true, models: [], modelCapabilities: {} }; draft.channels.push(channel); activeId = channel.id; $('#new-model').value = ''; renderModels(); };
@@ -145,7 +147,27 @@ $('#browser-form').addEventListener('submit', async event => { event.preventDefa
 $('#browser-form').elements.browser.addEventListener('change', event => { if (event.target.value !== 'custom') $('#browser-form').elements.browserPath.value = ''; renderBrowserChoice(); });
 $('#browser-form').elements.browserPath.addEventListener('input', () => { if ($('#browser-form').elements.browserPath.value.trim()) $('#browser-form').elements.browser.value = 'custom'; renderBrowserChoice(); });
 $('#port-form').addEventListener('submit', async event => { event.preventDefault(); try { fillBrowser(await invoke('config:save', { port: Number(event.currentTarget.elements.port.value) })); notice('端口已保存，下次启动服务生效'); } catch {} });
-$('#test-models').onclick = async () => { const channel = activeChannel(); if (!channel) return; $('#test-models').disabled = true; try { const models = await invoke('config:test', channel); catalogues.set(channel.id, models); renderModels(); notice(isRunningHub(channel) ? 'RunningHub 密钥通过账户检查，已提供内置 GPT Image 2 图生图。请保存渠道。' : `渠道「${channel.name}」连接成功，读取到 ${models.length} 个模型。请选择需要的模型并指定类型。`); } catch {} finally { $('#test-models').disabled = false; } };
+$('#test-models').onclick = async () => {
+  const channel = activeChannel();
+  if (!channel) return;
+  const { baseUrl, protocol } = channel;
+  $('#test-models').disabled = true;
+  try {
+    const catalogue = await invoke('config:test', channel);
+    if (!draft.channels.includes(channel) || channel.baseUrl !== baseUrl || channel.protocol !== protocol) return;
+    const added = catalogue.models.filter(model => catalogue.modelCapabilities[model] && !channel.models.includes(model)).slice(0, Math.max(0, 2000 - channel.models.length));
+    channel.models.push(...added);
+    channel.modelToolSupport ||= {};
+    for (const model of added) {
+      channel.modelCapabilities[model] = catalogue.modelCapabilities[model];
+      if (Object.hasOwn(catalogue.modelToolSupport, model)) channel.modelToolSupport[model] = catalogue.modelToolSupport[model];
+    }
+    const pending = catalogue.models.filter(model => !channel.models.includes(model));
+    catalogues.set(channel.id, pending);
+    renderModels();
+    notice(isRunningHub(channel) ? 'RunningHub 密钥通过账户检查，已提供内置 GPT Image 2 图生图。请保存渠道。' : `读取到 ${catalogue.models.length} 个模型，自动加入 ${added.length} 个，${pending.length} 个可手动添加。原有选择已保留，请保存配置。`);
+  } catch {} finally { $('#test-models').disabled = false; }
+};
 $('#clear-key').onclick = () => { const channel = activeChannel(); if (channel) { channel.apiKey = ''; channel.hasApiKey = false; channel.clearApiKey = true; renderModels(); notice('此渠道密钥将于保存时清除。'); } };
 window.launcher.subscribe(event => { if (event.type === 'status') status(event.value); else if (event.type === 'update') renderUpdate(event.value); else { $('#logs').textContent = event.value.join('\n'); $('#logs').scrollTop = $('#logs').scrollHeight; } });
 invoke('app:load').then(result => { fill(result.config); status(result.status); renderUpdate(result.update); if (result.logs.length) $('#logs').textContent = result.logs.join('\n'); }).catch(() => {});

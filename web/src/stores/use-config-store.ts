@@ -7,6 +7,7 @@ import { persist } from "zustand/middleware";
 import { directAIProviderForProtocol, isWorkflowProtocol, type DirectAIProvider, type ModelChannelProtocol } from "@/lib/model-channel";
 import type { WorkflowRef, WorkflowSummary } from "@/lib/workflow-channel";
 import { apiGet } from "@/services/api/request";
+import { localConfig } from "@/services/api/local";
 import type { AdminPublicSettings } from "@/services/api/admin";
 import { useUserStore } from "@/stores/use-user-store";
 
@@ -179,8 +180,13 @@ export const defaultConfig: AiConfig = {
     audioChannelId: "",
 };
 
+const desktopRoles = ["text", "image", "video"] as const;
+export const desktopModelChoiceKeys = new Set<string>(["model", "activeChannelId", ...desktopRoles.flatMap(role => [`${role}Model`, `${role}ChannelId`])]);
+type LauncherChoices = Pick<AiConfig, `${typeof desktopRoles[number]}Model` | `${typeof desktopRoles[number]}ChannelId`>;
+
 type ConfigStore = {
     config: AiConfig;
+    launcherChoices: LauncherChoices | null;
     publicSettings: AdminPublicSettings | null;
     isPublicSettingsLoading: boolean;
     isConfigOpen: boolean;
@@ -390,6 +396,7 @@ export const useConfigStore = create<ConfigStore>()(
     persist(
         (set, get) => ({
             config: defaultConfig,
+            launcherChoices: null,
             publicSettings: null,
             isPublicSettingsLoading: false,
             isConfigOpen: false,
@@ -406,8 +413,37 @@ export const useConfigStore = create<ConfigStore>()(
                 set({ isPublicSettingsLoading: true });
                 try {
                     const publicSettings = await apiGet<AdminPublicSettings>("/api/settings");
-                    const local = await fetch("/local/config").then((response) => response.json());
-                    set((state) => ({ publicSettings, config: { ...state.config, channelMode: "remote", imageModel: local.imageModel || "", imageChannelId: local.imageChannelId || "", videoModel: local.videoModel || "", videoChannelId: local.videoChannelId || "", textModel: local.textModel || local.directorModel || "", textChannelId: local.textModel ? local.textChannelId : local.directorChannelId, activeChannelId: "", model: local.imageModel || "" } }));
+                    const local = await localConfig().catch(() => null);
+                    if (!local) { set({ publicSettings }); return; }
+                    const launcherChoices: LauncherChoices = {
+                        textModel: local.textModel || local.directorModel, textChannelId: local.textModel ? local.textChannelId : local.directorChannelId,
+                        imageModel: local.imageModel, imageChannelId: local.imageChannelId,
+                        videoModel: local.videoModel, videoChannelId: local.videoChannelId,
+                    };
+                    set(state => {
+                        const config = { ...state.config, channelMode: "remote" as const };
+                        const channels = publicSettings.modelChannel.channels;
+                        for (const role of desktopRoles) {
+                            const model = `${role}Model` as const, channelId = `${role}ChannelId` as const;
+                            const before = state.launcherChoices;
+                            const changed = before && (before[model] !== launcherChoices[model] || before[channelId] !== launcherChoices[channelId]);
+                            const valid = channels.some(channel => channel.id === config[channelId] && channel.models?.includes(config[model]) && modelMatchesCapability(config[model], role, channel.protocol, channel.modelCapabilities));
+                            if (changed || !valid) {
+                                const wasActive = config.model === config[model] && config.activeChannelId === config[channelId];
+                                config[model] = launcherChoices[model];
+                                config[channelId] = launcherChoices[channelId];
+                                if (wasActive) {
+                                    config.model = config[model];
+                                    config.activeChannelId = config[channelId];
+                                }
+                            }
+                        }
+                        if (!channels.some(channel => channel.id === config.activeChannelId && channel.models?.includes(config.model))) {
+                            config.activeChannelId = "";
+                            config.model = config.textModel || config.imageModel;
+                        }
+                        return { publicSettings, config, launcherChoices };
+                    });
                 } finally {
                     set({ isPublicSettingsLoading: false });
                 }
@@ -419,7 +455,7 @@ export const useConfigStore = create<ConfigStore>()(
         }),
         {
             name: CONFIG_STORE_KEY,
-            partialize: (state) => ({ config: state.config }),
+            partialize: (state) => ({ config: state.config, launcherChoices: state.launcherChoices }),
             merge: (persisted, current) => {
                 const persistedState = (persisted || {}) as Partial<ConfigStore>;
                 const persistedConfig = (persistedState.config || {}) as Partial<AiConfig>;
@@ -429,6 +465,7 @@ export const useConfigStore = create<ConfigStore>()(
                 const localModels = normalizeModelList(modelChannels.flatMap((channel) => channel.models));
                 return {
                     ...current,
+                    launcherChoices: persistedState.launcherChoices || null,
                     config: {
                         ...config,
                         localChannels,
@@ -554,6 +591,7 @@ export function channelIdForActiveModel(config: AiConfig) {
     const selectedChannelId = config.model === config.imageModel ? config.imageChannelId : config.model === config.videoModel ? config.videoChannelId : config.model === config.audioModel ? config.audioChannelId : config.model === config.textModel ? config.textChannelId : "";
     const selectedChannel = channels.find((channel) => channel.id === selectedChannelId);
     if (config.activeChannelId && channels.some((channel) => channel.id === config.activeChannelId && channel.models?.includes(config.model))) return config.activeChannelId;
+    if (selectedChannel?.models?.includes(config.model)) return selectedChannelId;
     if (selectedChannel?.protocol === "gemini" || selectedChannel?.protocol === "autodl") return selectedChannelId;
     if (!selectedChannel) {
         const geminiChannel = channels.find((channel) => channel.protocol === "gemini" && (channel.models || []).includes(config.model));

@@ -121,12 +121,18 @@ class Runtime extends EventEmitter {
     const config = this.store.value;
     const settings = await this.api('admin/settings');
     settings.private.channels = config.channels.map(channel => ({ ...channel, protocol: channel.protocol || 'openai', baseUrl: this.gateway.origin + '/local-ai/channels/' + channel.id, apiKey: this.providerToken, weight: 1, timeout: 600 }));
-    settings.public.modelChannel = { ...settings.public.modelChannel, allowCustomChannel: true, allowUserRemoteChannel: true, defaultModel: config.imageModel, defaultImageModel: config.imageModel, defaultTextModel: config.textModel || config.directorModel, defaultVideoModel: config.videoModel, modelCosts: [] };
+    const availableModels = [...new Set(config.channels.filter(channel => channel.enabled).flatMap(channel => channel.models))];
+    settings.public.modelChannel = { ...settings.public.modelChannel, availableModels, allowCustomChannel: true, allowUserRemoteChannel: true, defaultModel: config.imageModel, defaultImageModel: config.imageModel, defaultTextModel: config.textModel || config.directorModel, defaultVideoModel: config.videoModel, modelCosts: [] };
     settings.public.auth = { allowRegister: false, linuxDo: { enabled: false } };
     settings.private.promptSync = { ...settings.private.promptSync, enabled: false };
     await this.api('admin/settings', { method: 'POST', body: JSON.stringify(settings) });
     const previous = await this.api('v1/user-config');
-    await this.api('v1/user-config/model', { method: 'POST', body: JSON.stringify({ config: { ...previous.modelConfig, channelMode: 'remote', imageModel: config.imageModel, imageChannelId: config.imageChannelId, videoModel: config.videoModel, videoChannelId: config.videoChannelId, textModel: config.textModel || config.directorModel, textChannelId: config.textModel ? config.textChannelId : config.directorChannelId, activeChannelId: '', model: config.imageModel } }) });
+    const modelConfig = { ...previous.modelConfig, channelMode: 'remote', imageModel: config.imageModel, imageChannelId: config.imageChannelId, videoModel: config.videoModel, videoChannelId: config.videoChannelId, textModel: config.textModel || config.directorModel, textChannelId: config.textModel ? config.textChannelId : config.directorChannelId };
+    if (!config.channels.some(channel => channel.enabled && channel.id === modelConfig.activeChannelId && channel.models.includes(modelConfig.model))) {
+      modelConfig.activeChannelId = '';
+      modelConfig.model = modelConfig.textModel || modelConfig.imageModel;
+    }
+    await this.api('v1/user-config/model', { method: 'POST', body: JSON.stringify({ config: modelConfig }) });
   }
   async open() { if (!this.gateway || this.state.phase !== 'running') throw new Error('请先启动工作台'); await writableDirectory(this.store.dataDir); await openWorkspace(this.gateway.launchUrl(), this.store.value, this.store.dataDir); }
   async stop() { this.startController?.abort(new Error('已取消启动')); if (this.startPromise) await this.startPromise.catch(() => {}); await this.stopInner(); this.update({ phase: 'stopped', progress: 0, message: '服务已停止', url: '' }); }

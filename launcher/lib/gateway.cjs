@@ -9,7 +9,7 @@ const { Readable } = require('node:stream');
 const { pathToFileURL } = require('node:url');
 const { ProjectEditors, editorIdPattern } = require('./project-editor.cjs');
 const { CanvasBridge } = require('./canvas-bridge.cjs');
-const { directorModelId } = require('./config.cjs');
+const { directorModelId, supportsRole } = require('./config.cjs');
 const { atomicJson, contained, writableDirectory } = require('./files.cjs');
 
 function json(res, status, value) { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(value)); }
@@ -147,7 +147,7 @@ class Gateway {
       if (req.method === 'POST') { const result = await this.store.save(await bodyJson(req)); await this.onConfig?.(); return json(res, 200, result); }
       return json(res, 405, { msg: '不支持的操作' });
     }
-    if (url.pathname === '/local/channels/test' && req.method === 'POST') return json(res, 200, { models: await this.store.testChannel(await bodyJson(req)) });
+    if (url.pathname === '/local/channels/test' && req.method === 'POST') return json(res, 200, await this.store.testChannel(await bodyJson(req)));
     if (url.pathname === '/local/source' && req.method === 'GET') {
       const file = path.resolve(this.root, '..', '..', '对应源码.zip');
       try { const stat = await fs.stat(file); res.writeHead(200, { 'content-type': 'application/zip', 'content-length': stat.size, 'content-disposition': 'attachment; filename="corresponding-source.zip"' }); return require('node:fs').createReadStream(file).pipe(res); }
@@ -231,10 +231,10 @@ class Gateway {
     let channel, buffer;
     if (director) {
       const channels = config.channels.filter(entry => entry.enabled);
-      if (req.method === 'GET' && route === '/models') return json(res, 200, { object: 'list', data: channels.flatMap(entry => entry.models.filter(model => entry.modelCapabilities[model] === 'text').map(model => ({ id: directorModelId(entry.id, model), name: `${entry.name} · ${model}`, object: 'model', owned_by: entry.name }))) });
+      if (req.method === 'GET' && route === '/models') return json(res, 200, { object: 'list', data: channels.flatMap(entry => entry.models.filter(model => supportsRole(entry, model, 'director')).map(model => ({ id: directorModelId(entry.id, model), name: `${entry.name} · ${model}`, object: 'model', owned_by: entry.name }))) });
       if (req.method !== 'POST' || !['/chat/completions', '/responses'].includes(route)) return json(res, 404, { error: { message: '导演台模型接口无效' } });
       const body = await bodyJson(req, 64 * 1024 * 1024);
-      channel = channels.find(entry => entry.models.some(model => entry.modelCapabilities[model] === 'text' && directorModelId(entry.id, model) === body.model));
+      channel = channels.find(entry => entry.models.some(model => supportsRole(entry, model, 'director') && directorModelId(entry.id, model) === body.model));
       if (!channel) return json(res, 400, { error: { message: '该渠道或模型已停用，请重新选择白模导演模型' } });
       body.model = body.model.slice(channel.id.length + 2);
       const bytes = Buffer.from(JSON.stringify(body)); buffer = Readable.from([bytes]);
