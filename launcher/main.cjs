@@ -13,6 +13,7 @@ const updateSource = require('./update-source.json');
 const programRoot = app.isPackaged ? path.dirname(process.execPath) : process.env.CANVAS_DEV_ROOT || path.resolve(__dirname, '..', 'work', 'portable-dev');
 const { root: portableRoot, pointer } = installationPaths(programRoot);
 const trial = app.isPackaged && programRoot !== portableRoot && process.env.CANVAS_STUDIO_TRIAL === path.basename(programRoot);
+const updateFailed = process.env.CANVAS_STUDIO_UPDATE_FAILED === '1';
 delete process.env.CANVAS_STUDIO_TRIAL;
 if (app.isPackaged && !trial && !process.argv.includes('--recover')) {
   try {
@@ -31,6 +32,7 @@ if (app.isPackaged && !trial && !process.argv.includes('--recover')) {
     if (error.code !== 'ENOENT') dialog.showErrorBox('已安装版本不可用', error.message + '\n将打开原启动器。');
   }
 }
+delete process.env.CANVAS_STUDIO_UPDATE_FAILED;
 let dataDir = path.join(portableRoot, 'data');
 try {
   const locator = JSON.parse(fs.readFileSync(path.join(portableRoot, 'portable.json'), 'utf8'));
@@ -150,6 +152,7 @@ else {
     });
     await window.loadFile(path.join(__dirname, 'ui', 'index.html'));
     if (trial) await fsp.writeFile(path.join(programRoot, 'launch-ready'), 'ready', { flag: 'wx' });
+    if (updateFailed) void dialog.showMessageBox(window, { type: 'warning', title: '更新未完成', message: '已重新打开原程序', detail: '项目仍在原数据目录。可以在“检查与修复”重试。安装记录位于 ' + path.join(store.dataDir, 'logs', 'update.log') });
     if (store.value.autoCheckUpdates) setTimeout(() => { if (store.value.autoCheckUpdates) updater.check().catch(error => runtime.log('检查更新：' + error.message)); }, 2000);
   }).catch(error => { dialog.showErrorBox('启动器无法启动', error.message); app.quit(); });
   app.on('before-quit', event => {

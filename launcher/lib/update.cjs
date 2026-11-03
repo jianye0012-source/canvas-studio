@@ -58,12 +58,15 @@ async function prepareInstallation(staging, root, dataDir) {
   const directory = path.join(root, '.versions', id);
   await requireFreeSpace(root, manifest.files.reduce((sum, entry) => sum + entry.size, 0));
   try {
-    await fs.mkdir(path.dirname(directory), { recursive: true });
-    await fs.cp(staging, directory, { recursive: true, errorOnExist: true, force: false });
+    await fs.mkdir(directory, { recursive: true });
+    await atomicJson(path.join(directory, 'managed-version.json'), { id });
+    await atomicJson(path.join(directory, 'package-manifest.json'), manifest);
+    for (const name of await fs.readdir(staging)) {
+      if (name !== 'package-manifest.json') await fs.cp(path.join(staging, name), path.join(directory, name), { recursive: true, errorOnExist: true, force: false });
+    }
     await verifyManifest(directory, { filename: 'package-manifest.json' });
     // Historical launchers read a locator beside their own executable.
     await atomicJson(path.join(directory, 'portable.json'), { dataDir });
-    await atomicJson(path.join(directory, 'managed-version.json'), { id });
     return { id, directory, version: manifest.version };
   } catch (error) {
     await fs.rm(directory, { recursive: true, force: true });
@@ -82,7 +85,7 @@ $stage = ${psLiteral(staging)}
 $child = $null
 $committed = $false
 try {
-  Wait-Process -Id ${Number(parentPid)} -ErrorAction SilentlyContinue
+  ${parentPid > 0 ? `Wait-Process -Id ${Number(parentPid)} -ErrorAction SilentlyContinue` : ''}
   $env:CANVAS_STUDIO_TRIAL = ${psLiteral(id)}
   $child = Start-Process -FilePath $target -PassThru
   Remove-Item Env:CANVAS_STUDIO_TRIAL
@@ -91,7 +94,7 @@ try {
     $child.Refresh()
     if ($child.HasExited) { throw 'The new launcher exited during startup.' }
     if (${psLiteral(version)} -in @('1.2.0','1.3.2','1.3.3')) {
-      if ($child.MainWindowHandle -ne 0) {
+      if ($child.MainWindowHandle -ne 0 -and $child.MainWindowTitle -eq '画布工作台启动器') {
         Start-Sleep -Milliseconds 1200
         $child.Refresh()
         if ($child.HasExited) { throw 'The historical launcher exited during startup.' }
@@ -117,6 +120,7 @@ try {
     Remove-Item Env:CANVAS_STUDIO_TRIAL -ErrorAction SilentlyContinue
     if ($child -and !$child.HasExited) { Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue; Wait-Process -Id $child.Id -ErrorAction SilentlyContinue }
     Remove-Item -LiteralPath ${psLiteral(directory)} -Recurse -Force -ErrorAction SilentlyContinue
+    $env:CANVAS_STUDIO_UPDATE_FAILED = '1'
     Start-Process -FilePath ${psLiteral(path.join(previousProgram, executableName))}
   }
 }
