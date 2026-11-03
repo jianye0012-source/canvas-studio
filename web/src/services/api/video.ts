@@ -393,6 +393,17 @@ async function createAgnesVideoV25RequestBody(config: AiConfig, model: string, p
 }
 
 async function createVideoRequestBody(config: AiConfig, model: string, prompt: string, input: Required<VideoReferenceInput>) {
+    if (videoChannelProtocol(config, model) === "runninghub-standard") {
+        if (input.videoReferences.length || input.audioReferences.length) throw new VideoRequestError("此 RunningHub 视频入口接受参考图片和首尾帧，请移除视频或音频参考");
+        const [imageUrls, firstFrameUrl, lastFrameUrl] = await Promise.all([
+            Promise.all(input.references.map(image => imageToDataUrl(image))),
+            input.firstFrame ? imageToDataUrl(input.firstFrame) : "",
+            input.lastFrame ? imageToDataUrl(input.lastFrame) : "",
+        ]);
+        if ([...imageUrls, firstFrameUrl, lastFrameUrl].reduce((total, url) => total + url.length, 0) > 95 * 1024 * 1024) throw new VideoRequestError("RunningHub 参考图合计过大，请压缩或减少参考图");
+        const resolution = /^\d+$/.test(config.vquality) ? `${config.vquality}p` : config.vquality;
+        return { model, prompt, imageUrls, firstFrameUrl, lastFrameUrl, aspectRatio: normalizeTranslationAspectRatio(config.size), duration: config.videoSeconds, resolution, generateAudio: boolConfig(config.videoGenerateAudio, true) };
+    }
     if (videoChannelProtocol(config, model) === "autodl") {
         const capabilities = getAutoDLCapabilities(await fetchAutoDLWorkflow(autoDLBaseUrl(config, model), model));
         if (!capabilities) throw new VideoRequestError("当前 AutoDL 工作流尚未适配");

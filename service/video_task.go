@@ -175,6 +175,13 @@ func VideoTaskResponse(task model.VideoTask) map[string]any {
 		result["url"] = task.VideoURL
 		result["video_url"] = task.VideoURL
 		result["data"] = []map[string]any{{"url": task.VideoURL}}
+		if id, ok := strings.CutPrefix(task.VideoURL, "/api/files/"); ok {
+			if id, ok := strings.CutSuffix(id, "/content"); ok {
+				if _, err := uuid.Parse(id); err == nil {
+					result["storageKey"] = "server:" + id
+				}
+			}
+		}
 	}
 	if task.WorkflowRef != "" {
 		result["workflowRef"] = task.WorkflowRef

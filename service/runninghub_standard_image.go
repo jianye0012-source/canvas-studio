@@ -19,13 +19,12 @@ import (
 	"github.com/tigerowo/infinite-canvas/repository"
 )
 
-const RunningHubStandardImageProtocol = "runninghub-standard"
+const RunningHubStandardProtocol = "runninghub-standard"
 const RunningHubStandardImageEndpoint = "/runninghub/submit"
-const runningHubStandardImageModel = "rhart-image-g-2/image-to-image"
 
 var runningHubStandardTaskIDPattern = regexp.MustCompile(`^[0-9]{1,32}$`)
 
-type runningHubStandardImageResult struct {
+type runningHubStandardResult struct {
 	TaskID       string `json:"taskId"`
 	Status       string `json:"status"`
 	ErrorMessage string `json:"errorMessage"`
@@ -39,15 +38,15 @@ type runningHubStandardImageResult struct {
 }
 
 func runningHubStandardProviderID(task model.CanvasImageTask) string {
-	var response runningHubStandardImageResult
+	var response runningHubStandardResult
 	if json.Unmarshal([]byte(task.ResponseBody), &response) == nil && runningHubStandardTaskIDPattern.MatchString(response.TaskID) {
 		return response.TaskID
 	}
 	return ""
 }
 
-func runningHubStandardImageRequest(ctx context.Context, channel model.ModelChannel, endpoint string, body []byte) (runningHubStandardImageResult, error) {
-	var result runningHubStandardImageResult
+func runningHubStandardRequest(ctx context.Context, channel model.ModelChannel, endpoint string, body []byte) (runningHubStandardResult, error) {
+	var result runningHubStandardResult
 	// The gateway port and token change on restart before saved settings refresh.
 	if config.Cfg.LocalProviderBase != "" && config.Cfg.LocalProviderToken != "" {
 		origin, err := url.Parse(config.Cfg.LocalProviderBase)
@@ -58,7 +57,7 @@ func runningHubStandardImageRequest(ctx context.Context, channel model.ModelChan
 		channel.BaseURL, channel.APIKey = origin.String(), config.Cfg.LocalProviderToken
 	}
 	base, err := url.Parse(channel.BaseURL)
-	if config.Cfg.LocalToken == "" || channel.Protocol != RunningHubStandardImageProtocol || err != nil ||
+	if config.Cfg.LocalToken == "" || channel.Protocol != RunningHubStandardProtocol || err != nil ||
 		base.Scheme != "http" || base.Hostname() != "127.0.0.1" || base.User != nil || base.RawQuery != "" || base.Fragment != "" ||
 		!strings.HasPrefix(base.Path, "/local-ai/channels/") {
 		return result, errors.New("RunningHub 标准模型需要从本机启动器配置")
@@ -69,7 +68,11 @@ func runningHubStandardImageRequest(ctx context.Context, channel model.ModelChan
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+channel.APIKey)
-	client := &http.Client{Timeout: 45 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	timeout := 45 * time.Second
+	if endpoint == RunningHubStandardImageEndpoint {
+		timeout = 5 * time.Minute
+	}
+	client := &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	response, err := client.Do(request)
 	if err != nil {
 		return result, errors.New("无法连接本机 RunningHub 渠道")
@@ -85,10 +88,10 @@ func runningHubStandardImageRequest(ctx context.Context, channel model.ModelChan
 }
 
 func SubmitRunningHubStandardImage(ctx context.Context, task model.CanvasImageTask, channel model.ModelChannel, body []byte) error {
-	if task.Model != runningHubStandardImageModel || task.ContentType != "application/json" {
-		return errors.New("请选择 RunningHub GPT Image 2 图生图，并提供参考图")
+	if task.ContentType != "application/json" {
+		return errors.New("RunningHub 图片任务格式无效")
 	}
-	result, err := runningHubStandardImageRequest(ctx, channel, RunningHubStandardImageEndpoint, body)
+	result, err := runningHubStandardRequest(ctx, channel, RunningHubStandardImageEndpoint, body)
 	if err != nil {
 		return fmt.Errorf("%w；重试前请先核对 RunningHub 任务记录", err)
 	}
@@ -113,7 +116,7 @@ func pollRunningHubStandardImage(ctx context.Context, task model.CanvasImageTask
 		return err
 	}
 	body, _ := json.Marshal(map[string]string{"taskId": id})
-	result, err := runningHubStandardImageRequest(ctx, channel, "/runninghub/query", body)
+	result, err := runningHubStandardRequest(ctx, channel, "/runninghub/query", body)
 	if err != nil {
 		return err
 	}
@@ -121,10 +124,10 @@ func pollRunningHubStandardImage(ctx context.Context, task model.CanvasImageTask
 		return errors.New("RunningHub 返回了不匹配的任务编号")
 	}
 	switch strings.ToUpper(result.Status) {
-	case "QUEUED", "RUNNING":
+	case "CREATE", "QUEUED", "RUNNING":
 		return nil
-	case "FAILED":
-		return failRunningHubStandardImage(task, firstVideoTaskValue(result.ErrorMessage, result.ErrorCode, "RunningHub 图生图任务失败"))
+	case "FAILED", "CANCEL", "CANCELLED":
+		return failRunningHubStandardImage(task, firstVideoTaskValue(result.ErrorMessage, result.ErrorCode, "RunningHub 图片任务失败"))
 	case "SUCCESS":
 		if len(result.Results) == 0 || result.Results[0].URL == "" {
 			return failRunningHubStandardImage(task, "RunningHub 任务完成但没有返回图片")
@@ -165,6 +168,63 @@ func failRunningHubStandardImage(task model.CanvasImageTask, message string) err
 	task.Status, task.CompletedAt, task.Error = "failed", now(), message
 	_, err := SaveCanvasImageTask(task)
 	return err
+}
+
+func PollRunningHubStandardVideo(ctx context.Context, task model.VideoTask, channel model.ModelChannel) (VideoTaskPollUpdate, error) {
+	id := task.UpstreamTaskID
+	if !runningHubStandardTaskIDPattern.MatchString(id) {
+		return VideoTaskPollUpdate{Status: "failed", Error: "RunningHub 视频任务编号无效"}, nil
+	}
+	created, _ := time.Parse(time.RFC3339, task.CreatedAt)
+	if !created.IsZero() && time.Since(created) > 24*time.Hour {
+		return VideoTaskPollUpdate{Status: "failed", Error: "RunningHub 任务超过等待时间，请在服务商任务记录中核对"}, nil
+	}
+	body, _ := json.Marshal(map[string]string{"taskId": id})
+	result, err := runningHubStandardRequest(ctx, channel, "/runninghub/query", body)
+	if err != nil {
+		return VideoTaskPollUpdate{}, err
+	}
+	if result.TaskID != id {
+		return VideoTaskPollUpdate{}, errors.New("RunningHub 返回了不匹配的任务编号")
+	}
+	switch strings.ToUpper(result.Status) {
+	case "CREATE", "QUEUED":
+		return VideoTaskPollUpdate{Status: "queued"}, nil
+	case "RUNNING":
+		return VideoTaskPollUpdate{Status: "running"}, nil
+	case "FAILED", "CANCEL", "CANCELLED":
+		return VideoTaskPollUpdate{Status: "failed", Error: firstVideoTaskValue(result.ErrorMessage, result.ErrorCode, "RunningHub 视频生成失败")}, nil
+	case "SUCCESS":
+	default:
+		return VideoTaskPollUpdate{}, errors.New("RunningHub 返回未知视频任务状态")
+	}
+	if len(result.Results) == 0 || result.Results[0].URL == "" {
+		return VideoTaskPollUpdate{Status: "failed", Error: "RunningHub 未返回视频文件"}, nil
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, result.Results[0].URL, nil)
+	if err != nil || request.URL.Scheme != "https" {
+		return VideoTaskPollUpdate{Status: "failed", Error: "RunningHub 返回的视频地址无效"}, nil
+	}
+	response, err := SafeProxyHTTPClient().Do(request)
+	if err != nil {
+		return VideoTaskPollUpdate{}, errors.New("无法下载 RunningHub 生成的视频，将继续尝试")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return VideoTaskPollUpdate{}, fmt.Errorf("下载 RunningHub 视频失败，HTTP %d", response.StatusCode)
+	}
+	reader := bufio.NewReader(response.Body)
+	prefix, _ := reader.Peek(512)
+	contentType := http.DetectContentType(prefix)
+	extension := map[string]string{"video/mp4": ".mp4", "video/webm": ".webm"}[contentType]
+	if extension == "" {
+		return VideoTaskPollUpdate{Status: "failed", Error: "RunningHub 返回的文件格式无法作为视频保存"}, nil
+	}
+	stored, err := UploadLocalObjectStream(WithUser(ctx, model.AuthUser{ID: task.UserID}), "RunningHub"+extension, contentType, reader)
+	if err != nil {
+		return VideoTaskPollUpdate{}, err
+	}
+	return VideoTaskPollUpdate{Status: "completed", Progress: 100, VideoURL: stored.URL}, nil
 }
 
 func resumeRunningHubStandardImageTasks() error {

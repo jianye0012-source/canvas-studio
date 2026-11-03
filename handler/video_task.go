@@ -320,6 +320,9 @@ func pollVideoTaskFromUpstream(ctx context.Context, task model.VideoTask) (servi
 	if err != nil {
 		return service.VideoTaskPollUpdate{}, err
 	}
+	if channel.Protocol == service.RunningHubStandardProtocol {
+		return service.PollRunningHubStandardVideo(ctx, task, channel)
+	}
 	if task.ParameterTranslationSnapshot != "" {
 		update, err := service.PollParameterTranslationVideo(ctx, task, channel)
 		if err != nil || service.IsCompletedVideoTaskStatus(update.Status) || service.IsFailedVideoTaskStatus(update.Status) {

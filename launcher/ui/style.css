@@ -13,3 +13,4 @@
 #runninghub-catalogue ul{max-height:220px;overflow:auto;list-style:none;margin:7px 0 0;padding:0}
 #runninghub-catalogue li{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:6px 4px;border-bottom:1px solid #edf0f5;overflow-wrap:anywhere}
 #runninghub-catalogue li small{color:#60728d;white-space:nowrap}
+#runninghub-catalogue li button{padding:4px 8px;font-size:11px;white-space:nowrap}

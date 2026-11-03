@@ -113,6 +113,7 @@ else {
       },
       'config:save': async (_event, value) => { const result = await store.save(value); if (runtime.state.phase === 'running' && value.channels) await runtime.configureCanvas(); return result; },
       'config:test': (_event, value) => store.testChannel(value),
+      'config:runninghub-model': (_event, id) => store.readRunningHubModel(id),
       'storage:open': () => shell.openPath(store.dataDir),
       'storage:choose': async () => {
         if (runtime.state.phase !== 'stopped' && runtime.state.phase !== 'error') throw new Error('请先停止服务，再切换数据目录');

@@ -148,6 +148,7 @@ class Gateway {
       return json(res, 405, { msg: '不支持的操作' });
     }
     if (url.pathname === '/local/channels/test' && req.method === 'POST') return json(res, 200, await this.store.testChannel(await bodyJson(req)));
+    if (url.pathname === '/local/channels/runninghub-model' && req.method === 'POST') return json(res, 200, await this.store.readRunningHubModel((await bodyJson(req)).id));
     if (url.pathname === '/local/source' && req.method === 'GET') {
       const file = path.resolve(this.root, '..', '..', '对应源码.zip');
       try { const stat = await fs.stat(file); res.writeHead(200, { 'content-type': 'application/zip', 'content-length': stat.size, 'content-disposition': 'attachment; filename="corresponding-source.zip"' }); return require('node:fs').createReadStream(file).pipe(res); }
@@ -246,14 +247,17 @@ class Gateway {
       return json(res, 200, { object: 'list', data: channel.models.map(id => ({ id, object: 'model', owned_by: channel.name })) });
     }
     if (channel.protocol === runningHub.protocol) {
-      if (!jsonEqual(req.headers.authorization, `Bearer ${this.providerToken}`) || req.method !== 'POST' || !['/runninghub/submit', '/runninghub/query'].includes(route)) {
-        return json(res, 403, { error: { message: '请选择画布图生图任务使用 RunningHub 标准模型' } });
+      const videoSubmit = req.method === 'POST' && route === '/videos';
+      const image = req.method === 'POST' && ['/runninghub/submit', '/runninghub/query'].includes(route);
+      if (!jsonEqual(req.headers.authorization, `Bearer ${this.providerToken}`) || !(image || videoSubmit)) {
+        return json(res, 403, { error: { message: '请选择工作台中该 RunningHub 渠道对应的生成模型' } });
       }
       const controller = new AbortController();
       res.once('close', () => controller.abort());
       try {
         const input = await bodyJson(req, 96 * 1024 * 1024);
-        const result = await runningHub.callStandardImage(channel, route, input, { fetchImpl: this.store.fetchImpl, signal: controller.signal });
+        const options = { fetchImpl: this.store.fetchImpl, signal: controller.signal };
+        const result = image ? await runningHub.callStandardImage(channel, route, input, options) : await runningHub.callStandardVideo(channel, input, options);
         return json(res, 200, result);
       } catch (error) {
         if (!res.destroyed) return json(res, 502, { error: { message: error.message } });

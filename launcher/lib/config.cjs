@@ -39,8 +39,10 @@ function validateConfig(value) {
     if (!['openai', runningHub.protocol].includes(protocol)) throw new Error('请选择有效的渠道类型');
     let baseUrl = text(channel.baseUrl || '', '接口地址');
     if (protocol === runningHub.protocol) {
-      const models = Array.isArray(channel.models) && channel.models.includes(runningHub.model) ? [runningHub.model] : [];
-      return { id, name, protocol, baseUrl: runningHub.normalizeRunningHubURL(baseUrl), apiKey: text(channel.apiKey || '', 'API Key'), enabled: channel.enabled !== false, models, modelCapabilities: models.length ? { [runningHub.model]: 'image' } : {}, modelToolSupport: {} };
+      const runningHubModels = runningHub.configuredModels(channel);
+      const modelCapabilities = Object.fromEntries(Object.entries(runningHubModels).map(([id, spec]) => [id, spec.type]));
+      if (Array.isArray(channel.models) && channel.models.includes(runningHub.model)) modelCapabilities[runningHub.model] = 'image';
+      return { id, name, protocol, baseUrl: runningHub.normalizeRunningHubURL(baseUrl), apiKey: text(channel.apiKey || '', 'API Key'), enabled: channel.enabled !== false, models: Object.keys(modelCapabilities), modelCapabilities, modelToolSupport: {}, runningHubModels };
     }
     if (baseUrl) {
       const url = new URL(baseUrl);
@@ -111,7 +113,11 @@ class ConfigStore {
     const channel = validateConfig({ ...defaults, channels: [this.channelInput(input)] }).channels[0];
     if (!channel.baseUrl) throw new Error('请先填写接口地址');
     const keyUnavailable = this.unavailable.has(channel.id) && !channel.apiKey && !input.clearApiKey;
-    if (channel.protocol === runningHub.protocol) return runningHub.detect(channel, { fetchImpl: this.fetchImpl, catalogueFetch: this.catalogueFetch, keyUnavailable });
+    if (channel.protocol === runningHub.protocol) {
+      const result = await runningHub.detect(channel, { fetchImpl: this.fetchImpl, catalogueFetch: this.catalogueFetch, keyUnavailable });
+      this.runningHubCatalogue = result.runningHub.models;
+      return result;
+    }
     if (keyUnavailable) throw new Error('该渠道密钥无法解密，请重新填写');
     if (/^https:\/\/(?:www\.)?runninghub\.ai(?:\/|$)/.test(channel.baseUrl)) throw new Error('RunningHub 标准生图请选择 RunningHub 标准模型渠道；文字模型使用 https://llm.runninghub.ai/v1');
     const response = await this.fetchImpl(channel.baseUrl + '/v1/models', { headers: channel.apiKey ? { Authorization: 'Bearer ' + channel.apiKey } : {}, signal: AbortSignal.timeout(15000) });
@@ -120,6 +126,7 @@ class ConfigStore {
     if (!result || !Array.isArray(result.data || result.models)) throw new Error('接口未返回模型列表，请填写 OpenAI 兼容 API 地址');
     return discoverModels(result.data || result.models);
   }
+  readRunningHubModel(id) { return runningHub.loadModel(id, this.runningHubCatalogue || [], this.catalogueFetch); }
   async selectDataDir(directory) { await writableDirectory(directory); await atomicJson(path.join(this.root, 'portable.json'), { dataDir: path.resolve(directory) }); return { restartRequired: true, dataDir: directory }; }
 }
 module.exports = { ConfigStore, validateConfig, upgradeConfig, roles, capabilityFor, supportsRole, directorModelId };

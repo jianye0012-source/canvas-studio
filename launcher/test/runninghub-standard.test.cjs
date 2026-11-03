@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { ConfigStore, validateConfig } = require('../lib/config.cjs');
-const { model, protocol, callStandardImage } = require('../lib/runninghub-standard.cjs');
+const { model, protocol, callStandardImage, callStandardVideo } = require('../lib/runninghub-standard.cjs');
 
 const officialIndex = [
   '- Standard Model API > Image Generation & Processing > image-to-image > gpt [GPT Image 2](https://www.runninghub.ai/runninghub-api-doc-en/api-448184504.md):',
@@ -21,8 +21,8 @@ test('RunningHub 检测联网读取并分类官方目录，账户密钥只发送
   });
   store.value = validateConfig({ channels: [] });
   const result = await store.testChannel(channel);
-  assert.deepEqual(result.models, [model]);
-  assert.deepEqual(result.runningHub.models.map(({ type, integrated }) => [type, integrated]), [['image', true], ['video', false], ['3d', false]]);
+  assert.deepEqual(result.models, []);
+  assert.deepEqual(result.runningHub.models.map(({ type, importable }) => [type, importable]), [['image', true], ['video', true], ['3d', false]]);
   assert.equal(result.runningHub.models[2].name, '3D [Deprecated]');
   assert.equal(result.runningHub.accountError, '');
   assert.equal(calls[0].url, 'https://www.runninghub.ai/runninghub-api-doc-en/llms.txt');
@@ -67,7 +67,7 @@ test('RunningHub 目录可独立展示，读取失败不会返回内置目录或
 });
 
 test('图生图参数和查询走不同端点，拒绝缺少参考图且清理错误信息中的密钥', async () => {
-  const channel = { baseUrl: 'https://www.runninghub.ai', apiKey: 'fixture-key' };
+  const channel = { baseUrl: 'https://www.runninghub.ai', apiKey: 'fixture-key', models: [model], modelCapabilities: { [model]: 'image' } };
   const calls = [];
   const options = { fetchImpl: async (url, request) => {
     calls.push([url, JSON.parse(request.body)]);
@@ -82,5 +82,58 @@ test('图生图参数和查询走不同端点，拒绝缺少参考图且清理�
   assert.deepEqual(calls, [
     ['https://www.runninghub.ai/openapi/v2/' + model, params],
     ['https://www.runninghub.ai/openapi/v2/query', { taskId: '123' }],
+  ]);
+});
+
+test('同一 RunningHub 渠道按官方参数添加多个模型，生成走各自端点', async () => {
+  const textModel = 'example/text-to-image';
+  const videoModel = 'example/image-to-video';
+  const prompt = { type: 'string', maxLength: 20000 };
+  const image = { type: 'string', format: 'uri' };
+  const docs = {
+    'api-448184504.md': [textModel, ['prompt'], { prompt, aspectRatio: { type: 'string', enum: ['16:9'], default: '16:9' } }],
+    'api-123.md': [videoModel, ['prompt', 'imageUrl', 'duration'], { prompt, imageUrl: image, duration: { type: 'integer', default: 5 } }],
+  };
+  const calls = [];
+  const store = new ConfigStore('', null, null, async (url, request) => {
+    if (url.endsWith('/llms.txt')) return new Response(officialIndex);
+    const doc = docs[url.split('/').at(-1)];
+    if (doc) {
+      assert.equal(request.headers, undefined);
+      const [endpoint, required, properties] = doc;
+      const definition = { paths: { ['/openapi/v2/' + endpoint]: { post: { requestBody: { content: { 'application/json': { schema: { required, properties } } } } } } } };
+      return new Response(['# 测试模型', '', '\x60\x60\x60yaml', JSON.stringify(definition), '\x60\x60\x60'].join('\n'));
+    }
+    return Response.json({ code: 0, data: {} });
+  });
+  const input = { id: 'rh', name: 'RunningHub', protocol, baseUrl: 'https://www.runninghub.ai', apiKey: 'fixture-key' };
+  store.value = validateConfig({ channels: [] });
+  await store.testChannel(input);
+  await assert.rejects(() => store.readRunningHubModel('456'), /请选择|请先检测/);
+  const specs = await Promise.all(['448184504', '123'].map(id => store.readRunningHubModel(id)));
+  const channel = validateConfig({
+    channels: [{ ...input, models: [model, textModel, videoModel], runningHubModels: Object.fromEntries(specs.map(({ endpoint, ...spec }) => [endpoint, spec])) }],
+    imageChannelId: 'rh', imageModel: model, videoChannelId: 'rh', videoModel,
+  }).channels[0];
+  assert.deepEqual(channel.modelCapabilities, { [model]: 'image', [textModel]: 'image', [videoModel]: 'video' });
+  const options = { fetchImpl: async (url, request) => {
+    const route = url.split('/openapi/v2/')[1];
+    if (route === 'media/upload/binary') {
+      assert.equal(request.body.get('file').type, 'image/png');
+      calls.push([route]);
+      return Response.json({ code: 0, data: { download_url: 'https://cdn.example.org/source.png' } });
+    }
+    calls.push([route, JSON.parse(request.body)]);
+    return Response.json({ taskId: '234', status: 'CREATE' });
+  } };
+  await callStandardImage(channel, '/runninghub/submit', { model: textModel, prompt: '文生图', aspectRatio: '1:1' }, options);
+  await assert.rejects(() => callStandardVideo(channel, { model: videoModel, prompt: '图生视频' }, options), /请添加参考图/);
+  const task = await callStandardVideo(channel, { model: videoModel, prompt: '图生视频', imageUrls: ['data:image/png;base64,YQ=='], duration: '8' }, options);
+  assert.deepEqual(task, { id: '234', task_id: '234', status: 'queued' });
+  await assert.rejects(() => callStandardVideo(channel, { model: textModel, prompt: '类型错误' }, options), /类型不匹配/);
+  assert.deepEqual(calls, [
+    [textModel, { prompt: '文生图', aspectRatio: '16:9' }],
+    ['media/upload/binary'],
+    [videoModel, { prompt: '图生视频', imageUrl: 'https://cdn.example.org/source.png', duration: 8 }],
   ]);
 });

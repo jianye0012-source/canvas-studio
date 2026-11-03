@@ -17,6 +17,8 @@ import (
 	"github.com/tigerowo/infinite-canvas/repository"
 )
 
+const runningHubStandardImageModel = "rhart-image-g-2/image-to-image"
+
 type runningHubTestTransport func(*http.Request) (*http.Response, error)
 
 func (transport runningHubTestTransport) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -30,6 +32,7 @@ func TestRunningHubImageTaskReusesProviderIDAndSavesResult(t *testing.T) {
 	config.Cfg.LocalToken, config.Cfg.LocalDataDir = "local-test", root
 	config.Cfg.StorageDriver, config.Cfg.DatabaseDSN = "sqlite", filepath.Join(root, "workspace.db")
 	const providerID = "2013508786110730241"
+	const videoID = "2013508786110730242"
 	var submits, queries int
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -44,6 +47,10 @@ func TestRunningHubImageTaskReusesProviderIDAndSavesResult(t *testing.T) {
 			queries++
 			var body map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["taskId"] == videoID {
+				_ = json.NewEncoder(w).Encode(map[string]any{"taskId": videoID, "status": "SUCCESS", "results": []map[string]string{{"url": "https://example.com/video.mp4"}}})
+				return
+			}
 			if body["taskId"] != providerID {
 				t.Errorf("wrong query ID %v", body)
 			}
@@ -57,12 +64,18 @@ func TestRunningHubImageTaskReusesProviderIDAndSavesResult(t *testing.T) {
 	config.Cfg.LocalProviderBase, config.Cfg.LocalProviderToken = gateway.URL+"/local-ai/director", "mock-token"
 	imageBytes, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aH2sAAAAASUVORK5CYII=")
 	safeProxyHTTPClient = &http.Client{Transport: runningHubTestTransport(func(request *http.Request) (*http.Response, error) {
-		if request.URL.String() != "https://example.com/image.png" || request.Header.Get("Authorization") != "" {
-			t.Error("image download used unexpected URL or credentials")
+		if request.Header.Get("Authorization") != "" {
+			t.Error("download sent the provider token")
+		}
+		if request.URL.String() == "https://example.com/video.mp4" {
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("\x00\x00\x00\x14ftypmp42\x00\x00\x00\x00mp42"))}, nil
+		}
+		if request.URL.String() != "https://example.com/image.png" {
+			t.Error("image download used unexpected URL")
 		}
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(imageBytes)))}, nil
 	})}
-	channel := model.ModelChannel{ID: "rh", Enabled: true, Protocol: RunningHubStandardImageProtocol, BaseURL: "http://127.0.0.1:1/local-ai/channels/rh", APIKey: "previous-token", Models: []string{runningHubStandardImageModel}}
+	channel := model.ModelChannel{ID: "rh", Enabled: true, Protocol: RunningHubStandardProtocol, BaseURL: "http://127.0.0.1:1/local-ai/channels/rh", APIKey: "previous-token", Models: []string{runningHubStandardImageModel}}
 	settings := model.Settings{}
 	settings.Private.Channels = []model.ModelChannel{channel}
 	if _, err := repository.SaveSettings(settings, now()); err != nil {
@@ -106,5 +119,17 @@ func TestRunningHubImageTaskReusesProviderIDAndSavesResult(t *testing.T) {
 	files, _ := os.ReadDir(filepath.Join(root, "assets"))
 	if len(files) != 1 {
 		t.Fatalf("expected one result image on disk, got %d", len(files))
+	}
+	video, err := PollRunningHubStandardVideo(context.Background(), model.VideoTask{UserID: task.UserID, UpstreamTaskID: videoID}, channel)
+	if err != nil || video.Status != "completed" || !strings.HasPrefix(video.VideoURL, "/api/files/") || submits != 1 || queries != 2 {
+		t.Fatalf("unexpected video result %+v, submits %d, queries %d, error %v", video, submits, queries, err)
+	}
+	response := VideoTaskResponse(model.VideoTask{VideoURL: video.VideoURL})
+	if key, _ := response["storageKey"].(string); !strings.HasPrefix(key, "server:") {
+		t.Fatalf("local video does not expose the storage key: %+v", response)
+	}
+	files, _ = os.ReadDir(filepath.Join(root, "assets"))
+	if len(files) != 2 {
+		t.Fatalf("expected one image and one video on disk, got %d files", len(files))
 	}
 }

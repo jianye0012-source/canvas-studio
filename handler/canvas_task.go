@@ -79,10 +79,10 @@ func CreateCanvasImageTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	generationType := strings.TrimPrefix(endpoint, "/images/")
-	runningHub := channel.Protocol == service.RunningHubStandardImageProtocol
+	runningHub := channel.Protocol == service.RunningHubStandardProtocol
 	if runningHub {
-		if endpoint != "/images/edits" || contentType != "application/json" {
-			Fail(w, "RunningHub 图生图需要提供参考图")
+		if (endpoint != "/images/edits" && endpoint != "/images/generations") || contentType != "application/json" {
+			Fail(w, "RunningHub 图片任务格式无效")
 			return
 		}
 		endpoint = service.RunningHubStandardImageEndpoint

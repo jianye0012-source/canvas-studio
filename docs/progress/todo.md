@@ -17,4 +17,4 @@ description: 当前项目后续值得处理的事项
 
 - 模型目录自动分类、渠道选择保留和 RunningHub GPT Image 2 经济版图生图适配已移至 [待测试](pending-test.md)，待真实账户验收。
 
-- RunningHub 标准模型在线目录已移至 [待测试](pending-test.md)，待真实账户和 Windows 网络环境验收。
+- RunningHub 标准模型在线目录和图片／视频多模型已移至 [待测试](pending-test.md)，待真实账户和 Windows 网络环境验收。
