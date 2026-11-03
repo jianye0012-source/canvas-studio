@@ -14,6 +14,8 @@ import (
 type Config struct {
 	LocalToken          string `env:"CANVAS_LOCAL_TOKEN"`
 	LocalDataDir        string `env:"CANVAS_LOCAL_DATA_DIR"`
+	LocalProviderBase   string `env:"CANVAS_LOCAL_PROVIDER_BASE"`
+	LocalProviderToken  string `env:"CANVAS_LOCAL_PROVIDER_TOKEN"`
 	Port                string `env:"PORT" envDefault:"8080"`
 	AdminUsername       string `env:"ADMIN_USERNAME" envDefault:"admin"`
 	AdminPassword       string `env:"ADMIN_PASSWORD" envDefault:"infinite-canvas"`

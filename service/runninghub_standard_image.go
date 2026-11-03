@@ -48,6 +48,15 @@ func runningHubStandardProviderID(task model.CanvasImageTask) string {
 
 func runningHubStandardImageRequest(ctx context.Context, channel model.ModelChannel, endpoint string, body []byte) (runningHubStandardImageResult, error) {
 	var result runningHubStandardImageResult
+	// The gateway port and token change on restart before saved settings refresh.
+	if config.Cfg.LocalProviderBase != "" && config.Cfg.LocalProviderToken != "" {
+		origin, err := url.Parse(config.Cfg.LocalProviderBase)
+		if err != nil {
+			return result, errors.New("本机 RunningHub 网关地址无效")
+		}
+		origin.Path = "/local-ai/channels/" + channel.ID
+		channel.BaseURL, channel.APIKey = origin.String(), config.Cfg.LocalProviderToken
+	}
 	base, err := url.Parse(channel.BaseURL)
 	if config.Cfg.LocalToken == "" || channel.Protocol != RunningHubStandardImageProtocol || err != nil ||
 		base.Scheme != "http" || base.Hostname() != "127.0.0.1" || base.User != nil || base.RawQuery != "" || base.Fragment != "" ||
@@ -129,7 +138,7 @@ func pollRunningHubStandardImage(ctx context.Context, task model.CanvasImageTask
 	}
 	response, err := SafeProxyHTTPClient().Do(request)
 	if err != nil {
-		return err
+		return errors.New("无法下载 RunningHub 生成的图片，将继续尝试")
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {

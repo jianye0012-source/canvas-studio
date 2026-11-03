@@ -54,6 +54,7 @@ func TestRunningHubImageTaskReusesProviderIDAndSavesResult(t *testing.T) {
 		}
 	}))
 	defer gateway.Close()
+	config.Cfg.LocalProviderBase, config.Cfg.LocalProviderToken = gateway.URL+"/local-ai/director", "mock-token"
 	imageBytes, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aH2sAAAAASUVORK5CYII=")
 	safeProxyHTTPClient = &http.Client{Transport: runningHubTestTransport(func(request *http.Request) (*http.Response, error) {
 		if request.URL.String() != "https://example.com/image.png" || request.Header.Get("Authorization") != "" {
@@ -61,7 +62,7 @@ func TestRunningHubImageTaskReusesProviderIDAndSavesResult(t *testing.T) {
 		}
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(imageBytes)))}, nil
 	})}
-	channel := model.ModelChannel{ID: "rh", Enabled: true, Protocol: RunningHubStandardImageProtocol, BaseURL: gateway.URL + "/local-ai/channels/rh", APIKey: "mock-token", Models: []string{runningHubStandardImageModel}}
+	channel := model.ModelChannel{ID: "rh", Enabled: true, Protocol: RunningHubStandardImageProtocol, BaseURL: "http://127.0.0.1:1/local-ai/channels/rh", APIKey: "previous-token", Models: []string{runningHubStandardImageModel}}
 	settings := model.Settings{}
 	settings.Private.Channels = []model.ModelChannel{channel}
 	if _, err := repository.SaveSettings(settings, now()); err != nil {
