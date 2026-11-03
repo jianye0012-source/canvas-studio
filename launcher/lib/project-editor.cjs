@@ -51,7 +51,7 @@ class ProjectEditors {
   }
   async claim(projectId, owner, nodeId, attempt) {
     if (!this.canWrite(projectId, owner) || !owner) throw new Error('编辑权限已失效，请重新打开画布');
-    if (!editorIdPattern.test(nodeId) || !editorIdPattern.test(attempt)) throw new Error('循环任务编号无效');
+    if (typeof nodeId !== 'string' || typeof attempt !== 'string' || !editorIdPattern.test(nodeId) || !editorIdPattern.test(attempt)) throw new Error('循环任务编号无效');
     const key = nodeId + ':' + attempt;
     const previous = this.claims.get(projectId) || Promise.resolve();
     const next = previous.catch(() => {}).then(async () => {

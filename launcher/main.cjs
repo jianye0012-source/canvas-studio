@@ -123,7 +123,7 @@ else {
       'update:download': () => updater.download(),
       'update:clear-cache': () => installOnce(async () => {
         const downloads = await updater.clearCache();
-        const versions = app.isPackaged && !trial ? await clearInactiveVersions(portableRoot, programRoot) : 0;
+        const versions = app.isPackaged && !trial ? await clearInactiveVersions(portableRoot, programRoot, store.dataDir) : 0;
         return { downloads, versions };
       }),
       'update:open-release': () => shell.openExternal(updater.releaseUrl),

@@ -159,3 +159,21 @@ test('中断后按已保存的字节继续下载，正式版标签与安装目�
   assert.equal(await updater.clearCache(), 1);
   assert.equal(await updater.installation(), staged);
 });
+
+test('清理闲置版本仅移除纯程序目录，保留数据目录、活跃版本和未识别文件', async t => {
+  const { prepareInstallation, clearInactiveVersions } = require('../lib/update.cjs');
+  const { dataDir, updater } = await fixture(t);
+  await updater.check(); await updater.download();
+  const staged = await updater.installation();
+  const root = path.join(dataDir, 'program');
+  await fs.mkdir(root);
+  const active = await prepareInstallation(staged, root, dataDir);
+  const cache = await prepareInstallation(staged, root, dataDir);
+  const personal = await prepareInstallation(staged, root, dataDir);
+  await fs.writeFile(path.join(root, '.versions', 'active.json'), JSON.stringify({ id: active.id }));
+  await fs.writeFile(path.join(personal.directory, '我的项目.txt'), '保留');
+  assert.equal(await clearInactiveVersions(root, root, dataDir), 1);
+  await assert.rejects(() => fs.stat(cache.directory), { code: 'ENOENT' });
+  assert.ok((await fs.stat(active.directory)).isDirectory());
+  assert.equal(await fs.readFile(path.join(personal.directory, '我的项目.txt'), 'utf8'), '保留');
+});

@@ -132,7 +132,23 @@ async function applyUpdate(staging, destination, parentPid, dataDir, previousPro
   catch (error) { await fs.rm(prepared.directory, { recursive: true, force: true }); throw error; }
 }
 
-async function clearInactiveVersions(root, program) {
+async function containsOnlyProgramFiles(directory, manifest) {
+  const files = new Set(['package-manifest.json', 'portable.json', 'managed-version.json', 'launch-ready', 'next-active.json', ...manifest.files.map(entry => entry.path)]);
+  const directories = new Set();
+  for (const file of files) for (let parent = path.posix.dirname(file); parent !== '.' && parent !== '/'; parent = path.posix.dirname(parent)) directories.add(parent);
+  async function check(current, prefix = '') {
+    for (const entry of await fs.readdir(current, { withFileTypes: true })) {
+      const relative = prefix + entry.name;
+      if (entry.isDirectory() && directories.has(relative)) {
+        if (!await check(path.join(current, entry.name), relative + '/')) return false;
+      } else if (!entry.isFile() || !files.has(relative)) return false;
+    }
+    return true;
+  }
+  return check(directory);
+}
+
+async function clearInactiveVersions(root, program, dataDir) {
   const versions = path.join(root, '.versions');
   const active = await fs.readFile(path.join(versions, 'active.json'), 'utf8').then(JSON.parse, error => { if (error.code !== 'ENOENT') throw error; return {}; });
   const entries = await fs.readdir(versions, { withFileTypes: true }).catch(error => { if (error.code !== 'ENOENT') throw error; return []; });
@@ -140,8 +156,11 @@ async function clearInactiveVersions(root, program) {
   for (const entry of entries) {
     const directory = path.join(versions, entry.name);
     if (!entry.isDirectory() || !versionDirectory.test(entry.name) || entry.name === active.id || directory === program) continue;
+    if (dataDir === directory || dataDir.startsWith(directory + path.sep)) continue;
     const marker = await fs.readFile(path.join(directory, 'managed-version.json'), 'utf8').then(JSON.parse).catch(() => null);
     if (marker?.id !== entry.name) continue;
+    const manifest = await fs.readFile(path.join(directory, 'package-manifest.json'), 'utf8').then(JSON.parse).catch(() => null);
+    if (manifest?.application !== 'canvas-studio' || !Array.isArray(manifest.files) || !await containsOnlyProgramFiles(directory, manifest)) continue;
     await fs.rm(directory, { recursive: true, force: true }); removed++;
   }
   return removed;
