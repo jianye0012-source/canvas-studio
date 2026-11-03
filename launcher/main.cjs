@@ -61,10 +61,11 @@ else {
       return safeStorage.encryptStringAsync(secret);
     };
     const decrypt = async bytes => (await safeStorage.decryptStringAsync(bytes)).result;
-    store = await new ConfigStore(portableRoot, encrypt, decrypt).initialize();
+    const systemFetch = createUpdateFetch(net);
+    store = await new ConfigStore(portableRoot, encrypt, decrypt, fetch, systemFetch).initialize();
     const bundleRoot = process.env.CANVAS_BUNDLE_ROOT || (app.isPackaged ? path.join(programRoot, 'resources', 'bundle') : path.resolve(__dirname, '..', 'work', 'bundle-linux'));
     runtime = new Runtime({ store, root: bundleRoot, development: !app.isPackaged, chooseFolder: async () => { const result = await dialog.showOpenDialog(window, { title: '选择 FOR 循环的输入文件夹', properties: ['openDirectory'] }); return result.canceled ? null : result.filePaths[0]; } });
-    updater = await new ReleaseUpdater({ dataDir: store.dataDir, currentVersion: app.getVersion(), source: updateSource, fetchImpl: createUpdateFetch(net) }).initialize({ skipPending: trial });
+    updater = await new ReleaseUpdater({ dataDir: store.dataDir, currentVersion: app.getVersion(), source: updateSource, fetchImpl: systemFetch }).initialize({ skipPending: trial });
     window = new BrowserWindow({ width: 1120, height: 780, minWidth: 960, minHeight: 680, title: '画布工作台启动器', backgroundColor: '#f6f7fb', autoHideMenuBar: true, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true } });
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     window.webContents.on('will-navigate', event => event.preventDefault());

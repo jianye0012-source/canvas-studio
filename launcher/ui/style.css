@@ -6,3 +6,10 @@
 #skills-list{display:flex;flex-direction:column;gap:6px}#skills-list button{text-align:left}#skill-form textarea{width:100%;resize:vertical;padding:12px;border:1px solid var(--border,#ddd);border-radius:8px;background:transparent;color:inherit;font:13px/1.7 Consolas,monospace}
 
 .version-picker{display:flex;align-items:flex-end;gap:12px;margin-top:18px}.version-picker label{flex:1;margin:0}.version-picker button{white-space:nowrap}.process-panel{border-top:1px solid #e3e8f1;margin-top:24px;padding-top:22px}.process-panel ul{padding-left:20px;color:#60728d;font-size:12px;line-height:2}.hero-actions{flex-wrap:wrap}
+#runninghub-catalogue{margin-top:16px;padding:12px 14px;border:1px solid #e3e8f1;border-radius:9px}
+#runninghub-catalogue h3{margin:0 0 5px;font-size:13px}
+#runninghub-catalogue details{padding:6px 0;font-size:12px}
+#runninghub-catalogue summary{cursor:pointer}
+#runninghub-catalogue ul{max-height:220px;overflow:auto;list-style:none;margin:7px 0 0;padding:0}
+#runninghub-catalogue li{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:6px 4px;border-bottom:1px solid #edf0f5;overflow-wrap:anywhere}
+#runninghub-catalogue li small{color:#60728d;white-space:nowrap}

@@ -1,14 +1,22 @@
 const protocol = 'runninghub-standard';
 const model = 'rhart-image-g-2/image-to-image';
 const baseURL = 'https://www.runninghub.ai';
+const catalogueURL = baseURL + '/runninghub-api-doc-en/llms.txt';
+const imageDocId = '448184504';
+const catalogueTypes = new Map([
+  ['Image Generation & Processing', 'image'],
+  ['Video Generation & Processing', 'video'],
+  ['3D Generation & Processing', '3d'],
+  ['Audio Generation & Processing', 'audio'],
+]);
 const ratios = new Set(['1:1', '2:3', '3:2', '4:5', '5:4', '4:3', '16:9', '9:16', '21:9', '9:21', '2:1', '1:2', '3:1', '1:3']);
 
 function normalizeRunningHubURL(value) {
   const url = new URL(value || baseURL);
   const pathname = url.pathname.replace(/\/+$/, '');
   if (url.protocol !== 'https:' || !['www.runninghub.ai', 'runninghub.ai'].includes(url.host) || url.username || url.password || url.search || url.hash ||
-      !['', '/openapi/v2', '/openapi/v2/' + model].includes(pathname)) {
-    throw new Error('RunningHub 标准模型请使用 https://www.runninghub.ai 或该模型的完整提交地址');
+      !['', '/runninghub-api-doc-en', '/openapi/v2', '/openapi/v2/' + model].includes(pathname)) {
+    throw new Error('RunningHub 标准模型请使用 https://www.runninghub.ai、官方英文文档首页或已适配模型的完整提交地址');
   }
   return baseURL;
 }
@@ -35,10 +43,37 @@ async function request(channel, route, body, { fetchImpl = fetch, signal } = {})
   return result;
 }
 
-async function readSupportedModels(channel, options) {
+async function checkAccount(channel, options) {
   const result = await request(channel, '/uc/openapi/accountStatus', { apikey: channel.apiKey }, options);
   if (Number(result.code) !== 0 || !result.data) throw new Error('RunningHub 账户检查未返回有效数据');
-  return [model];
+}
+
+async function readCatalogue(fetchImpl) {
+  let source;
+  try {
+    const response = await fetchImpl(catalogueURL, { cache: 'no-store', credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    source = await response.text();
+  } catch (error) {
+    const status = /^HTTP \d{3}$/.test(error.message) ? `（${error.message}）` : '';
+    throw new Error(`无法读取 RunningHub 官方模型目录${status}，请检查网络后重试`);
+  }
+  const models = new Map();
+  const entries = /^- Standard Model API > ([^>\r\n]+?)(?: > [^\r\n]+?)? \[([^\r\n]{1,500}?)\]\(https:\/\/www\.runninghub\.ai\/runninghub-api-doc-en\/api-(\d+)\.md\)/gm;
+  for (const [, category, name, id] of source.matchAll(entries)) {
+    models.set(id, { id, name, type: catalogueTypes.get(category) || 'other', integrated: id === imageDocId });
+  }
+  if (!models.size) throw new Error('RunningHub 官方目录未返回可识别的模型，请稍后重试');
+  return [...models.values()];
+}
+
+async function detect(channel, { fetchImpl, catalogueFetch = fetchImpl, keyUnavailable } = {}) {
+  const [models, accountError] = await Promise.all([
+    readCatalogue(catalogueFetch),
+    keyUnavailable ? '该渠道密钥无法解密，请重新填写' : checkAccount(channel, { fetchImpl }).then(() => '', error => error.message),
+  ]);
+  const available = !accountError && models.some(entry => entry.integrated);
+  return { models: available ? [model] : [], modelCapabilities: available ? { [model]: 'image' } : {}, modelToolSupport: {}, runningHub: { models, accountError } };
 }
 
 function imageParameters(input) {
@@ -62,4 +97,4 @@ async function callStandardImage(channel, route, input, options) {
   return request(channel, '/openapi/v2/query', { taskId: input.taskId }, options);
 }
 
-module.exports = { protocol, model, baseURL, normalizeRunningHubURL, readSupportedModels, callStandardImage };
+module.exports = { protocol, model, baseURL, normalizeRunningHubURL, detect, callStandardImage };

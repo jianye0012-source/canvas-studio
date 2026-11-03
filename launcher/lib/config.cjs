@@ -39,7 +39,8 @@ function validateConfig(value) {
     if (!['openai', runningHub.protocol].includes(protocol)) throw new Error('请选择有效的渠道类型');
     let baseUrl = text(channel.baseUrl || '', '接口地址');
     if (protocol === runningHub.protocol) {
-      return { id, name, protocol, baseUrl: runningHub.normalizeRunningHubURL(baseUrl), apiKey: text(channel.apiKey || '', 'API Key'), enabled: channel.enabled !== false, models: [runningHub.model], modelCapabilities: { [runningHub.model]: 'image' }, modelToolSupport: {} };
+      const models = Array.isArray(channel.models) && channel.models.includes(runningHub.model) ? [runningHub.model] : [];
+      return { id, name, protocol, baseUrl: runningHub.normalizeRunningHubURL(baseUrl), apiKey: text(channel.apiKey || '', 'API Key'), enabled: channel.enabled !== false, models, modelCapabilities: models.length ? { [runningHub.model]: 'image' } : {}, modelToolSupport: {} };
     }
     if (baseUrl) {
       const url = new URL(baseUrl);
@@ -67,7 +68,7 @@ function validateConfig(value) {
 }
 
 class ConfigStore {
-  constructor(root, encrypt, decrypt, fetchImpl = fetch) { this.root = root; this.encrypt = encrypt; this.decrypt = decrypt; this.fetchImpl = fetchImpl; this.unavailable = new Set(); }
+  constructor(root, encrypt, decrypt, fetchImpl = fetch, catalogueFetch = fetchImpl) { this.root = root; this.encrypt = encrypt; this.decrypt = decrypt; this.fetchImpl = fetchImpl; this.catalogueFetch = catalogueFetch; this.unavailable = new Set(); }
   async initialize() {
     let locator;
     try { locator = JSON.parse(await fs.readFile(path.join(this.root, 'portable.json'), 'utf8')); }
@@ -109,8 +110,9 @@ class ConfigStore {
   async testChannel(input) {
     const channel = validateConfig({ ...defaults, channels: [this.channelInput(input)] }).channels[0];
     if (!channel.baseUrl) throw new Error('请先填写接口地址');
-    if (this.unavailable.has(channel.id) && !channel.apiKey && !input.clearApiKey) throw new Error('该渠道密钥无法解密，请重新填写');
-    if (channel.protocol === runningHub.protocol) return discoverModels((await runningHub.readSupportedModels(channel, { fetchImpl: this.fetchImpl })).map(id => ({ id, type: 'image' })));
+    const keyUnavailable = this.unavailable.has(channel.id) && !channel.apiKey && !input.clearApiKey;
+    if (channel.protocol === runningHub.protocol) return runningHub.detect(channel, { fetchImpl: this.fetchImpl, catalogueFetch: this.catalogueFetch, keyUnavailable });
+    if (keyUnavailable) throw new Error('该渠道密钥无法解密，请重新填写');
     if (/^https:\/\/(?:www\.)?runninghub\.ai(?:\/|$)/.test(channel.baseUrl)) throw new Error('RunningHub 标准生图请选择 RunningHub 标准模型渠道；文字模型使用 https://llm.runninghub.ai/v1');
     const response = await this.fetchImpl(channel.baseUrl + '/v1/models', { headers: channel.apiKey ? { Authorization: 'Bearer ' + channel.apiKey } : {}, signal: AbortSignal.timeout(15000) });
     if (!response.ok) throw new Error(`渠道「${channel.name}」返回 ${response.status}，请检查地址与 API Key`);
