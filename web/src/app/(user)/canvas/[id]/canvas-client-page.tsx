@@ -13,7 +13,7 @@ import { useParams, useRouter } from "next/navigation";
 import { ChevronLeft, ChevronRight, Download, Globe2, Home, ImageIcon, Images, Layers3, List, Maximize, Menu, Bot, Music2, PanelLeftClose, PanelLeftOpen, Pause, Play, Plus, Redo2, Settings2, Trash2, Undo2, Upload, Video, Volume2, VolumeX, X } from "lucide-react";
 import { saveAs } from "file-saver";
 
-import { deleteCanvasProjects, stopCanvasTask } from "@/services/api/canvas-tasks";
+import { listCanvasProjects, deleteCanvasProjects, stopCanvasTask } from "@/services/api/canvas-tasks";
 import { createCanvasImageTask, pollCanvasImageTaskStatus, requestImageQuestion, type CanvasImageTask } from "@/services/api/image";
 import { createCanvasAudioTask, pollCanvasAudioTaskStatus, type CanvasAudioTask } from "@/services/api/audio";
 import { createVideoGenerationTask, pollVideoGenerationTaskStatus, VIDEO_POLL_INTERVAL_MS, type VideoResponse } from "@/services/api/video";
@@ -28,6 +28,7 @@ import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { UserStatusActions } from "@/components/layout/user-status-actions";
 import { isKIEKlingV3Config, kieKlingOmniVariant } from "@/components/video-settings-panel";
 import { useAssetStore } from "@/stores/use-asset-store";
+import { clearCanvasEditor, openCanvasEditor, setCanvasEditor, type LoopProgress } from "@/services/api/local-workspace";
 import { useUserStore } from "@/stores/use-user-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "../utils/canvas-image-data";
@@ -75,7 +76,7 @@ import { CanvasToolbar } from "../components/canvas-toolbar";
 import { AssetPickerModal, type AssetPickerTab } from "../components/asset-picker-modal";
 import { CanvasZoomControls } from "../components/canvas-zoom-controls";
 import { CANVAS_ASSET_DRAG_TYPE, CanvasSidePanel } from "../components/canvas-side-panel";
-import { DEFAULT_CANVAS_AGENT_PANEL, DEFAULT_CANVAS_SIDE_PANEL, useCanvasStore, persistCanvasProjectNow } from "../stores/use-canvas-store";
+import { DEFAULT_CANVAS_AGENT_PANEL, DEFAULT_CANVAS_SIDE_PANEL, useCanvasStore, persistCanvasProjectNow, flushCanvasProject } from "../stores/use-canvas-store";
 import { useCanvasUiStore } from "../stores/use-canvas-ui-store";
 import { assistantReferenceContentFromNode, buildNodeMentionReferences, isCanvasReferenceNode } from "../utils/canvas-resource-references";
 import { buildCanvasAgentContext } from "../agent/canvas-agent-context";
@@ -183,15 +184,71 @@ function createCanvasNode(type: CanvasNodeType, position: Position, metadata?: C
 
 export default function CanvasPage() {
     const params = useParams<{ id: string }>();
-    const [mounted, setMounted] = useState(false);
+    const hydrated = useCanvasStore(state => state.hydrated);
+    const local = useUserStore(state => state.user?.id === "local-owner");
+    if (!hydrated) return <CanvasRefreshShell />;
+    return local ? <LocalCanvasSession key={params.id} projectId={params.id} /> : <InfiniteCanvasPage key={params.id} projectId={params.id} />;
+}
 
+function LocalCanvasSession({ projectId }: { projectId: string }) {
+    const [access, setAccess] = useState<"connecting" | "editor" | "viewer" | "disconnected">("connecting");
+    const [progress, setProgress] = useState<LoopProgress | null>(null);
+    const saveStatus = useCanvasStore(state => state.saveStatus[projectId]);
     useEffect(() => {
-        setMounted(true);
-    }, []);
-
-    if (!mounted) return <CanvasRefreshShell />;
-
-    return <InfiniteCanvasPage key={params.id} projectId={params.id} />;
+        const id = crypto.randomUUID();
+        const stream = openCanvasEditor(projectId, id);
+        let closed = false;
+        let owner = false;
+        stream.addEventListener("access", async event => {
+            const value = JSON.parse(event.data) as { owner: boolean; progress?: LoopProgress };
+            if (closed) return;
+            setProgress(value.progress || null);
+            if (!value.owner) { setAccess("viewer"); return; }
+            owner = true;
+            setCanvasEditor(projectId, id);
+            try {
+                const token = useUserStore.getState().token;
+                const latest = (await listCanvasProjects(token)).find(project => project.id === projectId);
+                if (closed) return;
+                const store = useCanvasStore.getState();
+                const cached = store.openProject(projectId);
+                if (latest && (!cached || latest.updatedAt >= cached.updatedAt)) {
+                    useCanvasStore.setState({ projects: [latest, ...store.projects.filter(project => project.id !== projectId)] });
+                }
+                setAccess("editor");
+            } catch { stream.close(); setAccess("disconnected"); }
+        });
+        stream.addEventListener("progress", event => setProgress(JSON.parse(event.data)));
+        stream.onerror = () => { stream.close(); setAccess("disconnected"); };
+        const leaving = (event: BeforeUnloadEvent) => {
+            const status = useCanvasStore.getState().saveStatus[projectId];
+            if (owner && (status === "saving" || status === "error")) { event.preventDefault(); event.returnValue = ""; }
+        };
+        const flush = () => { if (owner && document.visibilityState === "hidden") void flushCanvasProject(projectId); };
+        window.addEventListener("beforeunload", leaving);
+        document.addEventListener("visibilitychange", flush);
+        return () => {
+            closed = true;
+            window.removeEventListener("beforeunload", leaving);
+            document.removeEventListener("visibilitychange", flush);
+            const release = () => { stream.close(); clearCanvasEditor(projectId, id); };
+            if (owner) void flushCanvasProject(projectId).finally(release); else release();
+        };
+    }, [projectId]);
+    if (access === "connecting") return <CanvasRefreshShell />;
+    if (access !== "editor") return (
+        <main className="flex h-full flex-col items-center justify-center gap-4 bg-background p-6 text-center text-foreground">
+            <h1 className="text-xl font-semibold">{access === "viewer" ? "此画布正在另一个窗口编辑" : "画布与本机服务已断开"}</h1>
+            <p role="status" className="max-w-xl break-all text-sm">{progress ? `循环进度 ${progress.index} / ${progress.total} · ${progress.file || progress.state}` : access === "viewer" ? "关闭编辑窗口后，可以在这里重新打开画布。" : "从启动器重新打开工作台，恢复编辑。"}</p>
+            <div className="flex gap-3"><Button href="/canvas">返回画布库</Button><Button type="primary" onClick={() => location.reload()}>重新打开</Button></div>
+        </main>
+    );
+    return <div className="relative h-full">
+        <InfiniteCanvasPage projectId={projectId} />
+        <span role="status" className="pointer-events-none absolute right-4 bottom-4 z-30 text-xs text-foreground/60">
+            {saveStatus === "error" ? "保存失败 · 正在等待重试" : saveStatus === "saving" ? "正在保存…" : "已保存到本机"}
+        </span>
+    </div>;
 }
 
 function CanvasRefreshShell() {
@@ -4663,7 +4720,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                             }
                             renderNodeContent={(contentNode) =>
                                 contentNode.type === CanvasNodeType.FolderLoop ? (
-                                    <CanvasFolderLoopPanel node={contentNode} active={folderLoops.active.includes(contentNode.id)} onSelect={recursive => { void folderLoops.select(contentNode.id, recursive); }} onRun={retry => { void folderLoops.run(contentNode.id, retry); }} onPause={() => folderLoops.pause(contentNode.id)} />
+                                    <CanvasFolderLoopPanel node={contentNode} active={folderLoops.active.includes(contentNode.id)} progress={folderLoops.importing?.id === contentNode.id ? folderLoops.importing.percent : undefined} onSelect={recursive => { void folderLoops.select(contentNode.id, recursive); }} onRun={retry => { void folderLoops.run(contentNode.id, retry); }} onPause={() => folderLoops.pause(contentNode.id)} />
                                 ) : contentNode.type === CanvasNodeType.Director ? (
                                     <CanvasDirectorNodePanel onOpen={() => setOpenDirectorNodeId(contentNode.id)} />
                                 ) : (

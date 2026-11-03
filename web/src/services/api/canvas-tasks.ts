@@ -1,6 +1,7 @@
 import type { CanvasProject } from "@/app/(user)/canvas/stores/use-canvas-store";
 import { apiGet, apiPost } from "@/services/api/request";
 import { useUserStore } from "@/stores/use-user-store";
+import { editorHeader } from "./local-workspace";
 
 export async function listCanvasProjects(token: string) {
     return apiGet<CanvasProject[]>("/api/v1/canvas/projects", undefined, token);
@@ -9,11 +10,13 @@ export async function listCanvasProjects(token: string) {
 export async function saveCanvasProject(
     token: string,
     project: CanvasProject,
+    expectedUpdatedAt?: string,
 ) {
     return apiPost<CanvasProject>(
         "/api/v1/canvas/projects",
-        { data: project },
+        { data: project, expectedUpdatedAt },
         token,
+        editorHeader(project.id),
     );
 }
 
@@ -44,5 +47,6 @@ export async function deleteCanvasProjects(ids: string[]) {
         "/api/v1/canvas/projects/delete",
         { ids: projectIds },
         token,
+        projectIds.length === 1 ? editorHeader(projectIds[0]) : undefined,
     );
 }

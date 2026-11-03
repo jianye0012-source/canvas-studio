@@ -94,7 +94,7 @@ function renderUpdate(value) {
   updateState = value; const busy = ['checking', 'downloading', 'verifying'].includes(value.phase);
   $('#update-version').textContent = `当前版本 ${value.currentVersion}${value.latestVersion ? ' · 最新正式版 ' + value.latestVersion : ''}${value.selectedVersion ? ' · 已选 ' + value.selectedVersion : ''}`;
   $('#update-message').textContent = value.message; $('#update-progress').hidden = !['downloading', 'verifying'].includes(value.phase); $('#update-progress').value = value.progress;
-  $('#check-update').disabled = busy; $('#download-update').disabled = busy || value.phase !== 'available'; $('#install-update').disabled = value.phase !== 'ready'; $('#import-update').disabled = busy;
+  $('#check-update').disabled = busy; $('#download-update').disabled = busy || (value.phase !== 'available' && !value.retryDownload); $('#install-update').disabled = value.phase !== 'ready'; $('#import-update').disabled = busy; $('#clear-update-cache').disabled = busy;
   $('#update-notes').hidden = !value.notes; $('#update-notes').textContent = value.notes || '';
   const versions = $('#release-versions');
   const previous = versions.value;
@@ -115,7 +115,7 @@ action('#open-data', 'storage:open'); action('#open-log-dir', 'storage:open'); a
 action('#choose-browser', 'browser:choose', value => { if (value) { $('#browser-form').elements.browser.value = 'custom'; $('#browser-form').elements.browserPath.value = value; renderBrowserChoice(); } });
 action('#check', 'runtime:check', result => { $('#check-result').hidden = false; $('#check-result').textContent = `运行文件：${result.checked} 个文件校验通过\n数据目录：可读写\n浏览器：${result.browser}\n数据位置：${result.dataDir}`; notice('检查完成'); });
 action('#force-stop', 'runtime:force-stop'); action('#force-stop-repair', 'runtime:force-stop');
-action('#check-update', 'update:check'); action('#download-update', 'update:download'); action('#install-update', 'update:install'); action('#open-releases', 'update:open-release');
+action('#check-update', 'update:check'); action('#download-update', 'update:download'); action('#install-update', 'update:install'); action('#open-releases', 'update:open-release'); action('#clear-update-cache', 'update:clear-cache', result => notice(`已清理 ${result.downloads} 个下载缓存、${result.versions} 个闲置程序版本`));
 $('#auto-check-updates').addEventListener('change', async event => { const enabled = event.target.checked; try { const saved = await invoke('config:save', { autoCheckUpdates: enabled }); config.autoCheckUpdates = saved.autoCheckUpdates; draft.autoCheckUpdates = saved.autoCheckUpdates; } catch { event.target.checked = config.autoCheckUpdates; } });
 action('#import-update', 'update:import', result => { if (result) notice('更新包已校验，启动器即将重新启动'); });
 $('#model-form').addEventListener('submit', event => { event.preventDefault(); $('#save-models').click(); });

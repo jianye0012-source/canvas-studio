@@ -5,6 +5,7 @@ import { nanoid } from "nanoid";
 import { localForageStorage } from "@/lib/localforage-storage";
 import { deleteImagePreviews, STORAGE_SYNC_FAILED_EVENT } from "@/services/image-storage";
 import { listCanvasProjects, saveCanvasProject, syncCanvasProjects } from "@/services/api/canvas-tasks";
+import { editorHeader } from "@/services/api/local-workspace";
 import { fetchUserConfig } from "@/services/api/user-config";
 import { useUserStore } from "@/stores/use-user-store";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
@@ -40,10 +41,11 @@ export type CanvasProject = {
 type CanvasStore = {
     hydrated: boolean;
     projects: CanvasProject[];
+    saveStatus: Record<string, "saving" | "saved" | "error">;
     createProject: (title?: string, options?: { agentConfig?: CanvasAgentConfig; pendingAgentRequest?: CanvasPendingAgentRequest }) => string;
     importProject: (project: Partial<CanvasProject>) => string;
     openProject: (id: string) => CanvasProject | null;
-    renameProject: (id: string, title: string) => void;
+    renameProject: (id: string, title: string) => void | Promise<void>;
     deleteProjects: (ids: string[]) => void;
     updateProject: (id: string, patch: Partial<Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId" | "agentConfig" | "autoTitlePending" | "backgroundMode" | "showImageInfo" | "viewport" | "sidePanel" | "agentPanel" | "pendingAgentRequest">>) => void;
     syncWithRemote: (token: string, syncEnabled: boolean) => Promise<void>;
@@ -83,13 +85,40 @@ async function flushProjectSave(id: string) {
     if (!pending || !accountCanvasSyncEnabled || useUserStore.getState().token !== pending.token) return;
 
     savingProjects.add(id);
-    await saveCanvasProject(pending.token, pending.project).catch((error) => {
+    await saveProjectSnapshot(pending.token, pending.project).catch((error) => {
+        if (error?.status === 409) {
+            window.dispatchEvent(new CustomEvent(STORAGE_SYNC_FAILED_EVENT, { detail: error.message }));
+            return;
+        }
         if (!pendingProjectSaves.has(id)) pendingProjectSaves.set(id, pending);
         window.dispatchEvent(new CustomEvent(STORAGE_SYNC_FAILED_EVENT, { detail: error instanceof Error ? error.message : "" }));
         if (!projectSaveTimers.has(id)) projectSaveTimers.set(id, setTimeout(() => { projectSaveTimers.delete(id); void flushProjectSave(id); }, 3000));
     });
     savingProjects.delete(id);
     void flushProjectSave(id);
+}
+
+function markProjectSave(id: string, status: CanvasStore["saveStatus"][string]) {
+    if (useCanvasStore.getState().saveStatus[id] !== status) useCanvasStore.setState(state => ({ saveStatus: { ...state.saveStatus, [id]: status } }));
+}
+
+async function saveProjectSnapshot(token: string, project: CanvasProject) {
+    try {
+        const saved = await saveCanvasProject(token, project);
+        if (saved.updatedAt !== project.updatedAt) throw new Error("此画布已有更新的内容，请重新打开后再编辑");
+        if (!pendingProjectSaves.has(project.id)) markProjectSave(project.id, "saved");
+    } catch (error) {
+        markProjectSave(project.id, "error");
+        throw error;
+    }
+}
+
+export async function flushCanvasProject(id: string) {
+    const timer = projectSaveTimers.get(id);
+    if (timer) clearTimeout(timer);
+    projectSaveTimers.delete(id);
+    while (savingProjects.has(id)) await new Promise(resolve => setTimeout(resolve, 50));
+    await flushProjectSave(id);
 }
 
 // Workflow checkpoints must reach disk before submitting another paid task.
@@ -101,7 +130,7 @@ export async function persistCanvasProjectNow(id: string, nodes: CanvasNodeData[
     const project = useCanvasStore.getState().projects.find(p => p.id === id), token = useUserStore.getState().token;
     if (!project || !token) throw new Error('本机项目会话不可用，请重新打开工作台');
     savingProjects.add(id);
-    try { await saveCanvasProject(token, project); }
+    try { await saveProjectSnapshot(token, project); }
     finally { savingProjects.delete(id); void flushProjectSave(id); }
 }
 
@@ -114,6 +143,7 @@ function queueProjectSave(project: CanvasProject) {
         pendingProjectSaves.delete(project.id);
         return;
     }
+    markProjectSave(project.id, "saving");
     pendingProjectSaves.set(project.id, { token, project });
     projectSaveTimers.set(
         project.id,
@@ -148,6 +178,12 @@ async function reconcileCanvasProjects(
     const existingLocalProjects = localProjects.filter((project) =>
         remoteById.has(project.id),
     );
+    // A local editor owns its project while connected. Browser caches from
+    // another window must never publish an older whole-project snapshot.
+    if (useUserStore.getState().user?.id === "local-owner") {
+        if (!missingProjects.length) return remoteProjects;
+        return syncCanvasProjects(token, missingProjects).catch(() => [...remoteProjects, ...missingProjects]);
+    }
     const projects = missingProjects.length
         ? await syncCanvasProjects(token, missingProjects)
             .then((syncedProjects) =>
@@ -272,6 +308,7 @@ export const useCanvasStore = create<CanvasStore>()(
         (set, get) => ({
             hydrated: false,
             projects: [],
+            saveStatus: {},
             createProject: (title = "未命名画布", options) => {
                 const now = new Date().toISOString();
                 const id = nanoid();
@@ -337,6 +374,13 @@ export const useCanvasStore = create<CanvasStore>()(
                     autoTitlePending: false,
                     updatedAt: new Date().toISOString(),
                 };
+                const user = useUserStore.getState();
+                if (user.user?.id === "local-owner" && !editorHeader(id)) {
+                    return saveCanvasProject(user.token, nextProject, project.updatedAt).then(saved => {
+                        if (saved.updatedAt !== nextProject.updatedAt) throw new Error("画布已变更，请刷新后重试");
+                        set(state => ({ projects: state.projects.map(item => item.id === id ? saved : item) }));
+                    });
+                }
                 set((state) => ({
                     projects: state.projects.map((item) =>
                         item.id === id ? nextProject : item,

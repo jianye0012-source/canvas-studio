@@ -5,7 +5,7 @@ export type FolderLoopState = {
     folder: FolderSelection; recursive: boolean; files: FolderFile[];
     state: 'ready' | 'running' | 'paused' | 'error' | 'completed'; index: number; error?: string;
     templates?: { nodes: CanvasNodeData[]; connections: CanvasConnection[]; order: string[] };
-    iteration?: { inputId: string; nodeIds: string[]; stage: number; intent: boolean };
+    iteration?: { inputId: string; nodeIds: string[]; stage: number; intent: boolean; attempt?: string };
     results?: { file: string; inputId: string; nodeIds: string[] }[];
 };
 export function planFolderWorkflow(loopId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {

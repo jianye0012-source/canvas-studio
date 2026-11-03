@@ -39,7 +39,7 @@ class FolderStore {
     await visit(root, 0); files.sort((a, b) => a.relativePath.localeCompare(b.relativePath, 'zh-CN', { numeric: true }));
     return { id, name: path.basename(root), path: root, files };
   }
-  async import(id, item, apiPort, token) {
+  async import(id, item, apiPort, token, { signal, onProgress } = {}) {
     const root = (await this.grants())[id]; if (!root) throw new Error('文件夹授权已失效');
     const relative = Buffer.from(item.id, 'base64url').toString('utf8');
     const file = contained(root, relative); if (await fs.realpath(file) !== file || await fs.realpath(root) !== root) throw new Error('文件位置已改变，请重新扫描');
@@ -49,8 +49,20 @@ class FolderStore {
     await writableDirectory(this.dataDir);
     if (['.txt', '.md'].includes(path.extname(file).toLowerCase())) { if (stat.size > 1024 * 1024) throw new Error('文本文件超过 1 MB'); return { content: await fs.readFile(file, 'utf8'), mimeType: 'text/plain' }; }
     const form = new FormData(); form.append('file', await openAsBlob(file, { type: mime.lookup(file) || 'application/octet-stream' }), path.basename(file));
-    const response = await fetch(`http://127.0.0.1:${apiPort}/api/v1/files`, { method: 'POST', headers: { 'X-Canvas-Local-Token': token }, body: form, signal: AbortSignal.timeout(180000) });
+    const url = `http://127.0.0.1:${apiPort}/api/v1/files`;
+    const abort = signal ? AbortSignal.any([signal, AbortSignal.timeout(180000)]) : AbortSignal.timeout(180000);
+    const upload = new Request(url, { method: 'POST', body: form });
+    upload.headers.set('X-Canvas-Local-Token', token);
+    let bytes = 0, percent = -1;
+    const stream = upload.body.pipeThrough(new TransformStream({ transform(chunk, controller) {
+      bytes += chunk.length;
+      const progress = Math.min(99, Math.floor(bytes / stat.size * 100));
+      if (progress !== percent) { percent = progress; onProgress?.(progress); }
+      controller.enqueue(chunk);
+    } }));
+    const response = await fetch(url, { method: 'POST', headers: upload.headers, body: stream, duplex: 'half', signal: abort });
     const result = await response.json(); if (!response.ok || result.code !== 0) throw new Error(result.msg || '文件写入素材存储失败');
+    onProgress?.(100);
     return result.data;
   }
 }

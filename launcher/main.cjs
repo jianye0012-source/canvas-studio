@@ -7,9 +7,30 @@ const { ConfigStore } = require('./lib/config.cjs');
 const { Runtime } = require('./lib/runtime.cjs');
 const { ReleaseUpdater } = require('./lib/release-update.cjs');
 const { createUpdateFetch } = require('./lib/update-network.cjs');
+const { installationPaths, executableName, versionDirectory, stageUpdate, applyUpdate, clearInactiveVersions } = require('./lib/update.cjs');
 const updateSource = require('./update-source.json');
 
-const portableRoot = app.isPackaged ? path.dirname(process.execPath) : process.env.CANVAS_DEV_ROOT || path.resolve(__dirname, '..', 'work', 'portable-dev');
+const programRoot = app.isPackaged ? path.dirname(process.execPath) : process.env.CANVAS_DEV_ROOT || path.resolve(__dirname, '..', 'work', 'portable-dev');
+const { root: portableRoot, pointer } = installationPaths(programRoot);
+const trial = app.isPackaged && programRoot !== portableRoot && process.env.CANVAS_STUDIO_TRIAL === path.basename(programRoot);
+delete process.env.CANVAS_STUDIO_TRIAL;
+if (app.isPackaged && !trial && !process.argv.includes('--recover')) {
+  try {
+    const { id } = JSON.parse(fs.readFileSync(pointer, 'utf8'));
+    if (!versionDirectory.test(id)) throw new Error('已安装版本记录无效');
+    const active = path.join(portableRoot, '.versions', id);
+    if (active !== programRoot) {
+      const executable = path.join(active, executableName);
+      fs.accessSync(executable);
+      const child = require('node:child_process').spawn(executable, [], { detached: true, stdio: 'ignore' });
+      child.on('error', error => { dialog.showErrorBox('无法打开已安装版本', error.message + '\n可双击“恢复原启动器.cmd”。'); app.exit(1); });
+      child.on('spawn', () => { child.unref(); app.exit(0); });
+      return;
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') dialog.showErrorBox('已安装版本不可用', error.message + '\n将打开原启动器。');
+  }
+}
 let dataDir = path.join(portableRoot, 'data');
 try {
   const locator = JSON.parse(fs.readFileSync(path.join(portableRoot, 'portable.json'), 'utf8'));
@@ -28,7 +49,7 @@ app.setAppLogsPath(path.join(dataDir, 'logs'));
 app.commandLine.appendSwitch('disk-cache-dir', path.join(dataDir, 'cache', 'launcher'));
 app.disableHardwareAcceleration();
 
-let window, runtime, store, updater, quitting = false;
+let window, runtime, store, updater, quitting = false, installing = false;
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => { window?.show(); window?.focus(); });
@@ -39,9 +60,9 @@ else {
     };
     const decrypt = async bytes => (await safeStorage.decryptStringAsync(bytes)).result;
     store = await new ConfigStore(portableRoot, encrypt, decrypt).initialize();
-    const bundleRoot = process.env.CANVAS_BUNDLE_ROOT || (app.isPackaged ? path.join(portableRoot, 'resources', 'bundle') : path.resolve(__dirname, '..', 'work', 'bundle-linux'));
+    const bundleRoot = process.env.CANVAS_BUNDLE_ROOT || (app.isPackaged ? path.join(programRoot, 'resources', 'bundle') : path.resolve(__dirname, '..', 'work', 'bundle-linux'));
     runtime = new Runtime({ store, root: bundleRoot, development: !app.isPackaged, chooseFolder: async () => { const result = await dialog.showOpenDialog(window, { title: '选择 FOR 循环的输入文件夹', properties: ['openDirectory'] }); return result.canceled ? null : result.filePaths[0]; } });
-    updater = await new ReleaseUpdater({ dataDir: store.dataDir, currentVersion: app.getVersion(), source: updateSource, fetchImpl: createUpdateFetch(net) }).initialize();
+    updater = await new ReleaseUpdater({ dataDir: store.dataDir, currentVersion: app.getVersion(), source: updateSource, fetchImpl: createUpdateFetch(net) }).initialize({ skipPending: trial });
     window = new BrowserWindow({ width: 1120, height: 780, minWidth: 960, minHeight: 680, title: '画布工作台启动器', backgroundColor: '#f6f7fb', autoHideMenuBar: true, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true } });
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     window.webContents.on('will-navigate', event => event.preventDefault());
@@ -53,6 +74,18 @@ else {
       if (!semver.lt(version, app.getVersion())) return true;
       const choice = await dialog.showMessageBox(window, { type: 'warning', title: '确认回退程序版本', message: `将程序回退至 ${version}？`, detail: '项目和模型配置会保留，数据格式不会随程序回退。旧版可能无法打开新版创建的项目。', buttons: ['取消', '回退并重启'], defaultId: 0, cancelId: 0 });
       return choice.response === 1;
+    };
+    const install = async staged => {
+      if (!await confirmRollback(JSON.parse(await fsp.readFile(path.join(staged, 'package-manifest.json'), 'utf8')).version)) return false;
+      await runtime.stop();
+      await applyUpdate(staged, portableRoot, process.pid, store.dataDir, programRoot);
+      app.quit();
+      return true;
+    };
+    const installOnce = async action => {
+      if (installing) throw new Error('正在安装发行包，请稍候');
+      installing = true;
+      try { return await action(); } finally { installing = false; }
     };
     const handlers = {
       'app:load': () => ({ config: store.public(), status: runtime.status(), logs: runtime.lines, update: updater.status() }),
@@ -88,32 +121,35 @@ else {
       'update:check': () => updater.check(),
       'update:select': (_event, version) => updater.selectVersion(version),
       'update:download': () => updater.download(),
+      'update:clear-cache': () => installOnce(async () => {
+        const downloads = await updater.clearCache();
+        const versions = app.isPackaged && !trial ? await clearInactiveVersions(portableRoot, programRoot) : 0;
+        return { downloads, versions };
+      }),
       'update:open-release': () => shell.openExternal(updater.releaseUrl),
-      'update:install': async () => {
+      'update:install': () => installOnce(async () => {
         if (process.platform !== 'win32' || !app.isPackaged) throw new Error('重启安装需要在 Windows 整合包中执行');
-        const staged = await updater.installation();
-        if (!await confirmRollback(updater.staged.version)) return false;
-        await runtime.stop();
-        await require('./lib/update.cjs').applyUpdate(staged, portableRoot, process.pid, store.dataDir); app.quit();
-      },
-      'update:import': async () => {
+        return install(await updater.installation());
+      }),
+      'update:import': () => installOnce(async () => {
         const result = await dialog.showOpenDialog(window, { title: '选择画布工作台发行包 ZIP', properties: ['openFile'], filters: [{ name: '工作台整合包', extensions: ['zip'] }] });
         if (result.canceled) return null;
-        const { stageUpdate, applyUpdate } = require('./lib/update.cjs');
         runtime.log('正在校验导入的发行包');
         const staged = await stageUpdate(result.filePaths[0], store.dataDir);
-        const manifest = JSON.parse(await fsp.readFile(path.join(staged, 'package-manifest.json'), 'utf8'));
-        if (!await confirmRollback(manifest.version)) { await fsp.rm(staged, { recursive: true, force: true }); return null; }
-        await runtime.stop(); await applyUpdate(staged, portableRoot, process.pid, store.dataDir);
-        app.quit(); return { restartRequired: true };
-      },
+        try { if (await install(staged)) return { restartRequired: true }; }
+        catch (error) { await fsp.rm(staged, { recursive: true, force: true }); throw error; }
+        await fsp.rm(staged, { recursive: true, force: true });
+        return null;
+      }),
       'about:open': () => shell.openPath(path.join(bundleRoot, 'SOURCE-NOTICE.txt')),
     };
     for (const [channel, handler] of Object.entries(handlers)) ipcMain.handle(channel, async (event, ...args) => {
       if (event.sender !== window.webContents || !event.senderFrame?.url.startsWith('file:')) throw new Error('请求来源无效');
+      if (installing && !['app:load', 'runtime:force-stop'].includes(channel)) throw new Error('正在安装发行包，请稍候');
       return handler(event, ...args);
     });
     await window.loadFile(path.join(__dirname, 'ui', 'index.html'));
+    if (trial) await fsp.writeFile(path.join(programRoot, 'launch-ready'), 'ready', { flag: 'wx' });
     if (store.value.autoCheckUpdates) setTimeout(() => { if (store.value.autoCheckUpdates) updater.check().catch(error => runtime.log('检查更新：' + error.message)); }, 2000);
   }).catch(error => { dialog.showErrorBox('启动器无法启动', error.message); app.quit(); });
   app.on('before-quit', event => {

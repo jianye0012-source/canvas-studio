@@ -38,6 +38,22 @@ jobs:
           exit $LASTEXITCODE
       - name: Build portable package
         run: node launcher/scripts/package.mjs
+      - name: Verify portable projects on isolated Windows workspaces
+        run: node launcher/test/portable-browser-smoke.cjs
+        env:
+          TMPDIR: ${{ github.workspace }}/work/tmp
+      - name: Verify update switch, interruption and official rollback on Windows
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v1.3.3 --repo $env:GITHUB_REPOSITORY --pattern 'CanvasStudio-Windows-x64-1.3.3.zip*' --dir work/tmp
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $zip = 'work/tmp/CanvasStudio-Windows-x64-1.3.3.zip'
+          $expected = ((Get-Content -LiteralPath "$zip.sha256" -Raw).Trim() -split '\s+')[0]
+          if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLower() -ne $expected) { throw 'Historical ZIP hash mismatch' }
+          node launcher/test/windows-install-smoke.cjs $zip
+          exit $LASTEXITCODE
       - name: Verify and publish release
         shell: pwsh
         env:

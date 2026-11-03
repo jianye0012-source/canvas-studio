@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/tigerowo/infinite-canvas/config"
 	"github.com/tigerowo/infinite-canvas/model"
 	"github.com/tigerowo/infinite-canvas/service"
 )
@@ -58,6 +59,10 @@ func MeasureUserStorageProvider(w http.ResponseWriter, r *http.Request) {
 
 // UploadFile 上传文件到对象存储。
 func UploadFile(w http.ResponseWriter, r *http.Request) {
+	if config.Cfg.LocalToken != "" {
+		uploadLocalFile(w, r)
+		return
+	}
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		Fail(w, "请选择要上传的文件")
@@ -88,6 +93,33 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	OK(w, object)
+}
+
+func uploadLocalFile(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, service.MaxLocalUploadBytes+1024*1024)
+	reader, err := r.MultipartReader()
+	if err != nil {
+		Fail(w, "请选择要上传的文件")
+		return
+	}
+	for {
+		part, err := reader.NextPart()
+		if err != nil {
+			Fail(w, "上传文件缺失或已中断")
+			return
+		}
+		if part.FormName() != "file" || part.FileName() == "" {
+			part.Close()
+			continue
+		}
+		object, err := service.UploadLocalObjectStream(r.Context(), part.FileName(), part.Header.Get("Content-Type"), part)
+		if err != nil {
+			FailError(w, err)
+			return
+		}
+		OK(w, object)
+		return
+	}
 }
 
 // RegisterDirectFile 登记浏览器已直传至用户 WebDAV 的文件。
@@ -149,6 +181,8 @@ func FileContent(w http.ResponseWriter, r *http.Request, id string) {
 			return
 		}
 		w.Header().Set("Content-Type", object.MimeType)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Content-Security-Policy", "sandbox")
 		http.ServeContent(w, r, name, info.ModTime(), file)
 		return
 	}

@@ -3,7 +3,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const unzipper = require('unzipper');
-const { contained, verifyManifest, writableDirectory } = require('./files.cjs');
+const { contained, verifyManifest, writableDirectory, requireFreeSpace, atomicJson } = require('./files.cjs');
 
 async function stageUpdate(zipFile, dataDir) {
   await writableDirectory(dataDir);
@@ -15,6 +15,9 @@ async function stageUpdate(zipFile, dataDir) {
   if (manifest.application !== 'canvas-studio' || manifest.platform !== 'win32-x64' || manifest.format !== 1 || !Array.isArray(manifest.files)) throw new Error('发行包类型或平台不匹配');
   const expected = new Set(manifest.files.map(entry => entry.path));
   if (!expected.has('画布工作台启动器.exe') || !expected.has('resources/bundle/runtime/node.exe')) throw new Error('发行包缺少启动器或运行环境');
+  const bytes = archive.files.reduce((sum, entry) => sum + (entry.type === 'Directory' ? 0 : entry.uncompressedSize), 0);
+  if (bytes > 5 * 1024 ** 3) throw new Error('发行包解压后体积异常');
+  await requireFreeSpace(dataDir, bytes);
   const staging = path.join(dataDir, 'updates', crypto.randomUUID());
   await fs.mkdir(staging, { recursive: true });
   try {
@@ -23,9 +26,10 @@ async function stageUpdate(zipFile, dataDir) {
       if (entry.type === 'Directory') continue;
       if (!entry.path.startsWith(prefix)) throw new Error('发行包包含异常路径');
       const relative = entry.path.slice(prefix.length);
-      if (seen.has(relative)) throw new Error('发行包包含重复文件'); seen.add(relative);
+      const normalized = relative.toLowerCase();
+      if (seen.has(normalized)) throw new Error('发行包包含重复文件'); seen.add(normalized);
       if (!expected.has(relative) && relative !== 'package-manifest.json') continue;
-      if (/^(data|work|outputs)\//.test(relative) || relative === 'portable.json') throw new Error('发行包不能覆盖用户数据');
+      if (/^(?:data|work|outputs|\.versions)(?:\/|$)|^(?:portable\.json|managed-version\.json|launch-ready|next-active\.json)$/i.test(relative) || relative.split('/').some(part => !part || part === '.' || part === '..' || /[:. ]$|[:<>|?*]/.test(part))) throw new Error('发行包包含保留目录或无效文件路径');
       if ((entry.externalFileAttributes >>> 16 & 0xf000) === 0xa000) throw new Error('发行包包含符号链接');
       total += entry.uncompressedSize; if (total > 5 * 1024 ** 3) throw new Error('发行包解压后体积异常');
       const target = contained(staging, relative);
@@ -37,13 +41,110 @@ async function stageUpdate(zipFile, dataDir) {
   } catch (error) { await fs.rm(staging, { recursive: true, force: true }); throw error; }
 }
 
+const versionDirectory = /^[a-f0-9-]{36}$/;
+const executableName = '画布工作台启动器.exe';
 const psLiteral = value => "'" + String(value).replaceAll("'", "''") + "'";
-async function applyUpdate(staging, destination, parentPid, dataDir) {
-  if (process.platform !== 'win32') throw new Error('自动应用更新需要在 Windows 整合包内执行');
-  const helper = path.join(dataDir, 'updates', 'apply-update.ps1');
-  const script = `\uFEFF$ErrorActionPreference = 'Stop'\n$taskStage = ${psLiteral(staging)}\n$taskRoot = ${psLiteral(destination)}\n$taskLog = ${psLiteral(path.join(dataDir, 'logs', 'update.log'))}\ntry {\n  Wait-Process -Id ${Number(parentPid)} -ErrorAction SilentlyContinue\n  Start-Sleep -Milliseconds 800\n  $taskManifest = Get-Content -LiteralPath (Join-Path $taskStage 'package-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json\n  foreach ($taskEntry in $taskManifest.files) {\n    $taskTarget = Join-Path $taskRoot $taskEntry.path\n    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $taskTarget) | Out-Null\n    Copy-Item -LiteralPath (Join-Path $taskStage $taskEntry.path) -Destination $taskTarget -Force\n  }\n  Copy-Item -LiteralPath (Join-Path $taskStage 'package-manifest.json') -Destination $taskRoot -Force\n  Remove-Item -LiteralPath $taskStage -Recurse -Force\n  Start-Process -FilePath (Join-Path $taskRoot '画布工作台启动器.exe')\n} catch { $_ | Out-File -LiteralPath $taskLog -Encoding UTF8; Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('更新未完成，请重新解压完整整合包。原数据目录仍保留。详见：' + $taskLog) | Out-Null }\n`;
-  await fs.writeFile(helper, script, 'utf8');
-  const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', helper], { detached: true, windowsHide: true, stdio: 'ignore' });
-  await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); }); child.unref();
+
+function installationPaths(program) {
+  const container = path.dirname(program);
+  const root = path.basename(container) === '.versions' && versionDirectory.test(path.basename(program))
+    ? path.dirname(container) : program;
+  return { root, program, pointer: path.join(root, '.versions', 'active.json') };
 }
-module.exports = { stageUpdate, applyUpdate };
+
+async function prepareInstallation(staging, root, dataDir) {
+  const manifest = JSON.parse(await fs.readFile(path.join(staging, 'package-manifest.json'), 'utf8'));
+  const id = crypto.randomUUID();
+  const directory = path.join(root, '.versions', id);
+  await requireFreeSpace(root, manifest.files.reduce((sum, entry) => sum + entry.size, 0));
+  try {
+    await fs.mkdir(path.dirname(directory), { recursive: true });
+    await fs.cp(staging, directory, { recursive: true, errorOnExist: true, force: false });
+    await verifyManifest(directory, { filename: 'package-manifest.json' });
+    // Historical launchers read a locator beside their own executable.
+    await atomicJson(path.join(directory, 'portable.json'), { dataDir });
+    await atomicJson(path.join(directory, 'managed-version.json'), { id });
+    return { id, directory, version: manifest.version };
+  } catch (error) {
+    await fs.rm(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function installationScript({ id, directory, version }, root, parentPid, dataDir, staging, previousProgram) {
+  return `$ErrorActionPreference = 'Stop'
+$target = ${psLiteral(path.join(directory, executableName))}
+$ack = ${psLiteral(path.join(directory, 'launch-ready'))}
+$active = ${psLiteral(path.join(root, '.versions', 'active.json'))}
+$next = ${psLiteral(path.join(directory, 'next-active.json'))}
+$log = ${psLiteral(path.join(dataDir, 'logs', 'update.log'))}
+$stage = ${psLiteral(staging)}
+$child = $null
+$committed = $false
+try {
+  Wait-Process -Id ${Number(parentPid)} -ErrorAction SilentlyContinue
+  $env:CANVAS_STUDIO_TRIAL = ${psLiteral(id)}
+  $child = Start-Process -FilePath $target -PassThru
+  Remove-Item Env:CANVAS_STUDIO_TRIAL
+  $deadline = [DateTime]::UtcNow.AddSeconds(90)
+  while (!(Test-Path -LiteralPath $ack)) {
+    $child.Refresh()
+    if ($child.HasExited) { throw 'The new launcher exited during startup.' }
+    if (${psLiteral(version)} -in @('1.2.0','1.3.2','1.3.3')) {
+      if ($child.MainWindowHandle -ne 0) {
+        Start-Sleep -Milliseconds 1200
+        $child.Refresh()
+        if ($child.HasExited) { throw 'The historical launcher exited during startup.' }
+        break
+      }
+    }
+    if ([DateTime]::UtcNow -gt $deadline) { throw 'The new launcher did not become ready.' }
+    Start-Sleep -Milliseconds 250
+  }
+  [IO.File]::WriteAllText($next, ${psLiteral(JSON.stringify({ id }))})
+  if ([IO.File]::Exists($active)) { [IO.File]::Replace($next, $active, [NullString]::Value) }
+  else { [IO.File]::Move($next, $active) }
+  $committed = $true
+  $pendingFile = ${psLiteral(path.join(dataDir, 'updates', 'pending.json'))}
+  if (Test-Path -LiteralPath $pendingFile) {
+    $pending = Get-Content -LiteralPath $pendingFile -Raw | ConvertFrom-Json
+    if ($pending.id -eq (Split-Path -Leaf $stage)) { Remove-Item -LiteralPath $pendingFile -Force }
+  }
+  Remove-Item -LiteralPath $stage -Recurse -Force
+} catch {
+  $_ | Out-File -LiteralPath $log -Encoding UTF8
+  if (!$committed) {
+    Remove-Item Env:CANVAS_STUDIO_TRIAL -ErrorAction SilentlyContinue
+    if ($child -and !$child.HasExited) { Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue; Wait-Process -Id $child.Id -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath ${psLiteral(directory)} -Recurse -Force -ErrorAction SilentlyContinue
+    Start-Process -FilePath ${psLiteral(path.join(previousProgram, executableName))}
+  }
+}
+`;
+}
+
+async function applyUpdate(staging, destination, parentPid, dataDir, previousProgram = destination) {
+  if (process.platform !== 'win32') throw new Error('自动应用更新需要在 Windows 整合包内执行');
+  const prepared = await prepareInstallation(staging, destination, dataDir);
+  const script = installationScript(prepared, destination, parentPid, dataDir, staging, previousProgram);
+  const child = spawn('powershell.exe', ['-NoProfile', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { detached: true, windowsHide: true, stdio: 'ignore' });
+  try { await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); }); child.unref(); }
+  catch (error) { await fs.rm(prepared.directory, { recursive: true, force: true }); throw error; }
+}
+
+async function clearInactiveVersions(root, program) {
+  const versions = path.join(root, '.versions');
+  const active = await fs.readFile(path.join(versions, 'active.json'), 'utf8').then(JSON.parse, error => { if (error.code !== 'ENOENT') throw error; return {}; });
+  const entries = await fs.readdir(versions, { withFileTypes: true }).catch(error => { if (error.code !== 'ENOENT') throw error; return []; });
+  let removed = 0;
+  for (const entry of entries) {
+    const directory = path.join(versions, entry.name);
+    if (!entry.isDirectory() || !versionDirectory.test(entry.name) || entry.name === active.id || directory === program) continue;
+    const marker = await fs.readFile(path.join(directory, 'managed-version.json'), 'utf8').then(JSON.parse).catch(() => null);
+    if (marker?.id !== entry.name) continue;
+    await fs.rm(directory, { recursive: true, force: true }); removed++;
+  }
+  return removed;
+}
+
+module.exports = { stageUpdate, applyUpdate, installationPaths, installationScript, prepareInstallation, clearInactiveVersions, executableName, versionDirectory };

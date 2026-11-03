@@ -133,3 +133,29 @@ test('已有回退包时，选择其他版本失败仍准确保留原待安装�
   assert.equal(updater.status().phase,'ready');assert.equal(updater.status().selectedVersion,'1.3.0');assert.equal(updater.status().intent,'rollback');assert.equal(await updater.installation(),staged);
   await assert.rejects(()=>updater.check(),/系统代理/);assert.equal(updater.status().selectedVersion,'1.3.0');
 });
+
+test('中断后按已保存的字节继续下载，正式版标签与安装目标独立，可清理下载缓存', async t => {
+  const { dataDir, updater, release, fetchImpl } = await fixture(t);
+  const bytes = await fs.readFile(path.join(dataDir, 'fixture.zip'));
+  const midpoint = Math.floor(bytes.length / 2);
+  const newest = { ...release, tag_name: 'v1.4.0', assets: [] };
+  let attempts = 0;
+  updater.fetchImpl = async (url, options) => {
+    if (url.includes('/releases?')) return Response.json([newest, release]);
+    if (!url.endsWith('.zip')) return fetchImpl(url);
+    attempts++;
+    if (attempts === 1) return new Response(bytes.subarray(0, midpoint));
+    assert.equal(options.headers.Range, `bytes=${midpoint}-`);
+    return new Response(bytes.subarray(midpoint), { status: 206, headers: { 'content-range': `bytes ${midpoint}-${bytes.length - 1}/${bytes.length}` } });
+  };
+  await assert.rejects(() => updater.check(), /缺少/);
+  await updater.selectVersion('1.3.0');
+  await assert.rejects(() => updater.download(), /续传/);
+  assert.equal(updater.status().retryDownload, true);
+  await updater.download();
+  assert.equal(updater.status().latestVersion, '1.4.0');
+  assert.equal(updater.status().selectedVersion, '1.3.0');
+  const staged = await updater.installation();
+  assert.equal(await updater.clearCache(), 1);
+  assert.equal(await updater.installation(), staged);
+});

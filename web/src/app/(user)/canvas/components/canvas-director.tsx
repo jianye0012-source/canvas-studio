@@ -115,7 +115,7 @@ export function CanvasDirector({
         if (!ready || sessionSentRef.current) return;
         sessionSentRef.current = true;
         postToDesk("storyai:director-session", {
-            instanceId: nodeId,
+            instanceId: (projectRef.current as { projectId?: string } | undefined)?.projectId || nodeId,
             theme: themeRef.current,
             project: projectRef.current,
         });

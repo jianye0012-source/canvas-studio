@@ -6,6 +6,7 @@ const proxyFactory = require('http-proxy');
 const mime = require('mime-types');
 const { Readable } = require('node:stream');
 const { pathToFileURL } = require('node:url');
+const { ProjectEditors, editorIdPattern } = require('./project-editor.cjs');
 const { CanvasBridge } = require('./canvas-bridge.cjs');
 const { directorModelId } = require('./config.cjs');
 const { atomicJson, contained, writableDirectory } = require('./files.cjs');
@@ -28,6 +29,7 @@ class Gateway {
     this.writes = new Map();
     this.sockets = new Set();
     this.bridge = new CanvasBridge();
+    this.editors = new ProjectEditors(store.dataDir);
     this.folders = new (require('./folders.cjs').FolderStore)(store.dataDir, chooseFolder);
   }
   authenticated(req) { return (req.headers.cookie || '').split(';').some(entry => entry.trim() === `canvas_session=${this.cookie}`); }
@@ -94,10 +96,35 @@ class Gateway {
     const internal = provider && jsonEqual(req.headers.authorization, `Bearer ${this.providerToken}`);
     if (!this.authenticated(req) && !internal) return json(res, 401, { msg: '请从启动器打开工作台' });
     if (provider) return this.provider(req, res, url);
+    const editorRoute = url.pathname.match(/^\/local\/editor\/([a-zA-Z0-9_-]{1,160})(?:\/(step|progress))?$/);
+    if (editorRoute) {
+      const [, id, operation] = editorRoute;
+      const owner = req.method === 'GET' ? url.searchParams.get('id') : req.headers['x-canvas-editor'];
+      if (typeof owner !== 'string' || !editorIdPattern.test(owner)) return json(res, 400, { msg: '画布会话编号无效' });
+      if (!operation && req.method === 'GET') return this.editors.connect(id, owner, res);
+      if (req.method !== 'POST' || !this.editors.canWrite(id, owner)) return json(res, 409, { msg: '画布编辑权限已失效' });
+      const value = await bodyJson(req, 4096);
+      if (operation === 'step') {
+        try { await this.editors.claim(id, owner, value.nodeId, value.attempt); }
+        catch (error) { return json(res, 409, { msg: error.message }); }
+      } else if (operation === 'progress') this.editors.report(id, value);
+      else return json(res, 405, { msg: '不支持的操作' });
+      return json(res, 200, { ok: true });
+    }
     if (url.pathname === '/local/folders/select' && req.method === 'POST') return json(res, 200, await this.folders.select());
     const folderRoute = url.pathname.match(/^\/local\/folders\/([a-f0-9-]+)(\/import)?$/);
     if (folderRoute) {
-      if (folderRoute[2] && req.method === 'POST') return json(res, 200, await this.folders.import(folderRoute[1], await bodyJson(req), this.apiPort, this.serviceToken));
+      if (folderRoute[2] && req.method === 'POST') {
+        const item = await bodyJson(req);
+        if (req.headers.accept !== 'application/x-ndjson') return json(res, 200, await this.folders.import(folderRoute[1], item, this.apiPort, this.serviceToken));
+        const abort = new AbortController();
+        res.once('close', () => abort.abort());
+        res.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store' });
+        const send = value => { if (!res.destroyed) res.write(JSON.stringify(value) + '\n'); };
+        try { send({ result: await this.folders.import(folderRoute[1], item, this.apiPort, this.serviceToken, { signal: abort.signal, onProgress: progress => send({ progress }) }) }); }
+        catch (error) { send({ error: error.message }); }
+        return res.end();
+      }
       if (!folderRoute[2] && req.method === 'GET') return json(res, 200, await this.folders.scan(folderRoute[1], url.searchParams.get('recursive') === '1'));
       return json(res, 405, { msg: '不支持的操作' });
     }
@@ -142,6 +169,11 @@ class Gateway {
         try { await write; } finally { if (this.writes.get(id) === write) this.writes.delete(id); }
         return json(res, 200, { saved: true });
       }
+      if (req.method === 'DELETE') {
+        await writableDirectory(this.store.dataDir);
+        await fs.rm(file, { force: true });
+        return json(res, 200, { deleted: true });
+      }
       return json(res, 405, { msg: '不支持的操作' });
     }
     if (url.pathname === '/admin/settings') { res.writeHead(302, { location: '/local-settings' }); return res.end(); }
@@ -149,6 +181,17 @@ class Gateway {
     if (/^\/api\/(auth\/(login|register|linux-do)|admin\/(login|users|credit-logs))/.test(url.pathname)) return json(res, 404, { code: 1, msg: '本机版无需账号登录' });
     if (url.pathname.startsWith('/api/')) {
       req.headers['x-canvas-local-token'] = this.serviceToken;
+      const projects = '/api/v1/canvas/projects';
+      if (req.method === 'POST' && [projects, projects + '/delete', projects + '/sync'].includes(url.pathname)) {
+        const payload = await bodyJson(req, 400 * 1024 * 1024);
+        const ids = url.pathname.endsWith('/delete') ? payload.ids : url.pathname.endsWith('/sync') ? payload.projects?.map(p => p.id) : [payload.data?.id];
+        if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string' || !editorIdPattern.test(id))) return json(res, 400, { code: 1, msg: '画布编号无效' });
+        if (ids.some(id => !this.editors.canWrite(id, req.headers['x-canvas-editor']))) return json(res, 409, { code: 1, msg: '画布正在另一个窗口编辑，保存或删除未执行' });
+        this.editors.track(new Set(ids), res);
+        const bytes = Buffer.from(JSON.stringify(payload));
+        req.headers['content-length'] = String(bytes.length); delete req.headers['transfer-encoding'];
+        return this.proxy.web(req, res, { target: `http://127.0.0.1:${this.apiPort}`, buffer: Readable.from([bytes]) });
+      }
       return this.proxy.web(req, res, { target: `http://127.0.0.1:${this.apiPort}` });
     }
     if (url.pathname.startsWith('/cozy/agent/') || url.pathname.startsWith('/cozy/oauth/')) {

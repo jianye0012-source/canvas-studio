@@ -27,6 +27,11 @@ async function writableDirectory(directory) {
   await fs.unlink(probe);
 }
 
+async function requireFreeSpace(directory, bytes) {
+  const disk = await fs.statfs(directory);
+  if (disk.bavail * disk.bsize < bytes) throw new Error(`磁盘空间不足：${directory} 需要至少 ${Math.ceil(bytes / 1024 ** 2)} MB 可用空间`);
+}
+
 async function verifyManifest(root, { required = true, filename = 'bundle-manifest.json', signal } = {}) {
   let manifest;
   try { manifest = JSON.parse(await fs.readFile(path.join(root, filename), 'utf8')); }
@@ -46,4 +51,4 @@ async function verifyManifest(root, { required = true, filename = 'bundle-manife
   return { checked, version: manifest.version };
 }
 
-module.exports = { atomicJson, contained, writableDirectory, verifyManifest };
+module.exports = { atomicJson, contained, writableDirectory, verifyManifest, requireFreeSpace };

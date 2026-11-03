@@ -7,7 +7,7 @@ const { Readable, Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const semver = require('semver');
 const { stageUpdate } = require('./update.cjs');
-const { atomicJson, verifyManifest, writableDirectory } = require('./files.cjs');
+const { atomicJson, verifyManifest, writableDirectory, requireFreeSpace } = require('./files.cjs');
 
 async function digest(file) { const hash = crypto.createHash('sha256'); for await (const chunk of createReadStream(file)) hash.update(chunk); return hash.digest('hex'); }
 function updateNetworkError(error) {
@@ -32,7 +32,8 @@ class ReleaseUpdater extends EventEmitter {
   status() { return { ...this.state }; }
   pendingSelection() { return this.staged ? { selectedVersion: this.staged.version, intent: this.staged.intent, notes: String(this.releases.get(this.staged.version)?.body || '').slice(0, 20000) } : {}; }
   update(value) { Object.assign(this.state, value); this.emit('status', this.status()); }
-  async initialize() {
+  async initialize({ skipPending = false } = {}) {
+    if (skipPending) return this;
     try {
       const pending = JSON.parse(await fs.readFile(this.pendingFile, 'utf8'));
       if (!/^[a-f0-9-]{36}$/.test(pending.id) || !semver.valid(pending.version)) throw new Error('待安装更新记录无效');
@@ -64,7 +65,7 @@ class ReleaseUpdater extends EventEmitter {
     return this.checkPromise;
   }
   async checkInner() {
-    this.update({ phase: 'checking', message: '正在读取 GitHub 正式版本列表…' });
+    this.update({ phase: 'checking', retryDownload: false, message: '正在读取 GitHub 正式版本列表…' });
     const releases = new Map();
     for (let page = 1; ; page++) {
       let response;
@@ -92,7 +93,7 @@ class ReleaseUpdater extends EventEmitter {
   }
   async prepareVersion(version) {
     const release = this.releases.get(version); if (!release || !semver.valid(version)) throw new Error('请先读取版本列表，再选择一个正式版本');
-    this.update({ phase: 'checking', message: `正在核对版本 ${version} 的发行文件…` });
+    this.update({ phase: 'checking', retryDownload: false, message: `正在核对版本 ${version} 的发行文件…` });
     const name = `CanvasStudio-Windows-x64-${version}.zip`;
     const asset = release.assets?.find(entry => entry.name === name), checksum = release.assets?.find(entry => entry.name === name + '.sha256');
     if (!asset || !checksum || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > 2 * 1024 ** 3) throw new Error('发行版缺少 Windows 整合包或 SHA-256 校验文件');
@@ -109,38 +110,58 @@ class ReleaseUpdater extends EventEmitter {
     return this.status();
   }
   async download() {
-    if (this.checkPromise || this.selectPromise) throw new Error('请等待版本核对完成');
+    if (this.checkPromise || this.selectPromise || this.clearingCache) throw new Error('请等待当前更新操作完成');
     if (this.downloadPromise) return this.downloadPromise;
     if (!this.candidate) throw new Error('请先检查更新');
-    this.downloadPromise = this.downloadInner().catch(cause => { const error = updateNetworkError(cause); this.update({ ...this.pendingSelection(), phase: this.staged ? 'ready' : 'error', message: `更新下载或校验失败：${error.message}。当前程序和项目仍保留。${this.staged ? `已校验的 ${this.staged.version} 仍可安装。` : ''}` }); throw error; }).finally(() => { this.downloadPromise = null; });
+    this.downloadPromise = this.downloadInner().catch(cause => { const error = updateNetworkError(cause); this.update({ ...this.pendingSelection(), phase: this.staged ? 'ready' : 'error', retryDownload: !this.staged, message: `更新下载或校验失败：${error.message}。当前程序和项目仍保留。${this.staged ? `已校验的 ${this.staged.version} 仍可安装。` : ''}` }); throw error; }).finally(() => { this.downloadPromise = null; });
     return this.downloadPromise;
   }
   async downloadInner() {
     await writableDirectory(this.dataDir);
+    this.update({ retryDownload: false });
     const candidate = this.candidate, directory = path.join(this.root, 'downloads'), file = path.join(directory, candidate.name);
     await fs.mkdir(directory, { recursive: true });
     let cached = false;
     try { cached = (await fs.stat(file)).size === candidate.size && await digest(file) === candidate.expected; } catch (error) { if (error.code !== 'ENOENT') throw error; }
     if (!cached) {
-      const partial = file + '.' + crypto.randomUUID() + '.part';
-      this.update({ phase: 'downloading', progress: 0, message: '正在下载更新到机械盘…', bytes: 0, total: candidate.size });
-      try {
-        let response;
-        try { response = await this.fetchImpl(candidate.url, { headers: { 'User-Agent': 'Canvas-Studio-Updater/' + this.currentVersion }, credentials: 'omit', cache: 'no-store', signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(30 * 60 * 1000)]) }); }
-        catch (error) { throw updateNetworkError(error); }
-        if (!response.ok || !response.body) throw new Error(`下载服务返回 ${response.status}`);
-        let bytes = 0, previousPercent = -1; const hash = crypto.createHash('sha256');
+      const partial = file + '.' + candidate.expected + '.part';
+      let bytes = await fs.stat(partial).then(stat => stat.size, error => { if (error.code !== 'ENOENT') throw error; return 0; });
+      if (bytes > candidate.size) { await fs.rm(partial); bytes = 0; }
+      await requireFreeSpace(directory, candidate.size - bytes);
+      if (bytes < candidate.size) {
+        this.update({ phase: 'downloading', progress: Math.floor(bytes / candidate.size * 100), message: bytes ? '正在续传更新…' : '正在下载更新到机械盘…', bytes, total: candidate.size });
+        const headers = { 'User-Agent': 'Canvas-Studio-Updater/' + this.currentVersion, 'Accept-Encoding': 'identity', ...(bytes ? { Range: 'bytes=' + bytes + '-' } : {}) };
+        const signal = AbortSignal.any([this.controller.signal, AbortSignal.timeout(30 * 60 * 1000)]);
+        const response = await this.fetchImpl(candidate.url, { headers, credentials: 'omit', cache: 'no-store', signal });
+        if (response.status === 206 && bytes) {
+          if (response.headers.get('content-range') !== `bytes ${bytes}-${candidate.size - 1}/${candidate.size}`) {
+            await response.body?.cancel(); await fs.rm(partial, { force: true });
+            throw new Error('续传范围无效，请重新下载');
+          }
+        } else if (response.status === 200) {
+          if (bytes) await requireFreeSpace(directory, candidate.size - bytes);
+          bytes = 0;
+        } else {
+          await response.body?.cancel();
+          throw new Error(`下载服务返回 ${response.status}`);
+        }
+        if (!response.body) throw new Error('更新服务未返回文件');
+        let previousPercent = -1;
         const meter = new Transform({ transform: (chunk, _encoding, callback) => {
+          if (bytes + chunk.length > candidate.size) return callback(new Error('下载文件超过发行版声明大小'));
           bytes += chunk.length;
-          if (bytes > candidate.size) return callback(new Error('下载文件超过发行版声明大小'));
-          hash.update(chunk); const progress = Math.floor(bytes / candidate.size * 100);
+          const progress = Math.floor(bytes / candidate.size * 100);
           if (progress !== previousPercent) { previousPercent = progress; this.update({ progress, bytes }); }
           callback(null, chunk);
         } });
-        await pipeline(Readable.fromWeb(response.body), meter, createWriteStream(partial, { flags: 'wx', mode: 0o600 }));
-        if (bytes !== candidate.size || hash.digest('hex') !== candidate.expected) throw new Error('下载内容的 SHA-256 或大小不匹配');
-        await fs.rename(partial, file);
-      } finally { await fs.rm(partial, { force: true }); }
+        await pipeline(Readable.fromWeb(response.body), meter, createWriteStream(partial, { flags: bytes ? 'a' : 'w', mode: 0o600 }), { signal });
+      }
+      if (bytes !== candidate.size) throw new Error('下载未完成，再次下载时会尝试续传');
+      if (await digest(partial) !== candidate.expected) {
+        await fs.rm(partial, { force: true });
+        throw new Error('下载内容的 SHA-256 或大小不匹配');
+      }
+      await fs.rename(partial, file);
     }
     this.update({ phase: 'verifying', progress: 100, message: '正在解压并校验全部程序文件…' });
     const staged = await stageUpdate(file, this.dataDir);
@@ -152,7 +173,23 @@ class ReleaseUpdater extends EventEmitter {
       this.staged = { path: staged, version: candidate.version, intent: candidate.intent };
       if (previous && previous.path !== staged) await fs.rm(previous.path, { recursive: true, force: true }).catch(() => {});
     } catch (error) { await fs.rm(staged, { recursive: true, force: true }); throw error; }
-    this.update({ phase: 'ready', latestVersion: candidate.version, message: `更新 ${candidate.version} 已校验，点击“重启安装更新”应用` }); return this.status();
+    this.update({ phase: 'ready', message: `更新 ${candidate.version} 已校验，点击“重启安装更新”应用` }); return this.status();
+  }
+  async clearCache() {
+    if (this.downloadPromise || this.clearingCache) throw new Error('请等待当前更新操作完成');
+    this.clearingCache = true;
+    try {
+      await writableDirectory(this.dataDir);
+      const directory = path.join(this.root, 'downloads');
+      const entries = await fs.readdir(directory, { withFileTypes: true }).catch(error => { if (error.code !== 'ENOENT') throw error; return []; });
+      let removed = 0;
+      for (const entry of entries) {
+        if (entry.isFile() && /^CanvasStudio-Windows-x64-[\d.]+\.zip(?:\.[a-f0-9-]+\.part)?$/.test(entry.name)) {
+          await fs.rm(path.join(directory, entry.name), { force: true }); removed++;
+        }
+      }
+      return removed;
+    } finally { this.clearingCache = false; }
   }
   async installation() {
     if (!this.staged) throw new Error('请先下载并校验更新');

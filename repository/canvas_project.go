@@ -25,6 +25,7 @@ func ListUserCanvasProjects(userID string) ([]model.CanvasProject, error) {
 
 func SaveUserCanvasProject(
 	project model.CanvasProject,
+	expectedUpdatedAt string,
 ) (model.CanvasProject, error) {
 	db, err := DB()
 	if err != nil {
@@ -42,6 +43,9 @@ func SaveUserCanvasProject(
 		project.ID,
 	).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
+		if expectedUpdatedAt != "" {
+			return project, errors.New("画布已变更，请刷新后重试")
+		}
 		return project, db.Create(&project).Error
 	}
 	if err != nil {
@@ -50,22 +54,31 @@ func SaveUserCanvasProject(
 	if current.DeletedAt != "" || current.UpdatedAt > project.UpdatedAt {
 		return current, nil
 	}
+	if expectedUpdatedAt != "" && current.UpdatedAt != expectedUpdatedAt {
+		return project, errors.New("画布已变更，请刷新后重试")
+	}
 
-	result := db.Model(&model.CanvasProject{}).
+	query := db.Model(&model.CanvasProject{}).
 		Where(
 			"user_id = ? AND id = ? AND deleted_at = '' AND updated_at <= ?",
 			project.UserID,
 			project.ID,
 			project.UpdatedAt,
-		).
-		Updates(map[string]any{
-			"project_data": project.ProjectData,
-			"updated_at":   project.UpdatedAt,
-		})
+		)
+	if expectedUpdatedAt != "" {
+		query = query.Where("updated_at = ?", expectedUpdatedAt)
+	}
+	result := query.Updates(map[string]any{
+		"project_data": project.ProjectData,
+		"updated_at":   project.UpdatedAt,
+	})
 	if result.Error != nil {
 		return project, result.Error
 	}
 	if result.RowsAffected == 0 {
+		if expectedUpdatedAt != "" {
+			return project, errors.New("画布已变更，请刷新后重试")
+		}
 		if err := db.First(
 			&current,
 			"user_id = ? AND id = ?",
@@ -85,7 +98,7 @@ func SaveUserCanvasProjects(
 ) ([]model.CanvasProject, error) {
 	for _, project := range projects {
 		project.UserID = userID
-		if _, err := SaveUserCanvasProject(project); err != nil {
+		if _, err := SaveUserCanvasProject(project, ""); err != nil {
 			return nil, err
 		}
 	}

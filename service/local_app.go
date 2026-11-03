@@ -1,11 +1,13 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,6 +48,12 @@ func LocalObjectPath(key string) (string, error) {
 }
 
 func uploadLocalObject(ctx context.Context, filename, contentType string, data []byte) (UploadedStorageObject, error) {
+	return UploadLocalObjectStream(ctx, filename, contentType, bytes.NewReader(data))
+}
+
+const MaxLocalUploadBytes = 1 << 30
+
+func UploadLocalObjectStream(ctx context.Context, filename, contentType string, source io.Reader) (UploadedStorageObject, error) {
 	id := uuid.NewString()
 	ext := filepath.Ext(filename)
 	if len(ext) > 12 || strings.ContainsAny(ext, `/\\`) {
@@ -56,15 +64,48 @@ func uploadLocalObject(ctx context.Context, filename, contentType string, data [
 	if err != nil {
 		return UploadedStorageObject{}, err
 	}
-	if err = os.MkdirAll(filepath.Dir(name), 0755); err != nil {
+	if _, err = os.Stat(config.Cfg.LocalDataDir); err != nil {
+		return UploadedStorageObject{}, errors.New("本机数据目录不可用")
+	}
+	if err = os.Mkdir(filepath.Dir(name), 0755); err != nil && !errors.Is(err, os.ErrExist) {
 		return UploadedStorageObject{}, err
 	}
-	if err = os.WriteFile(name, data, 0600); err != nil {
+	temp, err := os.CreateTemp(filepath.Dir(name), ".upload-*")
+	if err != nil {
 		return UploadedStorageObject{}, err
 	}
-	sum := sha256.Sum256(data)
+	defer os.Remove(temp.Name())
+	defer temp.Close()
+	hash := sha256.New()
+	input := &io.LimitedReader{R: source, N: MaxLocalUploadBytes + 1}
+	if strings.TrimSpace(contentType) == "" {
+		var sample [512]byte
+		size, err := io.ReadFull(input, sample[:])
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			return UploadedStorageObject{}, err
+		}
+		contentType = http.DetectContentType(sample[:size])
+		input.R = io.MultiReader(bytes.NewReader(sample[:size]), input.R)
+		input.N += int64(size)
+	}
+	written, err := io.Copy(io.MultiWriter(temp, hash), input)
+	if err != nil {
+		return UploadedStorageObject{}, err
+	}
+	if written > MaxLocalUploadBytes {
+		return UploadedStorageObject{}, errors.New("本机素材超过 1 GB")
+	}
+	if err = temp.Close(); err != nil {
+		return UploadedStorageObject{}, err
+	}
+	if err = ctx.Err(); err != nil {
+		return UploadedStorageObject{}, err
+	}
+	if err = os.Rename(temp.Name(), name); err != nil {
+		return UploadedStorageObject{}, err
+	}
 	user, _ := UserFromContext(ctx)
-	object := model.StorageObject{ID: id, ProviderID: "local-disk", ObjectKey: key, MimeType: contentType, Bytes: int64(len(data)), SHA256: hex.EncodeToString(sum[:]), CreatedBy: user.ID, CreatedAt: now()}
+	object := model.StorageObject{ID: id, ProviderID: "local-disk", ObjectKey: key, MimeType: contentType, Bytes: written, SHA256: hex.EncodeToString(hash.Sum(nil)), CreatedBy: user.ID, CreatedAt: now()}
 	if _, err = repository.SaveStorageObject(object); err != nil {
 		_ = os.Remove(name)
 		return UploadedStorageObject{}, err
