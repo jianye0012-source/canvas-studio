@@ -69,19 +69,20 @@ function parameters(spec, input) {
   const required = new Set(spec.required);
   const media = Object.entries(spec.properties).filter(([name]) => imageFields.has(name));
   const plural = media.some(([, field]) => field.type === 'array');
+  const firstFrame = media.some(([name, field]) => field.type !== 'array' && name !== 'lastFrameUrl' && name !== 'lastImageUrl');
   const lastFrame = media.some(([name]) => name === 'lastFrameUrl' || name === 'lastImageUrl');
   const images = Array.isArray(input.imageUrls) ? input.imageUrls : [];
   if (!media.length && (images.length || input.firstFrameUrl || input.lastFrameUrl)) throw new Error('所选 RunningHub 模型为纯文生模式，请移除参考图或切换模型');
-  if (!plural && (images.length > (lastFrame ? 2 : 1) || (input.lastFrameUrl && !lastFrame))) throw new Error('所选 RunningHub 模型无法接收这些参考图或尾帧，请调整输入');
+  if ((input.firstFrameUrl && !firstFrame) || (input.lastFrameUrl && !lastFrame)) throw new Error('所选 RunningHub 模型不支持指定的首帧或尾帧，请切换模型或调整参考图');
+  if (!plural && (images.length > (lastFrame ? 2 : 1) || (images.length && (input.firstFrameUrl || input.lastFrameUrl)))) throw new Error('所选 RunningHub 模型无法同时接收这些参考图和首尾帧，请调整输入');
   for (const [name, field] of Object.entries(spec.properties)) {
     let value = Object.hasOwn(controls, name) ? input[name] : undefined;
     if (imageFields.has(name)) {
       if (field.type === 'array') {
-        const refs = images.length ? images : [input.firstFrameUrl, input.lastFrameUrl].filter(Boolean);
-        value = refs.length ? refs : undefined;
+        value = images.length ? images : undefined;
       }
-      else if (name === 'lastFrameUrl' || name === 'lastImageUrl') value = input.lastFrameUrl || images[1];
-      else value = input.firstFrameUrl || images[0];
+      else if (name === 'lastFrameUrl' || name === 'lastImageUrl') value = input.lastFrameUrl || (!plural ? images[1] : undefined);
+      else value = input.firstFrameUrl || (!plural ? images[0] : undefined);
       if (value !== undefined && field.type === 'array' &&
           (value.length < (field.minItems || 1) || value.length > (field.maxItems || 10))) {
         throw new Error(`所选 RunningHub 模型需要 ${field.minItems || 1} 至 ${field.maxItems || 10} 张参考图`);

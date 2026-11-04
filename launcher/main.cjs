@@ -7,6 +7,7 @@ const { ConfigStore } = require('./lib/config.cjs');
 const { Runtime } = require('./lib/runtime.cjs');
 const { ReleaseUpdater } = require('./lib/release-update.cjs');
 const { createUpdateFetch } = require('./lib/update-network.cjs');
+const { MediaExports } = require('./lib/media-files.cjs');
 const { installationPaths, executableName, versionDirectory, stageUpdate, applyUpdate, clearInactiveVersions } = require('./lib/update.cjs');
 const updateSource = require('./update-source.json');
 
@@ -64,7 +65,29 @@ else {
     const systemFetch = createUpdateFetch(net);
     store = await new ConfigStore(portableRoot, encrypt, decrypt, fetch, systemFetch).initialize();
     const bundleRoot = process.env.CANVAS_BUNDLE_ROOT || (app.isPackaged ? path.join(programRoot, 'resources', 'bundle') : path.resolve(__dirname, '..', 'work', 'bundle-linux'));
-    runtime = new Runtime({ store, root: bundleRoot, development: !app.isPackaged, chooseFolder: async () => { const result = await dialog.showOpenDialog(window, { title: '选择 FOR 循环的输入文件夹', properties: ['openDirectory'] }); return result.canceled ? null : result.filePaths[0]; } });
+    let choosing = false;
+    const choose = async options => {
+      if (choosing) throw new Error('文件选择窗口已打开，请先完成选择');
+      choosing = true;
+      if (window.isMinimized()) window.restore();
+      window.show();
+      window.focus();
+      try {
+        const result = await dialog.showOpenDialog(window, options);
+        return result.canceled ? [] : result.filePaths;
+      } finally { choosing = false; }
+    };
+    const chooseOutput = async () => (await choose({ title: '选择机械盘上的输出目录', properties: ['openDirectory', 'createDirectory'] }))[0];
+    const exports = new MediaExports(store.dataDir);
+    const images = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif'];
+    const videos = ['mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', 'mpeg', 'mpg'];
+    const audios = ['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'];
+    const mediaExtensions = { image: images, video: videos, audio: audios, director: ['png', 'jpg', 'jpeg', 'webp', ...videos], media: [...images, ...videos, ...audios] };
+    runtime = new Runtime({
+      store, root: bundleRoot, development: !app.isPackaged, chooseOutput,
+      chooseFolder: async () => (await choose({ title: '选择 FOR 循环的输入文件夹', properties: ['openDirectory'] }))[0],
+      chooseMedia: (kind, multiple) => choose({ title: '选择本机素材', properties: ['openFile', ...(multiple ? ['multiSelections'] : [])], filters: [{ name: '支持的媒体文件', extensions: mediaExtensions[kind] }] }),
+    });
     updater = await new ReleaseUpdater({ dataDir: store.dataDir, currentVersion: app.getVersion(), source: updateSource, fetchImpl: systemFetch }).initialize({ skipPending: trial });
     window = new BrowserWindow({ width: 1120, height: 780, minWidth: 960, minHeight: 680, title: '画布工作台启动器', backgroundColor: '#f6f7fb', autoHideMenuBar: true, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true } });
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -95,7 +118,7 @@ else {
       try { return await action(); } finally { installing = false; }
     };
     const handlers = {
-      'app:load': () => ({ config: store.public(), status: runtime.status(), logs: runtime.lines, update: updater.status() }),
+      'app:load': async () => ({ config: store.public(), status: runtime.status(), logs: runtime.lines, update: updater.status(), exports: await exports.settings() }),
       'runtime:start': () => runtime.start(),
       'runtime:stop': () => runtime.stop(),
       'runtime:force-stop': () => runtime.forceStop(),
@@ -119,6 +142,11 @@ else {
       'config:test': (_event, value) => store.testChannel(value),
       'config:runninghub-model': (_event, id) => store.readRunningHubModel(id),
       'storage:open': () => shell.openPath(store.dataDir),
+      'storage:choose-output': async () => { const directory = await chooseOutput(); return directory ? exports.configure({ directory }) : null; },
+      'storage:auto-export': (_event, enabled) => {
+        if (typeof enabled !== 'boolean') throw new Error('自动保存设置无效');
+        return exports.configure({ enabled });
+      },
       'storage:choose': async () => {
         if (runtime.state.phase !== 'stopped' && runtime.state.phase !== 'error') throw new Error('请先停止服务，再切换数据目录');
         const result = await dialog.showOpenDialog(window, { title: '选择现有工作台数据目录；原目录文件会保留', properties: ['openDirectory', 'createDirectory'] });

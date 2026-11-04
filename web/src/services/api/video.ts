@@ -502,7 +502,8 @@ async function createVideoRequestBody(config: AiConfig, model: string, prompt: s
     if (tokenDance || apimartWan3 || supportsVideoAudioGeneration(model)) body.append("video_generate_audio", String(boolConfig(config.videoGenerateAudio, false)));
     if (tokenDance) body.append("video_watermark", String(boolConfig(config.videoWatermark, false)));
     const imageReferenceLimit = kieKlingOmni === "text-to-video" ? 0 : kieKlingOmni === "reference-to-video" ? input.references.length : kieKlingOmni === "transformation" ? 4 : kling ? 2 : 10;
-    const files = await Promise.all(input.references.slice(0, imageReferenceLimit).map(imageReferenceToFormValue));
+    if (input.references.length > imageReferenceLimit) throw new VideoRequestError(imageReferenceLimit ? `当前视频模型最多支持 ${imageReferenceLimit} 张参考图` : "当前视频模型不支持参考图，请切换模型或移除参考图");
+    const files = await Promise.all(input.references.map(imageReferenceToFormValue));
     files.forEach((file) => body.append("input_reference[]", file));
     if (!kling && input.firstFrame) body.append("first_frame_url", await imageReferenceToFormValue(input.firstFrame));
     if (!kling && input.lastFrame) body.append("last_frame_url", await imageReferenceToFormValue(input.lastFrame));

@@ -212,17 +212,25 @@ export function buildNodeChatMessages(context: NodeGenerationContext): ChatCompl
     return [
         {
             role: "user",
-            content: [{ type: "text" as const, text: context.prompt }, ...context.referenceImages.map((image) => ({ type: "image_url" as const, image_url: { url: image.dataUrl } }))],
+            content: [{ type: "text" as const, text: context.prompt }, ...context.referenceImages.map((image) => ({ type: "image_url" as const, image_url: { url: image.dataUrl || image.url || "" } }))],
         },
     ];
 }
 
 export async function hydrateNodeGenerationContext(context: NodeGenerationContext) {
-    const hydrateImage = async (image: ReferenceImage) => {
-        const url = image.url || (/^https?:\/\//i.test(image.dataUrl) ? image.dataUrl : undefined);
-        return url ? { ...image, url } : { ...image, dataUrl: await imageToDataUrl(image) };
-    };
     const { imageToDataUrl } = await import("@/services/image-storage");
+    const hydrateImage = async (image: ReferenceImage) => {
+        const source = image.dataUrl || image.url || "";
+        const publicUrl = /^https?:\/\//i.test(source) && !/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(source);
+        if (publicUrl && !image.storageKey?.startsWith("server:")) return { ...image, url: source, dataUrl: source };
+        try {
+            const dataUrl = await imageToDataUrl(image);
+            if (!dataUrl.startsWith("data:image/")) throw new Error("素材不是可读取的图片");
+            return { ...image, url: undefined, dataUrl };
+        } catch (error) {
+            throw new Error(`参考图「${image.name}」无法读取，请重新添加。${(error as Error).message}`);
+        }
+    };
     return {
         ...context,
         referenceImages: await Promise.all(context.referenceImages.map(hydrateImage)),
@@ -245,10 +253,11 @@ function generationLabel(type: NodeGenerationInput["type"], index: number) {
 
 function readReferenceImage(node: CanvasNodeData): ReferenceImage | null {
     if (!isCanvasImageNodeType(node.type) || !node.metadata?.content) return null;
+    const type = node.metadata.mimeType || "image/png";
     return {
         id: node.id,
-        name: `image-${node.id}.png`,
-        type: node.metadata.mimeType || "image/png",
+        name: /\.(png|jpe?g|webp|gif|avif)$/i.test(node.title) ? node.title : `${node.title || "参考图"}.${type === "image/jpeg" ? "jpg" : type.split("/")[1] || "png"}`,
+        type,
         dataUrl: node.metadata.content,
         storageKey: node.metadata.storageKey,
     };

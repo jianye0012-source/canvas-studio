@@ -3,8 +3,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { App, Button, Empty, Input, Modal, Pagination, Spin, Tabs, Tag } from "antd";
-import { ImagePlus, Plus, Search } from "lucide-react";
+import { FolderDown, ImagePlus, Plus, Search } from "lucide-react";
+import { useExportLocalMedia } from "@/hooks/use-export-local-media";
 
+import { pickNativeMedia } from "@/services/api/local-workspace";
+import { useUserStore } from "@/stores/use-user-store";
 import { cn } from "@/lib/utils";
 import { useAssetStore, type Asset } from "@/stores/use-asset-store";
 import { fetchAssetLibrary, type AssetLibraryItem } from "@/services/api/assets";
@@ -181,6 +184,9 @@ function PickerCard({ title, kind, cover, loading, onClick }: { title: string; k
 
 function MyAssetsTab({ onInsert }: { onInsert: (payload: InsertAssetPayload) => void }) {
     const { message } = App.useApp();
+    const save = useExportLocalMedia();
+    const nativeAvailable = useUserStore(state => state.user?.id === "local-owner");
+    const [nativeBusy, setNativeBusy] = useState(false);
     const assets = useAssetStore((state) => state.assets);
     const addAsset = useAssetStore((state) => state.addAsset);
     const [keyword, setKeyword] = useState("");
@@ -340,7 +346,10 @@ function MyAssetsTab({ onInsert }: { onInsert: (payload: InsertAssetPayload) => 
             {visible.length ? (
                 <div className="grid grid-cols-4 gap-3">
                     {visible.map((asset) => (
-                        <PickerCard key={asset.id} title={asset.title} kind={asset.kind} cover={asset.coverUrl || (asset.kind === "image" ? asset.data.dataUrl : "")} onClick={() => handleInsert(asset)} />
+                        <div key={asset.id} className="relative grid">
+                            <PickerCard title={asset.title} kind={asset.kind} cover={asset.coverUrl || (asset.kind === "image" ? asset.data.dataUrl : "")} onClick={() => handleInsert(asset)} />
+                            {save && asset.kind !== "text" && <Button type="default" size="small" className="!absolute !right-1 !top-1" title="另存到文件夹" aria-label={`另存到文件夹 · ${asset.title}`} icon={<FolderDown className="size-3.5" />} onClick={() => void save({ name: asset.title, kind: asset.kind, storageKey: asset.data.storageKey, url: asset.kind === "image" ? asset.data.dataUrl : asset.data.url })} />}
+                        </div>
                     ))}
                 </div>
             ) : (
@@ -386,6 +395,12 @@ function MyAssetsTab({ onInsert }: { onInsert: (payload: InsertAssetPayload) => 
                             <Button icon={<ImagePlus className="size-4" />} onClick={() => fileInputRef.current?.click()}>
                                 {selectedFile ? selectedFile.name : createKind === "image" ? "选择图片" : createKind === "video" ? "选择视频" : "选择音频"}
                             </Button>
+                            {nativeAvailable && <Button loading={nativeBusy} onClick={async () => {
+                                setNativeBusy(true);
+                                try { const [file] = await pickNativeMedia(createKind); if (file) setSelectedFile(file); }
+                                catch (error) { message.error((error as Error).message); }
+                                finally { setNativeBusy(false); }
+                            }}>用本机窗口选择</Button>}
                             <Input value={createUrl} placeholder={createKind === "image" ? "图片 URL" : createKind === "video" ? "视频 URL" : "音频 URL"} onChange={(event) => setCreateUrl(event.target.value)} />
                         </div>
                     )}

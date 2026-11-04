@@ -39,13 +39,23 @@ class FolderStore {
     await visit(root, 0); files.sort((a, b) => a.relativePath.localeCompare(b.relativePath, 'zh-CN', { numeric: true }));
     return { id, name: path.basename(root), path: root, files };
   }
-  async import(id, item, apiPort, token, { signal, onProgress } = {}) {
+  async checkedFile(id, item) {
     const root = (await this.grants())[id]; if (!root) throw new Error('文件夹授权已失效');
     const relative = Buffer.from(item.id, 'base64url').toString('utf8');
     const file = contained(root, relative); if (await fs.realpath(file) !== file || await fs.realpath(root) !== root) throw new Error('文件位置已改变，请重新扫描');
     const stat = await fs.stat(file);
     if (!stat.isFile() || stat.size !== item.size || stat.mtimeMs !== item.mtime) throw new Error('文件已被修改，请重新选择文件夹开始新的循环');
     if (stat.size > 1024 ** 3 || !extensions.has(path.extname(file).toLowerCase())) throw new Error('文件不受支持');
+    return { file, stat };
+  }
+  async preview(id, item) {
+    const { file, stat } = await this.checkedFile(id, item);
+    const type = mime.lookup(file) || '';
+    if (!/^image\/(png|jpeg|webp)$/.test(type) || stat.size > 32 * 1024 ** 2) throw new Error('此文件无法预览，仍可继续循环');
+    return { type, size: stat.size, stream: require('node:fs').createReadStream(file) };
+  }
+  async import(id, item, apiPort, token, { signal, onProgress } = {}) {
+    const { file, stat } = await this.checkedFile(id, item);
     await writableDirectory(this.dataDir);
     if (['.txt', '.md'].includes(path.extname(file).toLowerCase())) { if (stat.size > 1024 * 1024) throw new Error('文本文件超过 1 MB'); return { content: await fs.readFile(file, 'utf8'), mimeType: 'text/plain' }; }
     const form = new FormData(); form.append('file', await openAsBlob(file, { type: mime.lookup(file) || 'application/octet-stream' }), path.basename(file));

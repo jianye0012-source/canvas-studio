@@ -626,6 +626,24 @@ export default function AgentPanel({
 		takeTransfer({ files: event.target.files });
 		event.target.value = "";
 	}, [takeTransfer]);
+	const [nativePicking, setNativePicking] = useState(false);
+	const canvasStudio = new URLSearchParams(globalThis.location?.search).get("canvas") === "1";
+	const onNativePick = async () => {
+		setNativePicking(true);
+		try {
+			const response = await fetch("/local/media/select", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "director", multiple: true }) });
+			const picks = await response.json();
+			if (!response.ok) throw new Error(picks.msg || "本机文件窗口不可用");
+			const files = [];
+			for (const pick of picks) {
+				const selected = await fetch(`/local/media/picked/${encodeURIComponent(pick.id)}`);
+				if (!selected.ok) throw new Error(`无法读取文件「${pick.name}」，请重新选择`);
+				files.push(new File([await selected.blob()], pick.name, { type: pick.type }));
+			}
+			if (files.length) takeTransfer({ files });
+		} catch (error) { setAttachNotice(error.message); }
+		finally { setNativePicking(false); }
+	};
 	const onComposerPaste = useCallback((event) => {
 		if (takeTransfer(event.clipboardData)) event.preventDefault();
 	}, [takeTransfer]);
@@ -963,6 +981,7 @@ export default function AgentPanel({
 					<button type="button" className="agent-attach-chip agent-attach-file" aria-label="Attach image or video" title="Attach image or video" disabled={composerDisabled} onClick={() => fileInputRef.current?.click()}>
 						<FiPaperclip size={13} aria-hidden="true" />
 					</button>
+					{canvasStudio && <button type="button" className="agent-attach-chip" aria-label="用本机窗口选择附件" title="用本机窗口选择附件" disabled={composerDisabled || nativePicking} onClick={() => void onNativePick()}>本机</button>}
 					<input ref={fileInputRef} type="file" accept={ATTACHMENT_ACCEPT} multiple hidden onChange={onPickFiles} />
 					{/* Five providers in one dropdown: grouped by the provider that serves
 					    them, and a provider without a credential still lists its models —

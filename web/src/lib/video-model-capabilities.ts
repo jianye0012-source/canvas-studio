@@ -36,6 +36,7 @@ export function videoDurationOptionsForModel(modelName: string) {
 }
 
 export function supportsVideoFrameReferences(modelName: string, protocol = "") {
+    if (protocol === "runninghub-standard") return true; // The selected endpoint validates its own first/last-frame fields.
     if (protocol === "autodl") return modelName === "minimax_h3_b99_002" || modelName === "minimax_h3_lightx2v";
     const model = modelKey(modelName);
     return (

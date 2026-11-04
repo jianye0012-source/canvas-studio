@@ -4,12 +4,13 @@ import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type 
 import { useParams } from "next/navigation";
 import { Empty, Input, Pagination, Select, Spin } from "antd";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, ChevronRight, Clapperboard, Eye, FileText, Group, Image as ImageIcon, Music2, Plus, Search, Settings2, Type, Video } from "lucide-react";
+import { BookOpen, ChevronRight, Clapperboard, Eye, FileText, FolderDown, Group, Image as ImageIcon, Music2, Plus, Search, Settings2, Type, Video } from "lucide-react";
 import { motion } from "motion/react";
 
 import { AssetFormModal } from "@/components/assets/asset-form-modal";
 import { PromptDetailDialog } from "@/components/prompts/prompt-detail-dialog";
 import { useCopyText } from "@/hooks/use-copy-text";
+import { useExportLocalMedia } from "@/hooks/use-export-local-media";
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { cn } from "@/lib/utils";
 import { fetchAssetLibrary, type AssetLibraryItem } from "@/services/api/assets";
@@ -409,6 +410,7 @@ function LibraryAssetDragCard({ asset, theme, onAssetDragStart, onAssetDragEnd }
 }
 
 function DraggableAssetCard({ theme, title, payload, kind, imageUrl, text, onAssetDragStart, onAssetDragEnd }: { theme: CanvasTheme; title: string; payload: InsertAssetPayload; kind: "text" | "image" | "video" | "audio"; imageUrl: string; text: string; onAssetDragStart: (payload: InsertAssetPayload) => void; onAssetDragEnd: () => void }) {
+    const save = useExportLocalMedia();
     return (
         <div
             draggable
@@ -423,6 +425,7 @@ function DraggableAssetCard({ theme, title, payload, kind, imageUrl, text, onAss
             style={{ borderColor: theme.node.stroke, background: theme.node.panel }}
         >
             {kind === "text" ? imageUrl ? <div className="flex size-full flex-col"><img src={imageUrl} alt={title} className="h-1/2 w-full object-cover" /><div className="h-1/2 overflow-hidden whitespace-pre-wrap break-words p-2.5 text-[11px] leading-snug opacity-80">{text}</div></div> : <div className="size-full overflow-hidden whitespace-pre-wrap break-words p-2.5 text-[11px] leading-snug opacity-80">{text}</div> : kind === "audio" ? <span className="grid size-full place-items-center"><Music2 className="size-8 opacity-45" /></span> : imageUrl ? kind === "video" ? <video src={imageUrl + "#t=0.1"} muted playsInline preload="metadata" className="size-full object-cover transition duration-300 group-hover:scale-[1.04]" /> : <img src={imageUrl} alt={title} className="size-full object-cover transition duration-300 group-hover:scale-[1.04]" /> : <span className="grid size-full place-items-center"><FileText className="size-8 opacity-45" /></span>}
+            {save && payload.source === "asset" && payload.kind !== "text" && <button type="button" draggable={false} aria-label={`另存到文件夹 · ${title}`} title="另存到文件夹" onClick={() => void save({ name: title, kind: payload.kind, storageKey: payload.storageKey, url: (payload.kind === "image" ? payload.dataUrl : payload.url) || "" })} className="absolute right-1 top-1 grid size-7 place-items-center rounded-md opacity-70 hover:opacity-100 focus:opacity-100" style={{ background: theme.node.panel, color: theme.node.text }}><FolderDown className="size-4" /></button>}
         </div>
     );
 }

@@ -4,6 +4,7 @@ import { useFolderLoop } from "../utils/use-folder-loop";
 import { useCanvasMcp } from '../agent/use-canvas-mcp';
 import { textSkillInstructions } from '../utils/text-skills';
 import { useAgentSkillStore, invalidateAgentSkillCache } from '@/stores/use-agent-skill-store';
+import { useExportLocalMedia } from "@/hooks/use-export-local-media";
 import { CanvasFolderLoopPanel } from "../components/canvas-folder-loop-panel";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -28,7 +29,7 @@ import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { UserStatusActions } from "@/components/layout/user-status-actions";
 import { isKIEKlingV3Config, kieKlingOmniVariant } from "@/components/video-settings-panel";
 import { useAssetStore } from "@/stores/use-asset-store";
-import { clearCanvasEditor, openCanvasEditor, setCanvasEditor, type LoopProgress } from "@/services/api/local-workspace";
+import { autoExportLocalMedia, clearCanvasEditor, desktopAssetId, openCanvasEditor, pickNativeMedia, setCanvasEditor, type LoopProgress } from "@/services/api/local-workspace";
 import { useUserStore } from "@/stores/use-user-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "../utils/canvas-image-data";
@@ -465,6 +466,12 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     const [assetPickerTab, setAssetPickerTab] = useState<AssetPickerTab>("my-assets");
     const [pendingPanoramaImport, setPendingPanoramaImport] = useState<PendingPanoramaImport | null>(null);
     const [projectLoaded, setProjectLoaded] = useState(false);
+    const localWorkspace = useUserStore(state => state.user?.id === "local-owner");
+    const saveLocalMedia = useExportLocalMedia();
+    const autoExports = useRef(new Set<string>());
+    const [uploadChoice, setUploadChoice] = useState<{ nodeId?: string; position?: Position } | null>(null);
+    const [nativePickerBusy, setNativePickerBusy] = useState(false);
+
     const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null);
     const [nodeImageSettingsOpen, setNodeImageSettingsOpen] = useState(false);
     const [dialogNodeId, setDialogNodeId] = useState<string | null>(null);
@@ -2504,6 +2511,16 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         [message],
     );
 
+    useEffect(() => {
+        if (!localWorkspace || !projectLoaded) return;
+        for (const node of nodes) {
+            const asset = node.metadata?.generatedAsset;
+            if (node.metadata?.status !== NODE_STATUS_SUCCESS || !asset || asset.id !== desktopAssetId(node.metadata.storageKey, node.metadata.content) || autoExports.current.has(asset.resultKey)) continue;
+            autoExports.current.add(asset.resultKey);
+            void autoExportLocalMedia(asset.id, asset.completedAt, asset.resultKey).catch(error => message.warning(`「${node.title}」自动保存失败：${error.message}`));
+        }
+    }, [localWorkspace, message, nodes, projectLoaded]);
+
     const downloadNodeImage = useCallback((node: CanvasNodeData) => {
         if ((!isCanvasImageNodeType(node.type) && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) || !node.metadata?.content) return;
         saveAs(node.metadata.content, `canvas-${node.type}-${node.id}.${node.type === CanvasNodeType.Video ? "mp4" : node.type === CanvasNodeType.Audio ? audioExtension(node.metadata.mimeType) : imageExtension(node.metadata.content)}`);
@@ -2986,25 +3003,27 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, fontSize } } : node)));
     }, []);
 
-    const handleUploadRequest = useCallback((nodeId?: string, position?: Position) => {
-        uploadTargetRef.current = { nodeId, position };
-        if (imageInputRef.current) imageInputRef.current.multiple = !nodeId;
+    const openBrowserPicker = useCallback((target: { nodeId?: string; position?: Position }) => {
+        uploadTargetRef.current = target;
+        if (imageInputRef.current) imageInputRef.current.multiple = !target.nodeId;
         imageInputRef.current?.click();
     }, []);
+    const handleUploadRequest = useCallback((nodeId?: string, position?: Position) => {
+        const target = { nodeId, position };
+        if (localWorkspace) setUploadChoice(target);
+        else openBrowserPicker(target);
+    }, [localWorkspace, openBrowserPicker]);
 
-    const handleImageInputChange = useCallback(
-        async (event: ReactChangeEvent<HTMLInputElement>) => {
-            const files = Array.from(event.target.files || []);
+    const processPickedMedia = useCallback(
+        async (selected: File[], target: { nodeId?: string; position?: Position } | null) => {
+            const files = selected.filter(item => item.type.startsWith("image/") || item.type.startsWith("video/") || isAudioFile(item));
             const file = files[0];
-            const target = uploadTargetRef.current;
-            if (!file || (!file.type.startsWith("image/") && !file.type.startsWith("video/") && !isAudioFile(file))) return;
+            if (!file) { if (selected.length) message.warning("请选择受支持的图片、视频或音频"); return; }
             const targetNode = target?.nodeId ? nodesRef.current.find((node) => node.id === target.nodeId) : null;
             const targetRun = target?.nodeId ? nodeTaskRunsRef.current.get(target.nodeId) : undefined;
             const targetToken = targetRun?.preparing || targetRun?.generation || targetRun?.controller;
             if (isPanoramaNodeType(targetNode?.type) && !file.type.startsWith("image/")) {
                 message.warning("全景图节点仅支持上传图片作为参考");
-                uploadTargetRef.current = null;
-                event.target.value = "";
                 return;
             }
 
@@ -3025,12 +3044,12 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     }
                     if (audio && canApplyUpload) {
                         const spec = NODE_DEFAULT_SIZE[CanvasNodeType.Audio];
-                        setNodes((prev) => (nodeTaskRunsRef.current.get(targetNodeId)?.preparing || nodeTaskRunsRef.current.get(targetNodeId)?.generation || nodeTaskRunsRef.current.get(targetNodeId)?.controller) === targetToken && prev.some((node) => node.id === targetNodeId) ? prev.map((node) => (node.id === targetNodeId ? { ...node, type: CanvasNodeType.Audio, title: file.name, position: { x: node.position.x + node.width / 2 - spec.width / 2, y: node.position.y + node.height / 2 - spec.height / 2 }, width: spec.width, height: spec.height, metadata: { ...node.metadata, ...audioMetadata(audio), clientTaskId: undefined, taskBackend: undefined, errorDetails: undefined } } : node)) : prev);
+                        setNodes((prev) => (nodeTaskRunsRef.current.get(targetNodeId)?.preparing || nodeTaskRunsRef.current.get(targetNodeId)?.generation || nodeTaskRunsRef.current.get(targetNodeId)?.controller) === targetToken && prev.some((node) => node.id === targetNodeId) ? prev.map((node) => (node.id === targetNodeId ? { ...node, type: CanvasNodeType.Audio, title: file.name, position: { x: node.position.x + node.width / 2 - spec.width / 2, y: node.position.y + node.height / 2 - spec.height / 2 }, width: spec.width, height: spec.height, metadata: { ...node.metadata, ...audioMetadata(audio), generatedAsset: undefined, clientTaskId: undefined, taskBackend: undefined, errorDetails: undefined } } : node)) : prev);
                         setSelectedNodeIds(new Set([targetNodeId]));
                         setSelectedConnectionId(null);
                     } else if (video && canApplyUpload) {
                         const nextSize = fitNodeSize(video.width || 1280, video.height || 720, VIDEO_NODE_MAX_WIDTH, VIDEO_NODE_MAX_HEIGHT);
-                        setNodes((prev) => (nodeTaskRunsRef.current.get(targetNodeId)?.preparing || nodeTaskRunsRef.current.get(targetNodeId)?.generation || nodeTaskRunsRef.current.get(targetNodeId)?.controller) === targetToken && prev.some((node) => node.id === targetNodeId) ? prev.map((node) => (node.id === targetNodeId ? { ...node, type: CanvasNodeType.Video, title: file.name, position: { x: node.position.x + node.width / 2 - nextSize.width / 2, y: node.position.y + node.height / 2 - nextSize.height / 2 }, width: nextSize.width, height: nextSize.height, metadata: { ...node.metadata, ...videoMetadata(video), clientTaskId: undefined, taskBackend: undefined, errorDetails: undefined } } : node)) : prev);
+                        setNodes((prev) => (nodeTaskRunsRef.current.get(targetNodeId)?.preparing || nodeTaskRunsRef.current.get(targetNodeId)?.generation || nodeTaskRunsRef.current.get(targetNodeId)?.controller) === targetToken && prev.some((node) => node.id === targetNodeId) ? prev.map((node) => (node.id === targetNodeId ? { ...node, type: CanvasNodeType.Video, title: file.name, position: { x: node.position.x + node.width / 2 - nextSize.width / 2, y: node.position.y + node.height / 2 - nextSize.height / 2 }, width: nextSize.width, height: nextSize.height, metadata: { ...node.metadata, ...videoMetadata(video), generatedAsset: undefined, clientTaskId: undefined, taskBackend: undefined, errorDetails: undefined } } : node)) : prev);
                         setSelectedNodeIds(new Set([targetNodeId]));
                         setSelectedConnectionId(null);
                         setDialogNodeId(targetNodeId);
@@ -3051,6 +3070,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                                     metadata: {
                                         ...node.metadata,
                                         ...imageMetadata(image),
+                                        generatedAsset: undefined,
                                         clientTaskId: undefined,
                                         taskBackend: undefined,
                                         errorDetails: undefined,
@@ -3096,11 +3116,31 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                 });
             }
 
-            uploadTargetRef.current = null;
-            event.target.value = "";
         },
-        [createAudioFileNode, createImageFileNode, createVideoFileNode, screenToCanvas, size.height, size.width],
+        [createAudioFileNode, createImageFileNode, createVideoFileNode, message, screenToCanvas, size.height, size.width],
     );
+
+    const handleImageInputChange = (event: ReactChangeEvent<HTMLInputElement>) => {
+        const files = Array.from(event.currentTarget.files || []);
+        const target = uploadTargetRef.current;
+        event.currentTarget.value = "";
+        uploadTargetRef.current = null;
+        void processPickedMedia(files, target);
+    };
+    const openNativePicker = async () => {
+        if (!uploadChoice || nativePickerBusy) return;
+        const target = uploadChoice;
+        const node = nodesRef.current.find(item => item.id === target.nodeId);
+        setNativePickerBusy(true);
+        try {
+            const files = await pickNativeMedia(isPanoramaNodeType(node?.type) ? "image" : "media", !target.nodeId);
+            if (files.length) {
+                setUploadChoice(null);
+                await processPickedMedia(files, target);
+            }
+        } catch (error) { message.error((error as Error).message); }
+        finally { setNativePickerBusy(false); }
+    };
 
     function insertAssetAt(payload: InsertAssetPayload, position?: Position, nodeId?: string) {
         const center = position || screenToCanvas((containerRef.current?.getBoundingClientRect().left || 0) + size.width / 2, (containerRef.current?.getBoundingClientRect().top || 0) + size.height / 2);
@@ -3214,9 +3254,22 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             }
             const sourceTextContent = sourceNode?.type === CanvasNodeType.Text ? sourceNode.metadata?.content?.trim() || "" : "";
             const editingTextNode = mode === "text" && Boolean(sourceTextContent) && !overwriteExisting;
-            const generationContext = await hydrateNodeGenerationContext(
-                buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, editingTextNode ? `请根据要求修改以下文本。\n\n原文：\n${sourceTextContent}\n\n修改要求：\n${prompt}` : prompt),
-            );
+            let generationContext: NodeGenerationContext;
+            try {
+                generationContext = await hydrateNodeGenerationContext(
+                    buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, sourceTextContent && mode === "text" ? `请根据要求修改以下文本。\n\n原文：\n${sourceTextContent}\n\n修改要求：\n${prompt}` : prompt),
+                );
+                if (mode === "video" && ((sourceNode?.metadata?.firstFrameNodeId && !generationContext.firstFrame) || (sourceNode?.metadata?.lastFrameNodeId && !generationContext.lastFrame))) {
+                    throw new Error("首帧或尾帧参考图不可用，请重新连接并选择图片");
+                }
+            } catch (error) {
+                if (preparingRun?.preparing === runningRequest) delete preparingRun.preparing;
+                if (runningRequestRef.current === runningRequest) {
+                    setRunningNodeId(null);
+                    message.error((error as Error).message);
+                }
+                return;
+            }
             const effectivePrompt = generationContext.prompt.trim();
             if (skillInstructions) generationContext.prompt = `请遵循以下用户选定的 Skill 完成文字创作。\n\n${skillInstructions}\n\n## 本次任务\n${generationContext.prompt}`;
             const requestPrompt =
@@ -3726,7 +3779,10 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                 );
             } catch (error) {
                 if (submittedTask && !isNodeTaskActive(submittedTask.nodeId, submittedTask.id)) return;
-                const errorDetails = error instanceof Error ? error.message : "生成失败";
+                const detail = error instanceof Error ? error.message : "生成失败";
+                const errorDetails = mode === "text" && generationContext.referenceImages.length && /vision|multimodal|image_url|不支持.*图|仅支持.*文字/i.test(detail)
+                    ? `当前文字模型无法处理参考图，请切换支持视觉的文字模型。${detail}`
+                    : detail;
                 message.error(errorDetails);
                 setNodes((prev) => {
                     const isConfigNode = sourceNode?.type === CanvasNodeType.Config;
@@ -4282,7 +4338,13 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                 return;
             }
 
-            const context = hasSavedImageMetadata ? null : await hydrateNodeGenerationContext(buildNodeGenerationContext(sourceNode.id, nodesRef.current, connectionsRef.current, sourceNode.metadata?.prompt || node.metadata?.prompt || ""));
+            let context: NodeGenerationContext | null = null;
+            try {
+                if (!hasSavedImageMetadata) context = await hydrateNodeGenerationContext(buildNodeGenerationContext(sourceNode.id, nodesRef.current, connectionsRef.current, sourceNode.metadata?.prompt || node.metadata?.prompt || ""));
+            } catch (error) {
+                message.error((error as Error).message);
+                return;
+            }
             const prompt = (isPanorama ? savedImageMetadata?.panoramaFinalPrompt || "" : savedImageMetadata?.prompt || context?.prompt || "").trim();
             const requestPrompt = isPanorama ? prompt : applyCameraPrompt(prompt, savedImageMetadata?.cameraControl || node.metadata?.cameraControl);
             if (!prompt && !retryWorkflowRef && !(node.type === CanvasNodeType.Video && isAutoDLConfig(generationConfig))) {
@@ -4830,6 +4892,10 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     onExtractAudio={(node) => void extractAudio(node)}
                     onTrimAudio={(node) => setAudioTrimNodeId(node.id)}
                     onDownload={downloadNodeImage}
+                    onExport={saveLocalMedia ? node => {
+                        if (!node.metadata?.content) return;
+                        void saveLocalMedia({ name: node.title, url: node.metadata.content, storageKey: node.metadata.storageKey, kind: node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : "image" });
+                    } : undefined}
                     onSaveAsset={(node) => void saveNodeAsset(node)}
                     onUploadMediaToCloud={(node) => void uploadNodeMediaToCloud(node)}
                     onUploadImageToCloud={(node) => void uploadNodeImageToCloud(node)}
@@ -4943,6 +5009,12 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                         </button>
                     </div>
                 ) : null}
+                <Modal title="添加本机文件" open={Boolean(uploadChoice)} onCancel={() => setUploadChoice(null)} footer={null} width={420} closable={!nativePickerBusy} maskClosable={!nativePickerBusy}>
+                    <div className="flex flex-wrap gap-2 py-3">
+                        <Button type="primary" disabled={nativePickerBusy} onClick={() => { if (uploadChoice) openBrowserPicker(uploadChoice); setUploadChoice(null); }}>选择文件</Button>
+                        <Button loading={nativePickerBusy} onClick={() => void openNativePicker()}>用本机窗口选择</Button>
+                    </div>
+                </Modal>
                 <input ref={imageInputRef} type="file" accept="image/*,video/*,audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav" className="hidden" onChange={handleImageInputChange} />
 
                 <CanvasNodeInfoModal node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} />
@@ -5771,6 +5843,13 @@ function canvasTaskMediaURL(task: CanvasImageTask | CanvasAudioTask | VideoRespo
     return task.url;
 }
 
+function generatedAsset(node: CanvasNodeData | undefined, storageKey: string | undefined, url: string, resultKey: string) {
+    const id = desktopAssetId(storageKey, url);
+    if (!id) return undefined;
+    const previous = node?.metadata?.generatedAsset;
+    return { id, resultKey, completedAt: previous?.resultKey === resultKey ? previous.completedAt : Date.now() };
+}
+
 function applyCanvasVideoTaskUpdate(nodes: CanvasNodeData[], nodeId: string, task: VideoResponse & CanvasTaskMediaSize, config: AiConfig, startedAt: number, fallbackSize: { width: number; height: number }, clientTaskId?: string) {
     const target = nodes.find((node) => node.id === nodeId);
     if (!target || target.metadata?.status === "stopped" || (target.metadata?.status === "stopping" && !canvasVideoTaskCompleted(task)) || (clientTaskId && target.metadata?.clientTaskId !== clientTaskId)) return nodes;
@@ -5813,6 +5892,7 @@ function applyCanvasVideoTaskUpdate(nodes: CanvasNodeData[], nodeId: string, tas
                 ...metadata,
                 content: url,
                 storageKey: task.storageKey || "",
+                generatedAsset: generatedAsset(node, task.storageKey, url, `video:${clientTaskId || task.id}`),
                 status: NODE_STATUS_SUCCESS,
                 naturalWidth: taskSize.width,
                 naturalHeight: taskSize.height,
@@ -5869,7 +5949,8 @@ function applyCanvasImageTaskUpdate(nodes: CanvasNodeData[], nodeId: string, tas
             metadata: {
                 ...metadata,
                 content: url,
-                storageKey: task.storageKey || "",
+                storageKey: task.storageKey || stored?.storageKey || "",
+                generatedAsset: generatedAsset(node, task.storageKey || stored?.storageKey, url, `image:${task.id}:0`),
                 status: NODE_STATUS_SUCCESS,
                 naturalWidth: mediaSize?.width || stored?.width || naturalWidth,
                 naturalHeight: mediaSize?.height || stored?.height || naturalHeight,
@@ -5919,6 +6000,7 @@ function applyCanvasImageTaskUpdate(nodes: CanvasNodeData[], nodeId: string, tas
                     ...targetNode.metadata,
                     content: url,
                     storageKey: stored?.storageKey || "",
+                    generatedAsset: generatedAsset(nodes.find(item => item.id === extraIds[index]), stored?.storageKey, url, `image:${task.id}:${index + 1}`),
                     mimeType: stored?.mimeType || "image/png",
                     bytes: stored?.bytes || 0,
                     naturalWidth,
@@ -6015,6 +6097,7 @@ function applyCanvasImageTaskUpdate(nodes: CanvasNodeData[], nodeId: string, tas
                 status: NODE_STATUS_SUCCESS,
                 progress: 100,
                 storageKey: stored?.storageKey || "",
+                generatedAsset: generatedAsset(nodes.find(item => item.id === id), stored?.storageKey, url, `image:${task.id}:${index}`),
                 mimeType: stored?.mimeType || "image/png",
                 bytes: stored?.bytes || 0,
                 naturalWidth: stored?.width || root.metadata?.naturalWidth,
@@ -6084,6 +6167,7 @@ function applyCanvasAudioTaskUpdate(nodes: CanvasNodeData[], nodeId: string, tas
                 ...metadata,
                 content: url,
                 storageKey: task.storageKey || "",
+                generatedAsset: generatedAsset(node, task.storageKey, url, `audio:${clientTaskId || task.id}`),
                 status: NODE_STATUS_SUCCESS,
                 bytes: task.bytes || 0,
                 mimeType: task.mimeType || "audio/mpeg",

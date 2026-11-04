@@ -28,6 +28,6 @@ export function planFolderWorkflow(loopId: string, nodes: CanvasNodeData[], conn
 }
 export function clearLoopGeneration(node: CanvasNodeData): CanvasNodeData {
     const metadata = { ...node.metadata };
-    for (const key of ['content','storageKey','bytes','naturalWidth','naturalHeight','durationMs','errorDetails','clientTaskId','taskBackend','imageTaskId','imageTaskResultId','videoTaskId','videoTaskVideoId','audioTaskId','audioTaskResultId','isBatchRoot','batchRootId','batchChildIds','primaryImageId','startedAt','progress']) delete metadata[key as keyof typeof metadata];
+    for (const key of ['content','storageKey','generatedAsset','bytes','naturalWidth','naturalHeight','durationMs','errorDetails','clientTaskId','taskBackend','imageTaskId','imageTaskResultId','videoTaskId','videoTaskVideoId','audioTaskId','audioTaskResultId','isBatchRoot','batchRootId','batchChildIds','primaryImageId','startedAt','progress']) delete metadata[key as keyof typeof metadata];
     return { ...node, metadata: { ...metadata, status: 'idle', count: 1 } };
 }

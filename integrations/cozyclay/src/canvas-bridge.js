@@ -69,8 +69,27 @@ export function useCanvasBridge(api) {
       const area = document.createElement('textarea'); area.readOnly = true; area.setAttribute('aria-label', '导演台 MCP 配置'); area.style.cssText = 'width:100%;height:240px;font:12px monospace;background:transparent;color:inherit';
       area.value = JSON.stringify({ mcpServers: { 'canvas-studio-director': config.mcpServers['canvas-studio-director'] } }, null, 2);
       const copy = document.createElement('button'); copy.textContent = '复制配置'; copy.onclick = async () => { try { await navigator.clipboard.writeText(area.value); copy.textContent = '已复制'; } catch { area.select(); } };
+      const instruction = document.createElement('button'); instruction.textContent = '复制给 AI 的接入指令';
+      instruction.onclick = async () => {
+        const value = config.instructions?.['canvas-studio-director'];
+        if (!value) return;
+        try { await navigator.clipboard.writeText(value); instruction.textContent = '指令已复制'; }
+        catch { area.value = value; area.select(); }
+      };
+      const result = document.createElement('p'); result.setAttribute('role', 'status');
+      const test = document.createElement('button'); test.textContent = '测试连接';
+      test.onclick = async () => {
+        test.disabled = true; result.textContent = '正在测试 MCP…';
+        try {
+          const response = await fetch('/local/mcp/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ scope: 'director' }) });
+          const value = await response.json();
+          if (!response.ok) throw new Error(value.msg || '无法连接导演台');
+          result.textContent = value.workspaces ? `连接成功 · ${value.tools} 个工具 · ${value.workspaces} 个工作区` : `服务可用 · ${value.tools} 个工具 · 尚未打开工作区`;
+        } catch (error) { result.textContent = `连接失败：${error.message}`; }
+        finally { test.disabled = false; }
+      };
       const close = document.createElement('button'); close.textContent = '关闭'; close.onclick = () => dialog.close(); dialog.addEventListener('close', () => dialog.remove(), { once: true });
-      dialog.append(title, description, area, copy, close); document.body.append(dialog); dialog.showModal();
+      dialog.append(title, description, instruction, test, result, area, copy, close); document.body.append(dialog); dialog.showModal();
     });
     const panoramaSelect = document.createElement('select'); panoramaSelect.setAttribute('aria-label', '画布全景背景'); panoramaSelect.hidden = true;
     const applyPanorama = async item => {

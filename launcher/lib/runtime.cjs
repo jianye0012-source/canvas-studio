@@ -36,7 +36,7 @@ async function ready(url, headers = {}, child, signal) {
 }
 
 class Runtime extends EventEmitter {
-  constructor({ store, root, development = false, chooseFolder }) { super(); Object.assign(this, { store, root, development, chooseFolder }); this.children = []; this.lines = []; this.state = { phase: 'stopped', progress: 0, message: '准备开始创作', url: '' }; }
+  constructor({ store, root, development = false, chooseFolder, chooseMedia, chooseOutput }) { super(); Object.assign(this, { store, root, development, chooseFolder, chooseMedia, chooseOutput }); this.children = []; this.lines = []; this.state = { phase: 'stopped', progress: 0, message: '准备开始创作', url: '' }; }
   status() { return { ...this.state, processes: this.children.filter(alive).map(child => ({ name: child.serviceName, pid: child.pid })) }; }
   update(next) { Object.assign(this.state, next); this.emit('status', this.status()); }
   log(line) {
@@ -88,7 +88,7 @@ class Runtime extends EventEmitter {
       const apiPort = await freePort(), webPort = await freePort(), cozyPort = await freePort(), livePort = await freePort();
       const serviceToken = crypto.randomBytes(32).toString('hex'), providerToken = crypto.randomBytes(32).toString('hex');
       controller.signal.throwIfAborted();
-      this.gateway = new Gateway({ store: this.store, root: this.root, apiPort, webPort, cozyPort, livePort, serviceToken, providerToken, log: line => this.log(line), chooseFolder: this.chooseFolder });
+      this.gateway = new Gateway({ store: this.store, root: this.root, apiPort, webPort, cozyPort, livePort, serviceToken, providerToken, log: line => this.log(line), chooseFolder: this.chooseFolder, chooseMedia: this.chooseMedia, chooseOutput: this.chooseOutput });
       const origin = await abortable(this.gateway.listen(publicPort), controller.signal);
       controller.signal.throwIfAborted();
       this.gateway.onConfig = () => this.configureCanvas();

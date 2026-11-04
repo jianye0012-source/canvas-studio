@@ -187,6 +187,18 @@ async function invoke(channel, value) { try { return await window.launcher.invok
 function action(selector, channel, callback, prepare) { $(selector).addEventListener('click', async event => { const button = event.currentTarget; button.disabled = true; $('#notice').hidden = true; try { await prepare?.(); const result = await invoke(channel); callback?.(result); } catch {} finally { button.disabled = false; if (state) status(state); if (updateState) renderUpdate(updateState); } }); }
 for (const node of document.querySelectorAll('[data-page],[data-goto]')) node.addEventListener('click', () => page(node.dataset.page || node.dataset.goto));
 action('#start', 'runtime:start', null, saveBrowserChoice); action('#stop', 'runtime:stop'); action('#open', 'runtime:open', null, saveBrowserChoice);
+function renderExports(value) {
+  $('#output-dir').value = value.directory;
+  $('#auto-export').checked = value.enabled;
+}
+$('#choose-output').onclick = async () => { try { const value = await invoke('storage:choose-output'); if (value) renderExports(value); } catch {} };
+$('#auto-export').onchange = async event => {
+  const input = event.currentTarget, enabled = input.checked;
+  input.disabled = true;
+  try { renderExports(await invoke('storage:auto-export', enabled)); }
+  catch { input.checked = !enabled; }
+  finally { input.disabled = false; }
+};
 action('#open-data', 'storage:open'); action('#open-log-dir', 'storage:open'); action('#choose-data', 'storage:choose'); action('#open-notice', 'about:open'); action('#open-source', 'about:source');
 action('#choose-browser', 'browser:choose', value => { if (value) { $('#browser-form').elements.browser.value = 'custom'; $('#browser-form').elements.browserPath.value = value; renderBrowserChoice(); } });
 action('#check', 'runtime:check', result => { $('#check-result').hidden = false; $('#check-result').textContent = `运行文件：${result.checked} 个文件校验通过\n数据目录：可读写\n浏览器：${result.browser}\n数据位置：${result.dataDir}`; notice('检查完成'); });
@@ -251,7 +263,7 @@ $('#test-models').onclick = async () => {
 };
 $('#clear-key').onclick = () => { const channel = activeChannel(); if (channel) { channel.apiKey = ''; channel.hasApiKey = false; channel.clearApiKey = true; renderModels(); notice('此渠道密钥将于保存时清除。'); } };
 window.launcher.subscribe(event => { if (event.type === 'status') status(event.value); else if (event.type === 'update') renderUpdate(event.value); else { $('#logs').textContent = event.value.join('\n'); $('#logs').scrollTop = $('#logs').scrollHeight; } });
-invoke('app:load').then(result => { fill(result.config); status(result.status); renderUpdate(result.update); if (result.logs.length) $('#logs').textContent = result.logs.join('\n'); }).catch(() => {});
+invoke('app:load').then(result => { fill(result.config); renderExports(result.exports); status(result.status); renderUpdate(result.update); if (result.logs.length) $('#logs').textContent = result.logs.join('\n'); }).catch(() => {});
 
 let skills = [];
 function editSkill(skill = {}) { for (const key of ['id','name','description','content']) $('#skill-form').elements[key].value = skill[key] || ''; $('#skills-export').disabled = $('#skills-delete').disabled = !skill.id; }

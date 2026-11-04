@@ -1,11 +1,12 @@
 "use client";
 
-import { Copy, Download, PencilLine, Search, Trash2 } from "lucide-react";
+import { Copy, Download, FolderDown, PencilLine, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { App, Button, Card, Drawer, Empty, Image, Input, Modal, Pagination, Select, Space, Tag, Typography } from "antd";
 import { saveAs } from "file-saver";
 
 import { useCopyText } from "@/hooks/use-copy-text";
+import { useExportLocalMedia } from "@/hooks/use-export-local-media";
 import { formatBytes } from "@/lib/image-utils";
 import { cn } from "@/lib/utils";
 import { useAssetStore, type Asset, type AssetKind } from "@/stores/use-asset-store";
@@ -263,6 +264,7 @@ export default function AssetsPage() {
 }
 
 function AssetCard({ asset, onOpen, onEdit, onCopy, onDownload, onDelete }: { asset: Asset; onOpen: () => void; onEdit: () => void; onCopy: (asset: Asset) => void; onDownload: (asset: Asset) => void; onDelete: () => void }) {
+    const save = useExportLocalMedia();
     const cover = asset.coverUrl || (asset.kind === "image" ? asset.data.dataUrl : "");
     const summary = assetSummary(asset);
     return (
@@ -323,6 +325,7 @@ function AssetCard({ asset, onOpen, onEdit, onCopy, onDownload, onDelete }: { as
                         下载
                     </Button>
                 ) : null}
+                {save && asset.kind !== "text" && <Button size="small" icon={<FolderDown className="size-3.5" />} onClick={() => void save({ name: asset.title, kind: asset.kind, storageKey: asset.data.storageKey, url: asset.kind === "image" ? asset.data.dataUrl : asset.data.url })}>另存到文件夹</Button>}
                 <Button size="small" danger icon={<Trash2 className="size-3.5" />} onClick={onDelete}>
                     删除
                 </Button>

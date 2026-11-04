@@ -85,6 +85,20 @@ test('图生图参数和查询走不同端点，拒绝缺少参考图且清理�
   ]);
 });
 
+test('RunningHub 区分首尾帧与有序参考图，不丢弃模型不支持的输入', async () => {
+  const { parameters } = require('../lib/runninghub-schema.cjs');
+  const frame = { type: 'string' };
+  const references = { type: 'array', minItems: 1, maxItems: 3 };
+  const input = { imageUrls: ['first-reference', 'second-reference'], firstFrameUrl: 'first-frame', lastFrameUrl: 'last-frame' };
+  const both = { required: [], properties: { firstFrameUrl: frame, lastFrameUrl: frame, imageUrls: references } };
+  assert.deepEqual(parameters(both, input), input);
+  assert.deepEqual(parameters(both, { firstFrameUrl: 'first-frame', lastFrameUrl: 'last-frame' }), { firstFrameUrl: 'first-frame', lastFrameUrl: 'last-frame' });
+  const single = { required: ['imageUrl'], properties: { imageUrl: frame } };
+  assert.deepEqual(parameters(single, { firstFrameUrl: 'first-frame' }), { imageUrl: 'first-frame' });
+  assert.throws(() => parameters(single, input), /不支持.*尾帧/);
+  assert.throws(() => parameters({ required: [], properties: { imageUrls: references } }, input), /不支持.*首帧/);
+});
+
 test('同一 RunningHub 渠道按官方参数添加多个模型，生成走各自端点', async () => {
   const textModel = 'example/text-to-image';
   const videoModel = 'example/image-to-video';

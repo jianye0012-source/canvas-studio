@@ -1,5 +1,7 @@
 "use client";
 
+import { useUserStore } from "@/stores/use-user-store";
+import { pickNativeMedia } from "@/services/api/local-workspace";
 import { ChevronDown, Upload } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { App, AutoComplete, Button, Form, Input, Modal, Select, Space, Tag, Typography } from "antd";
@@ -30,6 +32,8 @@ type AssetFormModalProps = {
 
 export function AssetFormModal({ open, asset = null, onClose }: AssetFormModalProps) {
     const { message } = App.useApp();
+    const nativeAvailable = useUserStore(state => state.user?.id === "local-owner");
+    const [nativeBusy, setNativeBusy] = useState(false);
     const [form] = Form.useForm<AssetFormValues>();
     const coverInputRef = useRef<HTMLInputElement>(null);
     const imageInputRef = useRef<HTMLInputElement>(null);
@@ -44,6 +48,13 @@ export function AssetFormModal({ open, asset = null, onClose }: AssetFormModalPr
     const title = Form.useWatch("title", form) || "";
     const tags = Form.useWatch("tags", form) || [];
     const content = Form.useWatch("content", form) || "";
+    const pickNative = async (kind: "image" | "video" | "audio", receive: (file?: File) => void | Promise<void>) => {
+        setNativeBusy(true);
+        try { const [file] = await pickNativeMedia(kind); if (file) await receive(file); }
+        catch (error) { message.error((error as Error).message); }
+        finally { setNativeBusy(false); }
+    };
+
 
     useLayoutEffect(() => {
         if (!open) return;
@@ -197,6 +208,7 @@ export function AssetFormModal({ open, asset = null, onClose }: AssetFormModalPr
                                         <Button icon={<Upload className="size-4" />} onClick={() => (formKind === "image" ? imageInputRef.current?.click() : mediaInputRef.current?.click())}>
                                             上传
                                         </Button>
+                                        {nativeAvailable && <Button loading={nativeBusy} onClick={() => void pickNative(formKind, formKind === "image" ? readImageFile : readMediaFile)}>本机窗口</Button>}
                                     </Space.Compact>
                                     <div className="mt-2">
                                         {formKind === "image" && imageDraft ? (

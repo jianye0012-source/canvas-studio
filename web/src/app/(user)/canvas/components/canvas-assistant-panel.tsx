@@ -661,7 +661,7 @@ export function CanvasAssistantPanel({
                                 <Sparkles className="size-5" />
                             </div>
                             <div className="mt-4 text-base font-medium">从一个想法开始</div>
-                            <div className="mt-2 max-w-[260px] text-sm leading-6 opacity-55">描述故事、宣传片或现有素材，Agent 会与你沟通并直接操作当前画布</div>
+                            <div className="mt-2 max-w-[260px] text-sm leading-6 opacity-55">试试让 Agent 把文案拆成镜头节点并连线。图片和视频是否直接生成，取决于 Agent 设置。</div>
                         </div>
                     )}
                 </div>

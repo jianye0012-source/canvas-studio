@@ -107,6 +107,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                 style={{ background: "transparent", color: theme.node.text }}
                 placeholder={isPanorama ? "描述想生成的全景，或上传/连接图片作为参考" : promptPlaceholder(mode, hasImageContent, hasTextContent)}
             />
+            {mode === "text" && <p className="px-3 text-xs leading-5" style={{ color: theme.node.muted }}>参考图需要支持视觉的文字模型。连接到图片或视频节点，可把生成的文字作为提示词。</p>}
 
             <div className="mt-2 flex min-w-0 items-center justify-between gap-2">
                 <div className="flex min-w-0 items-center gap-2">
@@ -234,7 +235,7 @@ function promptPlaceholder(mode: CanvasNodeGenerationMode, hasImageContent: bool
     if (mode === "video") return "描述要生成的视频内容";
     if (mode === "audio") return "描述要生成的音频内容";
     if (mode === "image") return hasImageContent ? "请输入你想要把这张图修改成什么" : "描述要生成的图片内容";
-    return hasTextContent ? "请输入你想要将本段文本修改成什么" : "请输入你想要生成的文本内容";
+    return hasTextContent ? "描述修改要求，让 AI 改写文字。可连接图片作为参考。" : "描述要写的内容，让 AI 生成文字。可连接图片作为参考。";
 }
 
 function videoConfigPatch(key: keyof AiConfig, value: string) {

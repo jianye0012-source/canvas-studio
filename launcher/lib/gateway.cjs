@@ -6,11 +6,13 @@ const proxyFactory = require('http-proxy');
 const mime = require('mime-types');
 const runningHub = require('./runninghub-standard.cjs');
 const { Readable } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
 const { pathToFileURL } = require('node:url');
 const { ProjectEditors, editorIdPattern } = require('./project-editor.cjs');
 const { CanvasBridge } = require('./canvas-bridge.cjs');
 const { directorModelId, supportsRole } = require('./config.cjs');
 const { atomicJson, contained, writableDirectory } = require('./files.cjs');
+const { MediaExports, NativeMediaPicker } = require('./media-files.cjs');
 
 function json(res, status, value) { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(value)); }
 async function bodyJson(req, limit = 1024 * 1024) {
@@ -21,7 +23,7 @@ async function bodyJson(req, limit = 1024 * 1024) {
 function jsonEqual(a, b) { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); }
 
 class Gateway {
-  constructor({ store, root, apiPort, webPort, cozyPort, livePort, serviceToken, providerToken, log, chooseFolder }) {
+  constructor({ store, root, apiPort, webPort, cozyPort, livePort, serviceToken, providerToken, log, chooseFolder, chooseMedia, chooseOutput }) {
     Object.assign(this, { store, root, apiPort, webPort, cozyPort, livePort, serviceToken, providerToken, log });
     this.bootstrap = crypto.randomBytes(32).toString('hex');
     this.cookie = crypto.randomBytes(32).toString('hex');
@@ -32,8 +34,37 @@ class Gateway {
     this.bridge = new CanvasBridge();
     this.editors = new ProjectEditors(store.dataDir);
     this.folders = new (require('./folders.cjs').FolderStore)(store.dataDir, chooseFolder);
+    this.media = new NativeMediaPicker(chooseMedia);
+    this.exports = new MediaExports(store.dataDir, { apiPort, token: serviceToken, choose: chooseOutput });
+  }
+  mcpServers() {
+    const command = path.join(this.root, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node');
+    const script = path.join(this.root, 'launcher', 'mcp-stdio.mjs');
+    return Object.fromEntries(['canvas', 'director'].map(scope => [`canvas-studio-${scope}`, { command, args: [script, this.mcpConfigFile, scope] }]));
+  }
+  async testMcp(scope) {
+    const config = this.mcpServers()[`canvas-studio-${scope}`];
+    if (!config || !['canvas', 'director'].includes(scope)) throw new Error('MCP 类型无效');
+    const sdk = name => import(pathToFileURL(path.join(this.root, 'integrations/cozyclay/mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/client', name)));
+    const [{ Client }, { StdioClientTransport }] = await Promise.all([sdk('index.js'), sdk('stdio.js')]);
+    const client = new Client({ name: 'canvas-studio-connection-check', version: '1' });
+    const transport = new StdioClientTransport({ ...config, stderr: 'ignore' });
+    const options = { timeout: 5000 };
+    try {
+      await client.connect(transport, options);
+      const { tools } = await client.listTools({}, options);
+      const result = await client.callTool({ name: scope === 'canvas' ? 'canvas_studio_list_canvases' : 'canvas_studio_director_list_workspaces', arguments: {} }, undefined, options);
+      if (result.isError) throw new Error(result.content?.[0]?.text || '无法列出工作区');
+      const workspaces = JSON.parse(result.content?.[0]?.text || 'null');
+      if (!Array.isArray(workspaces) || !tools.length) throw new Error('MCP 返回了无效的工具或工作区列表');
+      return { tools: tools.length, workspaces: workspaces.length };
+    } finally { await transport.close(); }
   }
   authenticated(req) { return (req.headers.cookie || '').split(';').some(entry => entry.trim() === `canvas_session=${this.cookie}`); }
+  async streamMedia(res, { type, size, stream }) {
+    res.writeHead(200, { 'content-type': type, 'content-length': size, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'content-security-policy': 'sandbox' });
+    await pipeline(stream, res);
+  }
   validOrigin(req) { return !req.headers.origin || req.headers.origin === this.origin; }
   async listen(port) {
     this.server = http.createServer((req, res) => this.handle(req, res).catch(error => { this.log(error.message); if (!res.headersSent) json(res, 500, { code: 1, msg: error.message }); else res.destroy(); }));
@@ -113,9 +144,13 @@ class Gateway {
       return json(res, 200, { ok: true });
     }
     if (url.pathname === '/local/folders/select' && req.method === 'POST') return json(res, 200, await this.folders.select());
-    const folderRoute = url.pathname.match(/^\/local\/folders\/([a-f0-9-]+)(\/import)?$/);
+    const folderRoute = url.pathname.match(/^\/local\/folders\/([a-f0-9-]+)(\/(?:import|preview))?$/);
     if (folderRoute) {
-      if (folderRoute[2] && req.method === 'POST') {
+      if (folderRoute[2] === '/preview' && req.method === 'GET') {
+        const preview = await this.folders.preview(folderRoute[1], { id: url.searchParams.get('file'), size: Number(url.searchParams.get('size')), mtime: Number(url.searchParams.get('mtime')) });
+        return this.streamMedia(res, preview);
+      }
+      if (folderRoute[2] === '/import' && req.method === 'POST') {
         const item = await bodyJson(req);
         if (req.headers.accept !== 'application/x-ndjson') return json(res, 200, await this.folders.import(folderRoute[1], item, this.apiPort, this.serviceToken));
         const abort = new AbortController();
@@ -129,6 +164,16 @@ class Gateway {
       if (!folderRoute[2] && req.method === 'GET') return json(res, 200, await this.folders.scan(folderRoute[1], url.searchParams.get('recursive') === '1'));
       return json(res, 405, { msg: '不支持的操作' });
     }
+    if (url.pathname === '/local/media/select' && req.method === 'POST') {
+      const { kind, multiple } = await bodyJson(req, 1024);
+      return json(res, 200, await this.media.select(kind, multiple));
+    }
+    const pickedMedia = url.pathname.match(/^\/local\/media\/picked\/([a-f0-9-]{36})$/);
+    if (pickedMedia && req.method === 'GET') return this.streamMedia(res, await this.media.open(pickedMedia[1]));
+    if (url.pathname === '/local/media/export' && req.method === 'POST') {
+      const { id, name, completedAt, resultKey } = await bodyJson(req, 2048);
+      return json(res, 200, completedAt === undefined ? await this.exports.manual(id, name) : await this.exports.automatic(id, completedAt, resultKey));
+    }
     if (url.pathname === '/local/media/video-sheet' && req.method === 'POST') {
       if ((this.videoJobs || 0) >= 2) { req.resume(); return json(res, 429, { msg: '视频处理繁忙，请等待当前附件完成后再添加' }); }
       this.videoJobs = (this.videoJobs || 0) + 1;
@@ -136,11 +181,14 @@ class Gateway {
       finally { this.videoJobs -= 1; }
     }
     if (url.pathname === '/local/mcp/config' && req.method === 'GET') {
-      const command = path.join(this.root, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node');
-      const script = path.join(this.root, 'launcher', 'mcp-stdio.mjs');
-      const mcpServers = Object.fromEntries(['canvas', 'director'].map(scope => [`canvas-studio-${scope}`, { command, args: [script, this.mcpConfigFile, scope] }]));
-      return json(res, 200, { mcpServers, endpoints: { canvas: this.origin + '/mcp/canvas', director: this.origin + '/mcp/director' }, token: this.mcpToken, canvases: this.bridge.workspaces() });
+      const mcpServers = this.mcpServers();
+      const instructions = Object.fromEntries(Object.entries(mcpServers).map(([name, config]) => {
+        const tool = name.endsWith('-canvas') ? 'canvas_studio_list_canvases' : 'canvas_studio_director_list_workspaces';
+        return [name, `请用当前 AI 客户端支持的官方方式安装以下 Canvas Studio 本机 MCP（stdio），只合并所列条目，保留已有连接器。沿用配置中的完整路径和参数。如需信任或重开客户端，请提示我完成。接通后实际调用只读工具 ${tool}，告诉我返回的工作区。若列表为空，提示我打开对应的画布或导演台。若工具未加载，请区分等待信任、配置未生效和服务无法启动。\n\n${JSON.stringify({ mcpServers: { [name]: config } }, null, 2)}`];
+      }));
+      return json(res, 200, { mcpServers, instructions, endpoints: { canvas: this.origin + '/mcp/canvas', director: this.origin + '/mcp/director' }, token: this.mcpToken, canvases: this.bridge.workspaces() });
     }
+    if (url.pathname === '/local/mcp/test' && req.method === 'POST') return json(res, 200, await this.testMcp((await bodyJson(req, 1024)).scope));
     if (url.pathname.startsWith('/local/agent/')) return this.bridge.handle(req, res, url.pathname.slice('/local/agent'.length), () => bodyJson(req, 20 * 1024 * 1024));
     if (url.pathname === '/local/config') {
       if (req.method === 'GET') return json(res, 200, this.store.public());

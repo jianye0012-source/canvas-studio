@@ -34,6 +34,7 @@ export type CameraControlOptions = {
 };
 
 export type CanvasNodeMetadata = {
+    generatedAsset?: { id: string; completedAt: number; resultKey: string };
     textSkills?: CanvasAgentSkillSelection[];
     folderLoop?: import('./utils/folder-loop').FolderLoopState;
     folderLoopOwner?: string;
