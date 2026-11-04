@@ -217,25 +217,27 @@ export function buildNodeChatMessages(context: NodeGenerationContext): ChatCompl
     ];
 }
 
+export async function hydrateReferenceImage(image: ReferenceImage) {
+    const source = image.dataUrl || image.url || "";
+    const publicUrl = /^https?:\/\//i.test(source) && !/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(source);
+    if (publicUrl && !image.storageKey?.startsWith("server:")) return { ...image, url: source, dataUrl: source };
+    try {
+        const { imageToDataUrl } = await import("@/services/image-storage");
+        const dataUrl = await imageToDataUrl(image);
+        const type = dataUrl.match(/^data:(image\/[^;,]+)/)?.[1];
+        if (!type) throw new Error("素材不是可读取的图片");
+        return { ...image, type, url: undefined, dataUrl };
+    } catch (error) {
+        throw new Error(`参考图「${image.name}」无法读取，请重新添加。${(error as Error).message}`);
+    }
+}
+
 export async function hydrateNodeGenerationContext(context: NodeGenerationContext) {
-    const { imageToDataUrl } = await import("@/services/image-storage");
-    const hydrateImage = async (image: ReferenceImage) => {
-        const source = image.dataUrl || image.url || "";
-        const publicUrl = /^https?:\/\//i.test(source) && !/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(source);
-        if (publicUrl && !image.storageKey?.startsWith("server:")) return { ...image, url: source, dataUrl: source };
-        try {
-            const dataUrl = await imageToDataUrl(image);
-            if (!dataUrl.startsWith("data:image/")) throw new Error("素材不是可读取的图片");
-            return { ...image, url: undefined, dataUrl };
-        } catch (error) {
-            throw new Error(`参考图「${image.name}」无法读取，请重新添加。${(error as Error).message}`);
-        }
-    };
     return {
         ...context,
-        referenceImages: await Promise.all(context.referenceImages.map(hydrateImage)),
-        firstFrame: context.firstFrame ? await hydrateImage(context.firstFrame) : null,
-        lastFrame: context.lastFrame ? await hydrateImage(context.lastFrame) : null,
+        referenceImages: await Promise.all(context.referenceImages.map(hydrateReferenceImage)),
+        firstFrame: context.firstFrame ? await hydrateReferenceImage(context.firstFrame) : null,
+        lastFrame: context.lastFrame ? await hydrateReferenceImage(context.lastFrame) : null,
     };
 }
 
