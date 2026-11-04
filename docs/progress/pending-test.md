@@ -5,6 +5,11 @@ description: 当前版本已实现但仍需人工验证的变更项
 
 # 待测试
 
+## 启动器更新源补丁
+
+- 官方 Windows x64 1.3.8 和 1.3.10 可应用更新源补丁并重开启动器。检查 Gitee 正式版本索引、GitHub 回退、项目和模型配置，以及安装这两版整包后补丁是否继续生效。
+- Windows ZIP 暂由 GitHub 提供。准备好国内镜像后，在 GitHub Actions 配置 `DOMESTIC_UPDATE_BASE_URL` 为以 `/` 结尾的公开 HTTPS 目录。按 `v版本/CanvasStudio-Windows-x64-版本.zip` 上传与 GitHub 字节一致的文件，再运行 `Sync source to Gitee`。验证镜像可用、失效和摘要不符时的下载表现。
+
 ## Gitee 源码同步
 
 - 在 GitHub 仓库保存 `GITEE_TOKEN` 后，手动运行 `Sync source to Gitee`，核对 Gitee 的 `main` 与 `v` 开头的版本标签。之后推送主分支或新版本标签会触发同步，GitHub Release 的 Windows ZIP 单独发布。

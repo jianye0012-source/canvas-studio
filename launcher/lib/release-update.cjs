@@ -9,6 +9,13 @@ const semver = require('semver');
 const { stageUpdate } = require('./update.cjs');
 const { atomicJson, verifyManifest, writableDirectory, requireFreeSpace } = require('./files.cjs');
 
+const giteeIndex = {
+  url: 'https://gitee.com/api/v5/repos/jianye0012/canvas-studio/contents/releases.json?ref=update-index',
+  publicKey: 'MCowBQYDK2VwAyEAozE5iNarGauRevIYLrdMKeABX0t60GfZ3SXF6YS6HwM=',
+};
+const packageName = version => `CanvasStudio-Windows-x64-${version}.zip`;
+const validSize = size => Number.isSafeInteger(size) && size > 0 && size <= 2 * 1024 ** 3;
+
 async function digest(file) { const hash = crypto.createHash('sha256'); for await (const chunk of createReadStream(file)) hash.update(chunk); return hash.digest('hex'); }
 function updateNetworkError(error) {
   const detail = [error?.name, error?.message, error?.code, error?.cause?.code, error?.cause?.message].filter(Boolean).join(' ');
@@ -20,8 +27,8 @@ function updateNetworkError(error) {
 }
 function releaseVersion(release) { const version = semver.valid(String(release?.tag_name || '').replace(/^v/, '')); return version && !release.draft && !release.prerelease && !semver.prerelease(version) ? version : null; }
 class ReleaseUpdater extends EventEmitter {
-  constructor({ dataDir, currentVersion, source, fetchImpl = fetch }) {
-    super(); Object.assign(this, { dataDir, currentVersion, source, fetchImpl });
+  constructor({ dataDir, currentVersion, source, fetchImpl = fetch, index = source.provider === 'github' && source.owner === 'jianye0012-source' && source.repository === 'canvas-studio' ? giteeIndex : null }) {
+    super(); Object.assign(this, { dataDir, currentVersion, source, fetchImpl, index });
     this.controller = new AbortController();
     if (!semver.valid(currentVersion) || !/^[\w-]+$/.test(source.owner) || !/^[\w.-]+$/.test(source.repository)) throw new Error('更新源或版本配置无效');
     this.root = path.join(dataDir, 'updates'); this.pendingFile = path.join(this.root, 'pending.json');
@@ -64,7 +71,41 @@ class ReleaseUpdater extends EventEmitter {
     this.checkPromise = this.checkInner().catch(error => { this.update({ ...this.pendingSelection(), phase: this.staged ? 'ready' : 'error', message: `检查更新失败：${error.message}。${this.staged ? `已校验的 ${this.staged.version} 仍可安装。` : '可稍后重试。'}` }); throw error; }).finally(() => { this.checkPromise = null; });
     return this.checkPromise;
   }
-  async checkInner() {
+  async readGiteeIndex() {
+    const signal = AbortSignal.any([this.controller.signal, AbortSignal.timeout(6000)]);
+    const response = await this.fetchImpl(this.index.url, { signal, credentials: 'omit', cache: 'no-store' });
+    if (!response.ok || !response.body) throw new Error('Gitee 版本索引不可用');
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of Readable.fromWeb(response.body)) {
+      size += chunk.length;
+      if (size > 2 * 1024 ** 2) throw new Error('Gitee 版本索引过大');
+      chunks.push(chunk);
+    }
+    const file = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    if (file.encoding !== 'base64') throw new Error('Gitee 版本索引格式无效');
+    const { body, signature } = JSON.parse(Buffer.from(file.content, 'base64').toString('utf8'));
+    const bytes = Buffer.from(body, 'base64');
+    const publicKey = { key: Buffer.from(this.index.publicKey, 'base64'), type: 'spki', format: 'der' };
+    if (!crypto.verify(null, bytes, publicKey, Buffer.from(signature, 'base64'))) throw new Error('Gitee 版本索引签名无效');
+    const data = JSON.parse(bytes.toString('utf8'));
+    const age = Date.now() - Date.parse(data.generatedAt);
+    if (data.format !== 1 || !(age >= -300000 && age < 3 * 86400000) || !Array.isArray(data.releases)) throw new Error('Gitee 版本索引已过期或格式无效');
+    const base = data.downloadBase ? new URL(data.downloadBase) : null;
+    if (base && (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash || !base.pathname.endsWith('/'))) throw new Error('国内下载地址无效');
+    const releases = new Map();
+    for (const row of data.releases) {
+      const version = releaseVersion(row);
+      if (!version || !validSize(row.size) || !/^[a-f0-9]{64}$/.test(row.sha256)) continue;
+      const name = packageName(version);
+      const url = `${this.releaseUrl}/download/v${version}/${name}`;
+      const mirror = base ? new URL(`v${version}/${name}`, base).href : null;
+      releases.set(version, { ...row, signedAsset: { name, size: row.size, expected: row.sha256, url, mirror } });
+    }
+    if (!releases.size) throw new Error('Gitee 版本索引没有可安装版本');
+    return releases;
+  }
+  async readGitHubReleases() {
     this.update({ phase: 'checking', retryDownload: false, message: '正在读取 GitHub 正式版本列表…' });
     const releases = new Map();
     for (let page = 1; ; page++) {
@@ -75,6 +116,17 @@ class ReleaseUpdater extends EventEmitter {
       for (const release of entries) { const version = releaseVersion(release); if (version) releases.set(version, release); }
       if (entries.length < 100) break;
     }
+    return releases;
+  }
+  async checkInner() {
+    let releases;
+    let catalog = 'GitHub';
+    if (this.index) {
+      this.update({ phase: 'checking', retryDownload: false, message: '正在读取 Gitee 正式版本列表…' });
+      try { releases = await this.readGiteeIndex(); catalog = 'Gitee'; }
+      catch { this.controller.signal.throwIfAborted(); }
+    }
+    if (!releases) releases = await this.readGitHubReleases();
     this.releases = releases;
     const versions = [...releases.keys()].sort(semver.rcompare).map(version => ({ version, publishedAt: releases.get(version).published_at || '', notes: String(releases.get(version).body || '').slice(0, 20000), intent: this.intent(version), installable: this.hasAssets(releases.get(version), version) }));
     const version = versions[0]?.version || '';
@@ -82,11 +134,11 @@ class ReleaseUpdater extends EventEmitter {
     if (!version) { this.update({ phase: this.staged ? 'ready' : 'current', message: this.staged ? '已有校验好的更新，可直接安装' : '尚无公开正式版本，可继续使用当前版本或导入发行包' }); return this.status(); }
     if (this.staged && releases.has(this.staged.version)) return this.prepareVersion(this.staged.version);
     if (this.staged) { this.update({ phase: 'ready', selectedVersion: this.staged.version, intent: this.staged.intent, message: `版本 ${this.staged.version} 已校验，可以安装；也可选择其他正式版本` }); return this.status(); }
-    if (!semver.gt(version, this.currentVersion)) { this.update({ phase: 'current', message: '当前已是最新版本；可在版本列表选择重装或回退' }); return this.status(); }
+    if (!semver.gt(version, this.currentVersion)) { this.update({ phase: 'current', message: `当前已是最新版本（${catalog}）；可在版本列表选择重装或回退` }); return this.status(); }
     return this.prepareVersion(version);
   }
   intent(version) { return semver.gt(version, this.currentVersion) ? 'upgrade' : semver.lt(version, this.currentVersion) ? 'rollback' : 'repair'; }
-  hasAssets(release, version) { const name = `CanvasStudio-Windows-x64-${version}.zip`; return Boolean(release.assets?.some(e => e.name === name) && release.assets?.some(e => e.name === name + '.sha256')); }
+  hasAssets(release, version) { const name = packageName(version); return Boolean(release.signedAsset || release.assets?.some(e => e.name === name) && release.assets?.some(e => e.name === name + '.sha256')); }
   async selectVersion(version) {
     if (this.downloadPromise || this.checkPromise || this.selectPromise) throw new Error('请等待当前更新操作完成');
     this.selectPromise = this.prepareVersion(version).catch(error => { this.update({ ...this.pendingSelection(), phase: this.staged ? 'ready' : 'error', message: `选择版本失败：${error.message}` }); throw error; }).finally(() => { this.selectPromise = null; }); return this.selectPromise;
@@ -94,9 +146,16 @@ class ReleaseUpdater extends EventEmitter {
   async prepareVersion(version) {
     const release = this.releases.get(version); if (!release || !semver.valid(version)) throw new Error('请先读取版本列表，再选择一个正式版本');
     this.update({ phase: 'checking', retryDownload: false, message: `正在核对版本 ${version} 的发行文件…` });
-    const name = `CanvasStudio-Windows-x64-${version}.zip`;
+    const intent = this.intent(version);
+    this.candidate = { ...(release.signedAsset || await this.githubAsset(release, version)), version, intent };
+    const source = release.signedAsset ? ` · Gitee 版本列表 · ${this.candidate.mirror ? '国内下载优先' : 'GitHub 下载'}` : '';
+    this.update({ phase: this.staged?.version === version ? 'ready' : 'available', selectedVersion: version, intent, notes: String(release.body || '').slice(0, 20000), progress: this.staged?.version === version ? 100 : 0, message: (this.staged?.version === version ? `版本 ${version} 已校验，可以安装` : intent === 'upgrade' ? `发现新版本 ${version}，可下载并校验后安装` : `已选择${intent === 'rollback' ? '回退' : '重装'}版本 ${version}，下载校验后可安装`) + source });
+    return this.status();
+  }
+  async githubAsset(release, version) {
+    const name = packageName(version);
     const asset = release.assets?.find(entry => entry.name === name), checksum = release.assets?.find(entry => entry.name === name + '.sha256');
-    if (!asset || !checksum || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > 2 * 1024 ** 3) throw new Error('发行版缺少 Windows 整合包或 SHA-256 校验文件');
+    if (!asset || !checksum || !validSize(asset.size)) throw new Error('发行版缺少 Windows 整合包或 SHA-256 校验文件');
     const downloadUrl = this.assetUrl(asset.browser_download_url), checksumUrl = this.assetUrl(checksum.browser_download_url);
     if (checksum.size > 4096) throw new Error('校验文件大小异常');
     const hashResponse = await this.request(checksumUrl), hashText = await hashResponse.text();
@@ -104,10 +163,7 @@ class ReleaseUpdater extends EventEmitter {
     if (!match || match[2] !== name) throw new Error('发行包校验文件格式不正确');
     const expected = match[1].toLowerCase();
     if (asset.digest && asset.digest !== 'sha256:' + expected) throw new Error('GitHub 文件摘要与发行校验值不一致');
-    const intent = this.intent(version);
-    this.candidate = { version, name, size: asset.size, expected, url: downloadUrl, intent };
-    this.update({ phase: this.staged?.version === version ? 'ready' : 'available', selectedVersion: version, intent, notes: String(release.body || '').slice(0, 20000), progress: this.staged?.version === version ? 100 : 0, message: this.staged?.version === version ? `版本 ${version} 已校验，可以安装` : intent === 'upgrade' ? `发现新版本 ${version}，可下载并校验后安装` : `已选择${intent === 'rollback' ? '回退' : '重装'}版本 ${version}，下载校验后可安装` });
-    return this.status();
+    return { name, size: asset.size, expected, url: downloadUrl };
   }
   async download() {
     if (this.checkPromise || this.selectPromise || this.clearingCache) throw new Error('请等待当前更新操作完成');
@@ -124,15 +180,47 @@ class ReleaseUpdater extends EventEmitter {
     let cached = false;
     try { cached = (await fs.stat(file)).size === candidate.size && await digest(file) === candidate.expected; } catch (error) { if (error.code !== 'ENOENT') throw error; }
     if (!cached) {
-      const partial = file + '.' + candidate.expected + '.part';
+      if (candidate.mirror) {
+        try { await this.fetchArchive(candidate, directory, file, candidate.mirror); }
+        catch (error) {
+          this.controller.signal.throwIfAborted();
+          if (/^(ENOSPC|EACCES|EPERM|EIO|EROFS|ENOENT)$/.test(error.code) || error.message.includes('磁盘空间不足')) throw error;
+          this.update({ message: '国内下载失败，正在切换到 GitHub…' });
+          await this.fetchArchive(candidate, directory, file);
+        }
+      } else await this.fetchArchive(candidate, directory, file);
+    }
+    this.update({ phase: 'verifying', progress: 100, message: '正在解压并校验全部程序文件…' });
+    const staged = await stageUpdate(file, this.dataDir);
+    try {
+      const manifest = await verifyManifest(staged, { filename: 'package-manifest.json' });
+      if (manifest.version !== candidate.version) throw new Error('更新包内部版本与发行版不一致');
+      await atomicJson(this.pendingFile, { id: path.basename(staged), version: candidate.version, intent: candidate.intent });
+      const previous = this.staged;
+      this.staged = { path: staged, version: candidate.version, intent: candidate.intent };
+      if (previous && previous.path !== staged) await fs.rm(previous.path, { recursive: true, force: true }).catch(() => {});
+    } catch (error) { await fs.rm(staged, { recursive: true, force: true }); throw error; }
+    this.update({ phase: 'ready', message: `更新 ${candidate.version} 已校验，正在准备安装` }); return this.status();
+  }
+  async fetchArchive(candidate, directory, file, mirror) {
+    const stalled = new AbortController();
+    let timer;
+    const restartTimer = () => {
+      if (!mirror) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => stalled.abort(new Error('国内下载源长时间没有响应')), 15000);
+    };
+    try {
+      const partial = file + '.' + candidate.expected + (mirror ? '.mirror.part' : '.part');
       let bytes = await fs.stat(partial).then(stat => stat.size, error => { if (error.code !== 'ENOENT') throw error; return 0; });
       if (bytes > candidate.size) { await fs.rm(partial); bytes = 0; }
       await requireFreeSpace(directory, candidate.size - bytes);
       if (bytes < candidate.size) {
-        this.update({ phase: 'downloading', progress: Math.floor(bytes / candidate.size * 100), message: bytes ? '正在续传更新…' : '正在下载更新到机械盘…', bytes, total: candidate.size });
+        this.update({ phase: 'downloading', progress: Math.floor(bytes / candidate.size * 100), message: `正在${mirror ? '从国内下载源' : '从 GitHub'}${bytes ? '续传' : '下载'}更新…`, bytes, total: candidate.size });
         const headers = { 'User-Agent': 'Canvas-Studio-Updater/' + this.currentVersion, 'Accept-Encoding': 'identity', ...(bytes ? { Range: 'bytes=' + bytes + '-' } : {}) };
-        const signal = AbortSignal.any([this.controller.signal, AbortSignal.timeout(30 * 60 * 1000)]);
-        const response = await this.fetchImpl(candidate.url, { headers, credentials: 'omit', cache: 'no-store', signal });
+        const signal = AbortSignal.any([this.controller.signal, AbortSignal.timeout(30 * 60 * 1000), stalled.signal]);
+        restartTimer();
+        const response = await this.fetchImpl(mirror || candidate.url, { ...(mirror ? { redirect: 'error' } : {}), headers, credentials: 'omit', cache: 'no-store', signal });
         if (response.status === 206 && bytes) {
           if (response.headers.get('content-range') !== `bytes ${bytes}-${candidate.size - 1}/${candidate.size}`) {
             await response.body?.cancel(); await fs.rm(partial, { force: true });
@@ -149,7 +237,7 @@ class ReleaseUpdater extends EventEmitter {
         let previousPercent = -1;
         const meter = new Transform({ transform: (chunk, _encoding, callback) => {
           if (bytes + chunk.length > candidate.size) return callback(new Error('下载文件超过发行版声明大小'));
-          bytes += chunk.length;
+          bytes += chunk.length; restartTimer();
           const progress = Math.floor(bytes / candidate.size * 100);
           if (progress !== previousPercent) { previousPercent = progress; this.update({ progress, bytes }); }
           callback(null, chunk);
@@ -162,18 +250,7 @@ class ReleaseUpdater extends EventEmitter {
         throw new Error('下载内容的 SHA-256 或大小不匹配');
       }
       await fs.rename(partial, file);
-    }
-    this.update({ phase: 'verifying', progress: 100, message: '正在解压并校验全部程序文件…' });
-    const staged = await stageUpdate(file, this.dataDir);
-    try {
-      const manifest = await verifyManifest(staged, { filename: 'package-manifest.json' });
-      if (manifest.version !== candidate.version) throw new Error('更新包内部版本与发行版不一致');
-      await atomicJson(this.pendingFile, { id: path.basename(staged), version: candidate.version, intent: candidate.intent });
-      const previous = this.staged;
-      this.staged = { path: staged, version: candidate.version, intent: candidate.intent };
-      if (previous && previous.path !== staged) await fs.rm(previous.path, { recursive: true, force: true }).catch(() => {});
-    } catch (error) { await fs.rm(staged, { recursive: true, force: true }); throw error; }
-    this.update({ phase: 'ready', message: `更新 ${candidate.version} 已校验，正在准备安装` }); return this.status();
+    } finally { clearTimeout(timer); }
   }
   async clearCache() {
     if (this.downloadPromise || this.clearingCache) throw new Error('请等待当前更新操作完成');
@@ -184,7 +261,7 @@ class ReleaseUpdater extends EventEmitter {
       const entries = await fs.readdir(directory, { withFileTypes: true }).catch(error => { if (error.code !== 'ENOENT') throw error; return []; });
       let removed = 0;
       for (const entry of entries) {
-        if (entry.isFile() && /^CanvasStudio-Windows-x64-[\d.]+\.zip(?:\.[a-f0-9-]+\.part)?$/.test(entry.name)) {
+        if (entry.isFile() && /^CanvasStudio-Windows-x64-[\d.]+\.zip(?:\.[a-f0-9-]+(?:\.mirror)?\.part)?$/.test(entry.name)) {
           await fs.rm(path.join(directory, entry.name), { force: true }); removed++;
         }
       }

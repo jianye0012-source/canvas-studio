@@ -3,6 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const unzipper = require('unzipper');
 const { contained, verifyManifest, writableDirectory, requireFreeSpace, atomicJson } = require('./files.cjs');
+const { applyUpdaterPatch } = require('./update-patch.cjs');
 
 async function stageUpdate(zipFile, dataDir) {
   await writableDirectory(dataDir);
@@ -63,6 +64,7 @@ async function prepareInstallation(staging, root, dataDir) {
       if (name !== 'package-manifest.json') await fs.cp(path.join(staging, name), path.join(directory, name), { recursive: true, errorOnExist: true, force: false });
     }
     await verifyManifest(directory, { filename: 'package-manifest.json' });
+    await applyUpdaterPatch(directory);
     // Historical launchers read a locator beside their own executable.
     await atomicJson(path.join(directory, 'portable.json'), { dataDir });
     return { id, directory, version: manifest.version };

@@ -6,9 +6,12 @@ on:
     tags: ['v*']
   schedule:
     - cron: '27 4 * * *'
+  release:
+    types: [published, edited, unpublished, deleted]
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  contents: read
 concurrency:
   group: sync-gitee
   cancel-in-progress: false
@@ -29,7 +32,11 @@ jobs:
       - name: Push main and version tags to Gitee
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          UPDATE_INDEX_SIGNING_KEY: ${{ secrets.UPDATE_INDEX_SIGNING_KEY }}
+          DOMESTIC_UPDATE_BASE_URL: ${{ vars.DOMESTIC_UPDATE_BASE_URL }}
         run: |
+          set -o pipefail
           if [ -z "$GITEE_TOKEN" ]; then
             echo '::error::Add the GITEE_TOKEN repository secret to enable Gitee sync.'
             exit 1
@@ -43,8 +50,26 @@ jobs:
           EOF
           chmod 700 "$askpass"
 
-          GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 \
-            git -C "$RUNNER_TEMP/canvas-studio.git" -c credential.helper= \
-            -c credential.username=jianye0012 -c http.followRedirects=false \
-            push https://gitee.com/jianye0012/canvas-studio.git \
+          export GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0
+          cd "$RUNNER_TEMP/canvas-studio.git"
+          gitee=https://gitee.com/jianye0012/canvas-studio.git
+          git config credential.helper ''
+          git config credential.username jianye0012
+          git config http.followRedirects false
+          git push "$gitee" \
             'refs/heads/main:refs/heads/main' 'refs/tags/v*:refs/tags/v*'
+
+          git show main:launcher/scripts/sign-update-index.mjs > "$RUNNER_TEMP/sign-update-index.mjs"
+          gh api --paginate --slurp 'repos/jianye0012-source/canvas-studio/releases?per_page=100' \
+            | node "$RUNNER_TEMP/sign-update-index.mjs" > "$RUNNER_TEMP/releases.json"
+          branch=refs/heads/update-index
+          parent=()
+          if [ -n "$(git ls-remote "$gitee" "$branch")" ]; then
+            git fetch --no-tags "$gitee" "$branch"
+            parent=(-p FETCH_HEAD)
+          fi
+          blob=$(git hash-object -w "$RUNNER_TEMP/releases.json")
+          tree=$(printf '100644 blob %s\treleases.json\n' "$blob" | git mktree)
+          index=$(git -c user.name='Canvas Studio Release' -c user.email='actions@users.noreply.github.com' \
+            commit-tree "$tree" "${parent[@]}" -m 'Publish signed Windows release index')
+          git push "$gitee" "$index:$branch"

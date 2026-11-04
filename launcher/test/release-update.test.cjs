@@ -9,6 +9,16 @@ const { ReleaseUpdater } = require('../lib/release-update.cjs');
 const { applyUpdate, installationPaths } = require('../lib/update.cjs');
 const source = { owner: 'jianye0012-source', repository: 'canvas-studio' };
 
+function signedIndex(releases, downloadBase = '') {
+  const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');
+  const body = Buffer.from(JSON.stringify({ format: 1, generatedAt: new Date().toISOString(), downloadBase, releases }));
+  const signature = crypto.sign(null, body, privateKey).toString('base64');
+  return {
+    index: { url: 'https://gitee.com/test', publicKey: publicKey.export({ format: 'der', type: 'spki' }).toString('base64') },
+    response: (invalid = false) => Response.json({ encoding: 'base64', content: Buffer.from(JSON.stringify({ body: body.toString('base64'), signature: invalid ? 'invalid' : signature })).toString('base64') }),
+  };
+}
+
 async function fixture(t, { corrupt = false, prerelease = false } = {}) {
   const dataDir = await fs.mkdtemp(path.resolve(__dirname, '../../work/tmp/update-test-')); t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   const version = prerelease ? '1.3.0-beta.1' : '1.3.0', name = `CanvasStudio-Windows-x64-${version}.zip`;
@@ -44,6 +54,41 @@ test('正式版检查、流式下载、双重校验及重启恢复待安装状�
   const reopened = new ReleaseUpdater({ dataDir, currentVersion: '1.2.0', source, fetchImpl }); t.after(() => reopened.close());
   await reopened.initialize(); assert.equal(reopened.status().phase, 'ready'); assert.equal(await reopened.installation(), staged);
   await reopened.check(); await reopened.download(); assert.equal(downloads(), 1);
+});
+
+test('优先读取签名 Gitee 版本索引，未配置国内 ZIP 时从 GitHub 下载', async t => {
+  const { dataDir, release, fetchImpl } = await fixture(t);
+  const { size, digest, browser_download_url: url } = release.assets[0];
+  const { index, response } = signedIndex([{ tag_name: release.tag_name, size, sha256: digest.slice(7) }]);
+  const calls = [];
+  const updater = new ReleaseUpdater({ dataDir, currentVersion: '1.2.0', source, index, fetchImpl: request => {
+    calls.push(request);
+    return request === index.url ? response() : fetchImpl(request);
+  } }); t.after(() => updater.close());
+  assert.match((await updater.check()).message, /Gitee 版本列表 · GitHub 下载/);
+  assert.equal((await updater.download()).phase, 'ready');
+  assert.deepEqual(calls, [index.url, url]);
+});
+
+test('国内镜像文件校验失败时改从 GitHub 下载，Gitee 索引签名无效时使用 GitHub 列表', async t => {
+  const { dataDir, release, fetchImpl } = await fixture(t);
+  const { size, digest, browser_download_url: url } = release.assets[0];
+  const { index, response } = signedIndex([{ tag_name: release.tag_name, size, sha256: digest.slice(7) }], 'https://downloads.example.com/canvas/');
+  const calls = [];
+  const mirror = 'https://downloads.example.com/canvas/v1.3.0/CanvasStudio-Windows-x64-1.3.0.zip';
+  let invalid = false;
+  const updater = new ReleaseUpdater({ dataDir, currentVersion: '1.2.0', source, index, fetchImpl: request => {
+    calls.push(request);
+    if (request === index.url) return response(invalid);
+    if (request === mirror) return new Response(Buffer.alloc(size));
+    return fetchImpl(request);
+  } }); t.after(() => updater.close());
+  assert.match((await updater.check()).message, /国内下载优先/);
+  assert.equal((await updater.download()).phase, 'ready');
+  assert.deepEqual(calls, [index.url, mirror, url]);
+  invalid = true;
+  await updater.check();
+  assert.match(calls[4], /^https:\/\/api\.github\.com\//);
 });
 
 test('损坏下载被拒绝、清除中间文件，原程序与用户项目不被替换', async t => {
