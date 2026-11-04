@@ -1,0 +1,50 @@
+name: Sync source to Gitee
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  schedule:
+    - cron: '27 4 * * *'
+  workflow_dispatch:
+
+permissions: {}
+concurrency:
+  group: sync-gitee
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'jianye0012-source/canvas-studio' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch main and version tags from GitHub
+        run: |
+          git init --bare "$RUNNER_TEMP/canvas-studio.git"
+          git -C "$RUNNER_TEMP/canvas-studio.git" fetch --no-tags \
+            https://github.com/jianye0012-source/canvas-studio.git \
+            'refs/heads/main:refs/heads/main' 'refs/tags/v*:refs/tags/v*'
+
+      - name: Push main and version tags to Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          if [ -z "$GITEE_TOKEN" ]; then
+            echo '::error::Add the GITEE_TOKEN repository secret to enable Gitee sync.'
+            exit 1
+          fi
+
+          askpass=$(mktemp "$RUNNER_TEMP/gitee-askpass.XXXXXX")
+          trap 'rm -f "$askpass"' EXIT
+          cat > "$askpass" <<'EOF'
+          #!/bin/sh
+          printf '%s\n' "$GITEE_TOKEN"
+          EOF
+          chmod 700 "$askpass"
+
+          GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 \
+            git -C "$RUNNER_TEMP/canvas-studio.git" -c credential.helper= \
+            -c credential.username=jianye0012 -c http.followRedirects=false \
+            push https://gitee.com/jianye0012/canvas-studio.git \
+            'refs/heads/main:refs/heads/main' 'refs/tags/v*:refs/tags/v*'

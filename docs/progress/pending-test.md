@@ -5,6 +5,10 @@ description: 当前版本已实现但仍需人工验证的变更项
 
 # 待测试
 
+## Gitee 源码同步
+
+- 在 GitHub 仓库保存 `GITEE_TOKEN` 后，手动运行 `Sync source to Gitee`，核对 Gitee 的 `main` 与 `v` 开头的版本标签。之后推送主分支或新版本标签会触发同步，GitHub Release 的 Windows ZIP 单独发布。
+
 ## v1.3.10 FOR 节点拖动与导演台任务续做
 
 - 拖动 FOR 文件夹循环节点的面板空白处或说明区域，可像普通节点一样移动。检查选文件夹、复选框和循环按钮仍可操作，鼠标滚轮仍在面板内滚动。
