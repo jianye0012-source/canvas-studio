@@ -52,6 +52,14 @@ test('国内站补丁在发现原文件或补丁被修改时整体拒绝应用',
   assert.deepEqual(await fs.readFile(first), original);
 });
 
+test('国内站补丁在上次进程中断、文件仅替换一部分时可以继续应用', async t => {
+  const { directory, payload } = await fixture(t);
+  const name = files[0];
+  await fs.copyFile(path.join(payload, 'payload/1.3.11', name), path.join(directory, 'resources/app', name));
+  assert.equal(await applyRunningHubPatch(directory, payload), '1.3.11');
+  for (const file of files) assert.equal(await fs.readFile(path.join(directory, 'resources/app', file), 'utf8'), 'patched ' + file);
+});
+
 test('国内站补丁写入清单失败时恢复所有已替换文件', async t => {
   const { directory, payload } = await fixture(t);
   const manifestFile = path.join(directory, 'package-manifest.json');

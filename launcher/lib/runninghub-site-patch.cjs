@@ -33,7 +33,7 @@ async function applyRunningHubPatch(directory, patchDirectory = __dirname) {
     const current = sha256(before);
     if (sha256(after) !== entry.after || (!entry.before.includes(current) && current !== entry.after)) throw new Error('文件与官方版本或本补丁不符：' + relative);
     const record = manifest.files.find(item => item.path === 'resources/app/' + relative);
-    if (!record || record.sha256 !== current || record.size !== before.length) throw new Error('程序清单与文件不符：' + relative);
+    if (!record || (!entry.before.includes(record.sha256) && record.sha256 !== entry.after)) throw new Error('程序清单与官方版本或本补丁不符：' + relative);
     Object.assign(record, { sha256: entry.after, size: after.length });
     if (current !== entry.after) changes.push({ file, before, after });
   }
