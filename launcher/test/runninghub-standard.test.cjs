@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { ConfigStore, validateConfig } = require('../lib/config.cjs');
-const { model, protocol, callStandardImage, callStandardVideo } = require('../lib/runninghub-standard.cjs');
+const { model, protocol, normalizeRunningHubURL, callStandardImage, callStandardVideo } = require('../lib/runninghub-standard.cjs');
 
 const officialIndex = [
   '- Standard Model API > Image Generation & Processing > image-to-image > gpt [GPT Image 2](https://www.runninghub.ai/runninghub-api-doc-en/api-448184504.md):',
@@ -9,6 +9,62 @@ const officialIndex = [
   '- Standard Model API > 3D Generation & Processing > image-to-3D [3D [Deprecated]](https://www.runninghub.ai/runninghub-api-doc-en/api-456.md):',
   '- Task Query & webhook [Query](https://www.runninghub.ai/runninghub-api-doc-en/api-1234.md):',
 ].join('\n');
+
+test('RunningHub 保留国内和国际站地址，拒绝外部域名、端口、凭据和跳转参数', () => {
+  for (const site of ['cn', 'ai']) {
+    const root = 'https://www.runninghub.' + site;
+    for (const value of [root, root + '/', root.replace('www.', ''), root + '/openapi/v2/youchuan/text-to-image-v82', root + '/runninghub-api-doc-' + (site === 'cn' ? 'cn' : 'en') + '/']) {
+      assert.equal(normalizeRunningHubURL(value), root);
+    }
+    for (const value of [root + ':8443', root + '?target=elsewhere', root.replace('https:', 'http:'), root.replace('www.', 'person@www.'), root + '.example.org']) {
+      assert.throws(() => normalizeRunningHubURL(value));
+    }
+  }
+});
+
+test('国内目录、模型参数、账户、上传、提交和查询使用同一站点，两站目录缓存独立', async () => {
+  const calls = [];
+  const key = 'fixture-shared-key';
+  const endpoint = 'youchuan/text-to-image-v82';
+  const store = new ConfigStore('', null, null, async (url, request) => {
+    calls.push(url);
+    const cn = new URL(url).hostname.endsWith('.cn');
+    if (url.endsWith('/llms.txt')) return new Response(`- ${cn ? '模型API > 图像生成与处理' : 'Standard Model API > Image Generation & Processing'} > text-to-image [${cn ? '悠船' : 'Other'}](https://www.runninghub.${cn ? 'cn/runninghub-api-doc-cn' : 'ai/runninghub-api-doc-en'}/api-123.md):`);
+    if (url.endsWith('.md')) {
+      assert.equal(request.headers, undefined);
+      const schema = { required: ['prompt'], properties: { prompt: { type: 'string' } } };
+      const definition = { paths: { ['/openapi/v2/' + (cn ? endpoint : 'example/text-to-image')]: { post: { requestBody: { content: { 'application/json': { schema } } } } } } };
+      return new Response(['# 测试模型', '\x60\x60\x60yaml', JSON.stringify(definition), '\x60\x60\x60'].join('\n'));
+    }
+    assert.equal(request.headers.authorization, 'Bearer ' + key);
+    assert.equal(request.credentials, 'omit');
+    if (url.endsWith('/accountStatus')) return Response.json({ code: 0, data: { remainMoney: cn ? '0.00' : '8.00', remainCoins: '0', currency: 'CNY' } });
+    if (url.endsWith('/media/upload/binary')) return Response.json({ code: 0, data: { download_url: 'https://cdn.example.org/reference.png' } });
+    return Response.json({ taskId: '321', status: 'RUNNING' });
+  });
+  store.value = validateConfig({ channels: [] });
+  const input = { id: 'cn', name: '国内', protocol, baseUrl: 'https://www.runninghub.cn', apiKey: key };
+  const result = await store.testChannel(input);
+  assert.equal(result.runningHub.models[0].type, 'image');
+  assert.equal(result.runningHub.account.remainMoney, '0.00');
+  assert.equal(result.runningHub.baseUrl, input.baseUrl);
+  await store.testChannel({ ...input, baseUrl: 'https://www.runninghub.ai' });
+  const cn = await store.readRunningHubModel('123', input.baseUrl);
+  const ai = await store.readRunningHubModel('123', 'https://www.runninghub.ai');
+  assert.equal(cn.endpoint, endpoint);
+  assert.equal(ai.endpoint, 'example/text-to-image');
+  const channel = validateConfig({ channels: [{ ...input, models: [endpoint], runningHubModels: { [endpoint]: cn } }] }).channels[0];
+  assert.equal(channel.baseUrl, input.baseUrl);
+  const options = { fetchImpl: store.fetchImpl };
+  await callStandardImage(channel, '/runninghub/submit', { model: endpoint, prompt: '测试' }, options);
+  await callStandardImage(channel, '/runninghub/query', { taskId: '321' }, options);
+  const imageEndpoint = 'example/image-to-image';
+  channel.models.push(imageEndpoint);
+  channel.modelCapabilities[imageEndpoint] = 'image';
+  channel.runningHubModels[imageEndpoint] = { required: ['prompt', 'imageUrls'], properties: { prompt: { type: 'string' }, imageUrls: { type: 'array' } } };
+  await callStandardImage(channel, '/runninghub/submit', { model: imageEndpoint, prompt: '参考图', imageUrls: ['data:image/png;base64,YQ=='] }, options);
+  assert.deepEqual(calls.slice(-4), [input.baseUrl + '/openapi/v2/' + endpoint, input.baseUrl + '/openapi/v2/query', input.baseUrl + '/openapi/v2/media/upload/binary', input.baseUrl + '/openapi/v2/' + imageEndpoint]);
+});
 
 test('RunningHub 检测联网读取并分类官方目录，账户密钥只发送到官方账户接口', async () => {
   const calls = [];

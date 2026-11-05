@@ -3,24 +3,29 @@ const { endpointPattern, imageFields, normalizeModel, parseModel, parameters } =
 const protocol = 'runninghub-standard';
 const model = 'rhart-image-g-2/image-to-image';
 const baseURL = 'https://www.runninghub.ai';
-const catalogueURL = baseURL + '/runninghub-api-doc-en/llms.txt';
 const catalogueTypes = new Map([
   ['Image Generation & Processing', 'image'],
   ['Video Generation & Processing', 'video'],
   ['3D Generation & Processing', '3d'],
   ['Audio Generation & Processing', 'audio'],
+  ['图像生成与处理', 'image'],
+  ['视频生成与处理', 'video'],
+  ['3D 生成与处理', '3d'],
+  ['音频生成与处理', 'audio'],
 ]);
 const ratios = new Set(['1:1', '2:3', '3:2', '4:5', '5:4', '4:3', '16:9', '9:16', '21:9', '9:21', '2:1', '1:2', '3:1', '1:3']);
 
 function normalizeRunningHubURL(value) {
   const url = new URL(value || baseURL);
   const pathname = url.pathname.replace(/\/+$/, '');
-  if (url.protocol !== 'https:' || !['www.runninghub.ai', 'runninghub.ai'].includes(url.host) || url.username || url.password || url.search || url.hash ||
-      (!['', '/runninghub-api-doc-en', '/openapi/v2'].includes(pathname) && !(pathname.startsWith('/openapi/v2/') && endpointPattern.test(pathname.slice('/openapi/v2/'.length))))) {
-    throw new Error('RunningHub 标准模型请使用 https://www.runninghub.ai、官方英文文档首页或模型的完整提交地址');
+  if (url.protocol !== 'https:' || !['www.runninghub.ai', 'runninghub.ai', 'www.runninghub.cn', 'runninghub.cn'].includes(url.host) || url.username || url.password || url.search || url.hash ||
+      (!['', '/runninghub-api-doc-en', '/runninghub-api-doc-cn', '/openapi/v2'].includes(pathname) && !(pathname.startsWith('/openapi/v2/') && endpointPattern.test(pathname.slice('/openapi/v2/'.length))))) {
+    throw new Error('RunningHub 标准模型请使用 https://www.runninghub.cn 或 https://www.runninghub.ai，也可填写对应官方文档首页或模型提交地址');
   }
-  return baseURL;
+  return url.hostname.endsWith('.cn') ? 'https://www.runninghub.cn' : baseURL;
 }
+
+const docsURL = baseUrl => baseUrl + (baseUrl.endsWith('.cn') ? '/runninghub-api-doc-cn' : '/runninghub-api-doc-en');
 
 async function request(channel, route, body, { fetchImpl = fetch, signal } = {}) {
   if (!channel.apiKey) throw new Error('请填写 RunningHub 企业级共享 API Key');
@@ -28,7 +33,7 @@ async function request(channel, route, body, { fetchImpl = fetch, signal } = {})
   try {
     const multipart = body instanceof FormData;
     response = await fetchImpl(normalizeRunningHubURL(channel.baseUrl) + route, {
-      method: 'POST', redirect: 'error', headers: { ...(multipart ? {} : { 'content-type': 'application/json' }), authorization: 'Bearer ' + channel.apiKey },
+      method: 'POST', redirect: 'error', credentials: 'omit', headers: { ...(multipart ? {} : { 'content-type': 'application/json' }), authorization: 'Bearer ' + channel.apiKey },
       body: multipart ? body : JSON.stringify(body),
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(multipart ? 120000 : 30000)]) : AbortSignal.timeout(15000),
     });
@@ -48,6 +53,12 @@ async function request(channel, route, body, { fetchImpl = fetch, signal } = {})
 async function checkAccount(channel, options) {
   const result = await request(channel, '/uc/openapi/accountStatus', { apikey: channel.apiKey }, options);
   if (Number(result.code) !== 0 || !result.data) throw new Error('RunningHub 账户检查未返回有效数据');
+  const { remainMoney, remainCoins, currency } = result.data;
+  return {
+    remainMoney: Number.isFinite(Number(remainMoney)) && remainMoney != null ? String(remainMoney).slice(0, 40) : '',
+    remainCoins: Number.isFinite(Number(remainCoins)) && remainCoins != null ? String(remainCoins).slice(0, 40) : '',
+    currency: typeof currency === 'string' ? currency.slice(0, 10) : '',
+  };
 }
 
 async function readPublic(url, fetchImpl, label) {
@@ -61,30 +72,32 @@ async function readPublic(url, fetchImpl, label) {
   }
 }
 
-async function readCatalogue(fetchImpl) {
-  const source = await readPublic(catalogueURL, fetchImpl, '模型目录');
+async function readCatalogue(baseUrl, fetchImpl) {
+  const source = await readPublic(docsURL(baseUrl) + '/llms.txt', fetchImpl, '模型目录');
   const models = new Map();
-  const entries = /^- Standard Model API > ([^>\r\n]+?)(?: > [^\r\n]+?)? \[([^\r\n]{1,500}?)\]\(https:\/\/www\.runninghub\.ai\/runninghub-api-doc-en\/api-(\d+)\.md\)/gm;
-  for (const [, category, name, id] of source.matchAll(entries)) {
+  const entries = /^- (?:Standard Model API|模型API) > ([^>\r\n]+?)(?: > [^\r\n]+?)? \[([^\r\n]{1,500}?)\]\((https:\/\/www\.runninghub\.(?:ai|cn)\/runninghub-api-doc-(?:en|cn)\/api-(\d+)\.md)\)/gm;
+  for (const [, category, name, docUrl, id] of source.matchAll(entries)) {
+    if (!docUrl.startsWith(docsURL(baseUrl) + '/')) continue;
     const type = catalogueTypes.get(category) || (/\/(?:text-to-image|image-to-image|image-upscale|layer-decomposition)$/.test(name) ? 'image' : 'other');
-    models.set(id, { id, name, type, importable: ['image', 'video'].includes(type) && !/\bdeprecated\b/i.test(name) });
+    models.set(id, { id, name, type, docUrl, importable: ['image', 'video'].includes(type) && !/\bdeprecated\b|已下架|已弃用/i.test(name) });
   }
   if (!models.size) throw new Error('RunningHub 官方目录未返回可识别的模型，请稍后重试');
   return [...models.values()];
 }
 
 async function detect(channel, { fetchImpl, catalogueFetch = fetchImpl, keyUnavailable } = {}) {
-  const [models, accountError] = await Promise.all([
-    readCatalogue(catalogueFetch),
-    keyUnavailable ? '该渠道密钥无法解密，请重新填写' : checkAccount(channel, { fetchImpl }).then(() => '', error => error.message),
+  const baseUrl = normalizeRunningHubURL(channel.baseUrl);
+  const [models, account] = await Promise.all([
+    readCatalogue(baseUrl, catalogueFetch),
+    keyUnavailable ? { error: '该渠道密钥无法解密，请重新填写' } : checkAccount(channel, { fetchImpl }).then(data => ({ data }), error => ({ error: error.message })),
   ]);
-  return { models: [], modelCapabilities: {}, modelToolSupport: {}, runningHub: { models, accountError } };
+  return { models: [], modelCapabilities: {}, modelToolSupport: {}, runningHub: { models, baseUrl, account: account.data, accountError: account.error || '' } };
 }
 
 async function loadModel(id, catalogue, fetchImpl) {
   const entry = catalogue.find(model => model.id === id && model.importable);
   if (!entry || !/^\d{1,20}$/.test(id)) throw new Error('请先检测渠道，并选择一个可添加的图片或视频模型');
-  const source = await readPublic(baseURL + '/runninghub-api-doc-en/api-' + id + '.md', fetchImpl, '模型参数');
+  const source = await readPublic(entry.docUrl, fetchImpl, '模型参数');
   return { ...parseModel(source, entry.type), docId: id };
 }
 

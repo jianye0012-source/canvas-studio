@@ -116,17 +116,22 @@ class ConfigStore {
     if (channel.protocol === runningHub.protocol) {
       const result = await runningHub.detect(channel, { fetchImpl: this.fetchImpl, catalogueFetch: this.catalogueFetch, keyUnavailable });
       this.runningHubCatalogue = result.runningHub.models;
+      this.runningHubCatalogues ||= new Map();
+      this.runningHubCatalogues.set(channel.baseUrl, result.runningHub.models);
       return result;
     }
     if (keyUnavailable) throw new Error('该渠道密钥无法解密，请重新填写');
-    if (/^https:\/\/(?:www\.)?runninghub\.ai(?:\/|$)/.test(channel.baseUrl)) throw new Error('RunningHub 标准生图请选择 RunningHub 标准模型渠道；文字模型使用 https://llm.runninghub.ai/v1');
+    if (/^https:\/\/(?:www\.)?runninghub\.(?:ai|cn)(?:\/|$)/.test(channel.baseUrl)) throw new Error('RunningHub 标准生图请选择 RunningHub 标准模型渠道，并按账户选择 .cn 或 .ai 站点；文字模型请填写官方对应的 LLM 接口地址');
     const response = await this.fetchImpl(channel.baseUrl + '/v1/models', { headers: channel.apiKey ? { Authorization: 'Bearer ' + channel.apiKey } : {}, signal: AbortSignal.timeout(15000) });
     if (!response.ok) throw new Error(`渠道「${channel.name}」返回 ${response.status}，请检查地址与 API Key`);
     const result = await response.json().catch(() => null);
     if (!result || !Array.isArray(result.data || result.models)) throw new Error('接口未返回模型列表，请填写 OpenAI 兼容 API 地址');
     return discoverModels(result.data || result.models);
   }
-  readRunningHubModel(id) { return runningHub.loadModel(id, this.runningHubCatalogue || [], this.catalogueFetch); }
+  readRunningHubModel(id, baseUrl) {
+    const catalogue = baseUrl ? this.runningHubCatalogues?.get(runningHub.normalizeRunningHubURL(baseUrl)) : this.runningHubCatalogue;
+    return runningHub.loadModel(id, catalogue || [], this.catalogueFetch);
+  }
   async selectDataDir(directory) { await writableDirectory(directory); await atomicJson(path.join(this.root, 'portable.json'), { dataDir: path.resolve(directory) }); return { restartRequired: true, dataDir: directory }; }
 }
 module.exports = { ConfigStore, validateConfig, upgradeConfig, roles, capabilityFor, supportsRole, directorModelId };

@@ -8,6 +8,7 @@ const runningHubCatalogues = new Map();
 const runningHubTypes = { image: '图片', video: '视频', '3d': '3D', audio: '音频', other: '其他' };
 const roleIncludes = (channel, model, role) => channel.modelCapabilities[model] === (role === 'director' ? 'text' : role) && (role !== 'director' || channel.modelToolSupport?.[model] !== false);
 const isRunningHub = channel => channel.protocol === 'runninghub-standard';
+const runningHubSite = channel => /^https:\/\/(?:www\.)?runninghub\.cn(?:\/|$)/i.test(channel.baseUrl) ? 'https://www.runninghub.cn' : 'https://www.runninghub.ai';
 const activeChannel = () => draft?.channels.find(channel => channel.id === activeId);
 function page(name) { for (const node of document.querySelectorAll('.page')) node.hidden = node.id !== 'page-' + name; for (const node of document.querySelectorAll('nav button')) node.classList.toggle('active', node.dataset.page === name); $('#page-title').textContent = titles[name]; if (name === 'skills') void loadSkills().catch(() => {}); }
 function notice(text, error = false) { $('#notice').textContent = text; $('#notice').hidden = false; $('#notice').classList.toggle('error', error); }
@@ -82,11 +83,13 @@ function renderChannelList() {
 }
 function renderRunningHubCatalogue(channel) {
   const section = $('#runninghub-catalogue');
-  const result = isRunningHub(channel) && runningHubCatalogues.get(channel.id);
+  const catalogue = isRunningHub(channel) && runningHubCatalogues.get(channel.id);
+  const result = catalogue && catalogue.baseUrl === runningHubSite(channel) && catalogue;
   section.hidden = !result;
   if (!result) return;
-  $('#runninghub-catalogue-summary').textContent = `从 RunningHub 官方目录读取 ${result.models.length} 个模型条目`;
-  $('#runninghub-account-status').textContent = result.accountError || '密钥已通过账户检查。具体模型权限以 RunningHub 提交结果为准。';
+  $('#runninghub-catalogue-summary').textContent = `从 RunningHub ${result.baseUrl.endsWith('.cn') ? '国内站 .cn' : '国际站 .ai'}读取 ${result.models.length} 个模型条目`;
+  const account = result.account;
+  $('#runninghub-account-status').textContent = result.accountError || (account && account.remainMoney !== '' ? `密钥检查通过。钱包余额 ${account.remainMoney} ${account.currency}，RH 币 ${account.remainCoins || '0'}。` : '密钥已通过账户检查。具体模型权限以 RunningHub 提交结果为准。');
   const groups = $('#runninghub-catalogue-groups');
   const open = new Set(groups.dataset.channel === channel.id ? [...groups.querySelectorAll('details[open]')].map(group => group.dataset.type) : []);
   groups.dataset.channel = channel.id;
@@ -111,11 +114,12 @@ function renderRunningHubCatalogue(channel) {
         add.textContent = '添加';
         add.setAttribute('aria-label', '添加 ' + model.name);
         add.onclick = async () => {
+          const baseUrl = channel.baseUrl;
           add.disabled = true;
           add.textContent = '读取参数…';
           try {
-            const { endpoint, ...spec } = await invoke('config:runninghub-model', model.id);
-            if (!draft.channels.includes(channel) || !isRunningHub(channel)) return;
+            const { endpoint, ...spec } = await invoke('config:runninghub-model', { id: model.id, baseUrl });
+            if (!draft.channels.includes(channel) || !isRunningHub(channel) || channel.baseUrl !== baseUrl) return;
             channel.runningHubModels ||= {};
             channel.runningHubModels[endpoint] = spec;
             channel.modelCapabilities[endpoint] = spec.type;
@@ -143,6 +147,8 @@ function renderModels() {
   for (const input of $('#model-form').elements) if (input.name) { if (input.type === 'checkbox') input.checked = channel[input.name]; else input.value = channel[input.name] || ''; }
   $('#key-status').textContent = channel.clearApiKey ? '待清除，保存后生效' : channel.keyUnavailable ? '此渠道密钥无法解密，请重新填写或清除。' : channel.hasApiKey ? '此渠道 API Key 已加密保存' : '接口无需密钥时可留空';
   const runningHub = isRunningHub(channel);
+  $('#runninghub-site-row').hidden = !runningHub;
+  $('#runninghub-site').value = runningHubSite(channel);
   $('#custom-model-entry').hidden = runningHub;
   $('#test-models').textContent = runningHub ? '检测渠道并读取模型' : '测试此渠道 / 读取模型';
   $('#model-entry-help').textContent = runningHub ? '展开图片或视频目录，点击「添加」读取该模型的官方参数。每个渠道可保存多个模型。文字和白模导演使用 OpenAI 兼容渠道。' : '加入可选模型；无法识别类型的模型可从列表选取并手动分类。白模导演使用文字模型，参考图需支持视觉输入。';
@@ -207,13 +213,21 @@ action('#check-update', 'update:check'); action('#open-releases', 'update:open-r
 $('#auto-check-updates').addEventListener('change', async event => { const enabled = event.target.checked; try { const saved = await invoke('config:save', { autoCheckUpdates: enabled }); config.autoCheckUpdates = saved.autoCheckUpdates; draft.autoCheckUpdates = saved.autoCheckUpdates; } catch { event.target.checked = config.autoCheckUpdates; } });
 action('#import-update', 'update:import');
 $('#model-form').addEventListener('submit', event => { event.preventDefault(); $('#save-models').click(); });
-for (const input of $('#model-form').elements) if (input.name) input.addEventListener('input', () => { const channel = activeChannel(); if (!channel) return; channel[input.name] = input.type === 'checkbox' ? input.checked : input.value; if (input.name === 'apiKey') channel.clearApiKey = false; repairSelections(); renderChannelList(); renderRoleSelectors(); });
+for (const input of $('#model-form').elements) if (input.name) input.addEventListener('input', () => { const channel = activeChannel(); if (!channel) return; channel[input.name] = input.type === 'checkbox' ? input.checked : input.value; if (input.name === 'apiKey') channel.clearApiKey = false; if (input.name === 'baseUrl' && isRunningHub(channel)) { runningHubCatalogues.delete(channel.id); $('#runninghub-site').value = runningHubSite(channel); renderRunningHubCatalogue(channel); } repairSelections(); renderChannelList(); renderRoleSelectors(); });
+$('#runninghub-site').addEventListener('change', event => {
+  const channel = activeChannel();
+  if (!channel || !isRunningHub(channel)) return;
+  channel.baseUrl = event.target.value;
+  runningHubCatalogues.delete(channel.id);
+  renderModels();
+  notice('已切换 RunningHub 站点，请检测渠道并重新核对所需模型，然后保存配置。');
+});
 $('#model-form').elements.protocol.addEventListener('change', event => {
   const channel = activeChannel();
   if (!channel) return;
   channel.protocol = event.target.value;
   const runningHub = isRunningHub(channel);
-  channel.baseUrl = runningHub ? 'https://www.runninghub.ai' : '';
+  channel.baseUrl = runningHub ? 'https://www.runninghub.cn' : '';
   channel.models = [];
   channel.modelCapabilities = {};
   channel.modelToolSupport = {};

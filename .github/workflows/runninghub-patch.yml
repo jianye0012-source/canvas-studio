@@ -1,0 +1,36 @@
+name: Build RunningHub site patch
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.22.1
+      - run: npm ci --prefix launcher --ignore-scripts
+      - name: Verify site routing and patch recovery on Windows
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force work/tmp | Out-Null
+          node --test launcher/test/runninghub-standard.test.cjs launcher/test/runninghub-site-patch.test.cjs
+          exit $LASTEXITCODE
+      - name: Build small patch and verify official versions
+        shell: pwsh
+        run: |
+          node launcher/scripts/package-runninghub-patch.mjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node launcher/test/runninghub-patch-smoke.cjs
+          exit $LASTEXITCODE
+      - name: Publish patch to existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release upload v1.3.11 outputs/CanvasStudio-RunningHub-CN-Patch.zip outputs/CanvasStudio-RunningHub-CN-Patch.zip.sha256 --repo $env:GITHUB_REPOSITORY --clobber
+          exit $LASTEXITCODE

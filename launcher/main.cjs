@@ -140,7 +140,7 @@ else {
       },
       'config:save': async (_event, value) => { const result = await store.save(value); if (runtime.state.phase === 'running' && value.channels) await runtime.configureCanvas(); return result; },
       'config:test': (_event, value) => store.testChannel(value),
-      'config:runninghub-model': (_event, id) => store.readRunningHubModel(id),
+      'config:runninghub-model': (_event, input) => store.readRunningHubModel(input.id, input.baseUrl),
       'storage:open': () => shell.openPath(store.dataDir),
       'storage:choose-output': async () => { const directory = await chooseOutput(); return directory ? exports.configure({ directory }) : null; },
       'storage:auto-export': (_event, enabled) => {

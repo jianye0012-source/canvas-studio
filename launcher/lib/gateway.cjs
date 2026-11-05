@@ -196,7 +196,10 @@ class Gateway {
       return json(res, 405, { msg: '不支持的操作' });
     }
     if (url.pathname === '/local/channels/test' && req.method === 'POST') return json(res, 200, await this.store.testChannel(await bodyJson(req)));
-    if (url.pathname === '/local/channels/runninghub-model' && req.method === 'POST') return json(res, 200, await this.store.readRunningHubModel((await bodyJson(req)).id));
+    if (url.pathname === '/local/channels/runninghub-model' && req.method === 'POST') {
+      const { id, baseUrl } = await bodyJson(req);
+      return json(res, 200, await this.store.readRunningHubModel(id, baseUrl));
+    }
     if (url.pathname === '/local/source' && req.method === 'GET') {
       const { owner, repository } = require('../update-source.json');
       const { version } = require('../package.json');
