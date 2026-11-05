@@ -12,6 +12,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const versions = ['1.3.8', '1.3.10', '1.3.11'];
 const files = ['lib/runninghub-standard.cjs', 'lib/config.cjs', 'lib/gateway.cjs', 'main.cjs', 'ui/app.js', 'ui/index.html'];
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+await fs.mkdir(path.join(root, 'work/tmp'), { recursive: true });
+await fs.mkdir(path.join(root, 'outputs'), { recursive: true });
 const stage = await fs.mkdtemp(path.join(root, 'work/tmp/runninghub-patch-'));
 const folder = path.join(stage, 'RunningHub-CN-Patch');
 try {
