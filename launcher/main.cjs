@@ -162,6 +162,13 @@ else {
       'app:ready': async () => {
         if (updateReceipt) {
           await markUpdateReady(updateReceipt, portableRoot, store.dataDir, app.getVersion());
+          updater.update({ phase: 'finishing', message: '新版已打开，正在清理旧程序和本次更新缓存…' });
+          const id = path.basename(path.dirname(updateReceipt)), deadline = Date.now() + 120000;
+          while (Date.now() < deadline) {
+            const last = await fsp.readFile(path.join(store.dataDir, 'updates/last-install.json'), 'utf8').then(JSON.parse, () => ({}));
+            if (last.id === id && last.success) break;
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
           updater.update({ phase: 'current', installedVersion: app.getVersion(), message: `已自动更新至 ${app.getVersion()}，新版启动成功。` });
         }
         updateReceipt = '';
@@ -237,7 +244,7 @@ else {
     };
     for (const [channel, handler] of Object.entries(handlers)) ipcMain.handle(channel, async (event, ...args) => {
       if (event.sender !== window.webContents || !event.senderFrame?.url.startsWith('file:')) throw new Error('请求来源无效');
-      if ((installing || updater.status().phase === 'restarting') && !['app:load', 'app:ready', 'runtime:force-stop'].includes(channel)) throw new Error('正在安装发行包，请稍候');
+      if ((installing || ['restarting', 'finishing'].includes(updater.status().phase)) && !['app:load', 'app:ready', 'runtime:force-stop'].includes(channel)) throw new Error('正在安装发行包，请稍候');
       return handler(event, ...args);
     });
     await window.loadFile(path.join(__dirname, 'ui', 'index.html'));

@@ -163,7 +163,7 @@ function renderModels() {
 }
 function renderUpdate(value) {
   updateState = value;
-  const busy = ['checking', 'downloading', 'verifying', 'installing', 'restarting'].includes(value.phase);
+  const busy = ['checking', 'downloading', 'verifying', 'installing', 'restarting', 'finishing'].includes(value.phase);
   $('#update-version').textContent = `当前运行 ${value.currentVersion}${value.latestVersion ? ' · 最新正式版 ' + value.latestVersion : ''}${value.installedVersion ? ' · 已安装 ' + value.installedVersion : ''}`;
   $('#update-message').textContent = value.message;
   $('#update-progress').hidden = !['downloading', 'verifying'].includes(value.phase);

@@ -145,7 +145,6 @@ async function applySelfUpdate(jobFile, { start = launch, cleanup = true } = {})
     await atomicJson(stateFile, { phase: 'replacing', progress: 90, message: '正在自动打开新版，等待界面完成初始化…' });
     await start(job, true);
     await atomicJson(stateFile, { phase: 'complete' });
-    await atomicJson(path.join(job.dataDir, 'updates/last-install.json'), { id: job.id, version: job.next.version, success: true, message: '已自动更新并重新打开' });
     await log(job, '新版界面已就绪，更新完成 ' + job.next.version);
   } catch (error) {
     const current = JSON.parse((await optional(stateFile)) || '{}');
@@ -168,6 +167,7 @@ async function applySelfUpdate(jobFile, { start = launch, cleanup = true } = {})
     const download = path.join(job.dataDir, 'updates/downloads', `CanvasStudio-Windows-x64-${job.next.version}.zip`);
     await fs.rm(download, { force: true }).catch(() => {});
   }
+  await atomicJson(path.join(job.dataDir, 'updates/last-install.json'), { id: job.id, version: job.next.version, success: true, message: '已自动更新并重新打开' });
   return 'complete';
 }
 async function prepareSelfUpdate(staging, root, dataDir, pid = process.pid) {
