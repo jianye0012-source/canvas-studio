@@ -273,9 +273,9 @@ await refuses("a non-image is refused with a readable reason", fakeFile("notes.p
 await refuses("an svg is refused with the rest", fakeFile("logo.svg", "image/svg+xml", png), stubs(10, 10), /not an image/);
 await refuses(
 	"a file past the source ceiling is refused before it is decoded",
-	fakeFile("huge.png", "image/png", png, 64 * 1024 * 1024),
+	fakeFile("huge.png", "image/png", png, 101 * 1024 * 1024),
 	stubs(10, 10),
-	/larger than 32 MB/,
+	/larger than 100 MB/,
 );
 await refuses("a file-shaped nothing is refused", null, stubs(10, 10), /File or Blob/);
 await refuses(

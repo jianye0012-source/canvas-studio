@@ -13,6 +13,7 @@ const { CanvasBridge } = require('./canvas-bridge.cjs');
 const { directorModelId, supportsRole } = require('./config.cjs');
 const { atomicJson, contained, writableDirectory } = require('./files.cjs');
 const { MediaExports, NativeMediaPicker } = require('./media-files.cjs');
+const { Model3DTasks } = require('./model-3d-tasks.cjs');
 
 function json(res, status, value) { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(value)); }
 async function bodyJson(req, limit = 1024 * 1024) {
@@ -36,6 +37,7 @@ class Gateway {
     this.folders = new (require('./folders.cjs').FolderStore)(store.dataDir, chooseFolder);
     this.media = new NativeMediaPicker(chooseMedia);
     this.exports = new MediaExports(store.dataDir, { apiPort, token: serviceToken, choose: chooseOutput });
+    this.model3D = new Model3DTasks(store, { exporter: this.exports, choose: chooseOutput, log });
   }
   mcpServers() {
     const command = path.join(this.root, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node');
@@ -128,6 +130,23 @@ class Gateway {
     const internal = provider && jsonEqual(req.headers.authorization, `Bearer ${this.providerToken}`);
     if (!this.authenticated(req) && !internal) return json(res, 401, { msg: '请从启动器打开工作台' });
     if (provider) return this.provider(req, res, url);
+    if (url.pathname === '/local/3d/models' && req.method === 'GET') return json(res, 200, { models: this.model3D.models() });
+    if (url.pathname === '/local/3d/tasks') {
+      if (req.method === 'GET') return json(res, 200, { tasks: await this.model3D.list(url.searchParams.get('sceneId')) });
+      if (req.method === 'POST') return json(res, 200, await this.model3D.create(await bodyJson(req, 128 * 1024 ** 2)));
+    }
+    const model3DRoute = url.pathname.match(/^\/local\/3d\/tasks\/([a-f0-9-]{36})(?:\/(file|export))?$/);
+    if (model3DRoute) {
+      const [, id, action] = model3DRoute;
+      if (action === 'export' && req.method === 'POST') return json(res, 200, await this.model3D.export(id));
+      if (action === 'file' && req.method === 'GET') {
+        const { file, bytes } = await this.model3D.open(id);
+        res.writeHead(200, { 'Content-Type': 'model/gltf-binary', 'Content-Length': bytes, 'Cache-Control': 'no-store' });
+        try { await pipeline(require('node:fs').createReadStream(file), res); } catch (error) { if (!res.destroyed) throw error; }
+        return;
+      }
+      if (!action && req.method === 'GET') return json(res, 200, await this.model3D.refresh(id));
+    }
     const editorRoute = url.pathname.match(/^\/local\/editor\/([a-zA-Z0-9_-]{1,160})(?:\/(step|progress))?$/);
     if (editorRoute) {
       const [, id, operation] = editorRoute;
@@ -322,7 +341,7 @@ class Gateway {
     if (channel.apiKey) req.headers.authorization = `Bearer ${channel.apiKey}`; else delete req.headers.authorization;
     return this.proxy.web(req, res, { target: channel.baseUrl, changeOrigin: true, secure: true, ...(buffer ? { buffer } : {}) });
   }
-  async close({ force = false } = {}) { this.bridge.close(); if (!force) await Promise.race([Promise.allSettled([...this.writes.values()]), require('node:timers/promises').setTimeout(2000, undefined, { ref: false })]); this.proxy.close(); for (const socket of this.sockets) socket.destroy(); this.server?.closeAllConnections(); await new Promise(resolve => this.server ? this.server.close(resolve) : resolve()); }
+  async close({ force = false } = {}) { this.bridge.close(); await this.model3D.close(); if (!force) await Promise.race([Promise.allSettled([...this.writes.values()]), require('node:timers/promises').setTimeout(2000, undefined, { ref: false })]); this.proxy.close(); for (const socket of this.sockets) socket.destroy(); this.server?.closeAllConnections(); await new Promise(resolve => this.server ? this.server.close(resolve) : resolve()); }
 }
 
 module.exports = { Gateway, bodyJson };

@@ -46,7 +46,7 @@ export const ASSET_MESH_TYPES = Object.freeze(["model/gltf-binary", "model/obj",
 /** Source-file ceiling. A 40 MP phone photo is fine as an INPUT — it gets
  * decoded and downscaled before anything is stored — but the file itself has
  * to be readable in one bite first. */
-export const ASSET_MAX_SOURCE_BYTES = 32 * 1024 * 1024;
+export const ASSET_MAX_SOURCE_BYTES = 100 * 1024 * 1024;
 /** Longest edge kept. A card is a staging surface, not a texture for a hero
  * render, and 2048 is the size every WebGL implementation can hold. */
 export const ASSET_MAX_DIMENSION = 2048;

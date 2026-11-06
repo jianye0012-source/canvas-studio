@@ -111,8 +111,8 @@ export function parseGlbBounds(bytes) {
 	return bounds;
 }
 
-const COMPRESSED_GLB_EXTENSIONS = new Set(["KHR_draco_mesh_compression", "EXT_meshopt_compression"]);
-const COMPRESSED_GLB_MESSAGE = "That model is compressed — export it uncompressed (no Draco / meshopt)";
+const COMPRESSED_GLB_EXTENSIONS = new Set(["KHR_texture_basisu"]);
+const COMPRESSED_GLB_MESSAGE = "模型使用暂不支持的 KTX2 压缩纹理，请导出使用 PNG / JPEG 纹理的 GLB";
 
 function glbExtensionNames(json) {
 	const names = new Set();
@@ -131,8 +131,7 @@ function glbExtensionNames(json) {
 	return names;
 }
 
-/** Draco / meshopt need a decoder we do not ship. Callers show this sentence
- * as a toast so the file is refused instead of standing up as a grey box. */
+/** Geometry decoders ship locally; KTX2 textures still require a transcoder. */
 export function compressedGlbReason(bytes) {
 	const json = glbJson(bytes);
 	if (!json) return null;

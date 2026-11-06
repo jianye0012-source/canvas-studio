@@ -1071,10 +1071,9 @@ export async function createCanvasImageTask(config: AiConfig & { seedIndex?: num
 
 export async function pollCanvasImageTaskStatus(taskId: string, signal?: AbortSignal): Promise<CanvasImageTask> {
     const token = useUserStore.getState().token;
-    if (!token) throw new Error("请先登录后再使用云端渠道");
     const response = await fetch(`/api/v1/canvas/image-tasks/${encodeURIComponent(taskId)}`, {
         signal,
-        headers: { Authorization: `Bearer ${token}` },
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     if (!response.ok) {
         const error = await fetchErrorDetail(response, "读取图片任务失败");

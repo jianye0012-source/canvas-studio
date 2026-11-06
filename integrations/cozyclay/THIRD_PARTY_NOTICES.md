@@ -11,6 +11,13 @@ CozyClay's browser-based 3D studio uses [Three.js](https://threejs.org/) through
 - Source: https://github.com/mrdoob/three.js
 - License text: https://github.com/mrdoob/three.js/blob/dev/LICENSE
 
+## Draco and meshoptimizer decoders
+
+The local studio includes Draco geometry decoders from Three.js and the meshoptimizer decoder, so compressed GLB geometry can load without an external CDN.
+
+- Draco: Copyright 2016 The Draco Authors. Apache-2.0; source https://github.com/google/draco ; license `LICENSES/Apache-2.0.txt`.
+- meshoptimizer: Copyright (c) 2016-2026 Arseny Kapoulkine. MIT; source https://github.com/zeux/meshoptimizer ; license `LICENSES/meshoptimizer-MIT.txt`.
+
 ## Mediabunny
 
 CozyClay uses [Mediabunny](https://mediabunny.dev/) to mux recorded WebCodecs

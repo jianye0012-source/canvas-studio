@@ -320,6 +320,28 @@ for (const reason of ["length", "stop", "repeated-length"]) {
 	} finally { await runner.close(); }
 }
 
+// A long scene can require several recoveries, but a turn making no progress must stop honestly.
+for (const scenario of ["progressive", "no-edit"]) {
+	const models = createModels();
+	const faux = fauxProvider({ provider: "faux", models: [{ id: "scripted", name: "Scripted", input: ["text", "image"] }] });
+	models.setProvider(faux.provider);
+	const mutations = [];
+	const mutate = (id) => fauxAssistantMessage([fauxToolCall("mutate", { id }, { id })], { stopReason: "toolUse" });
+	const partial = () => fauxAssistantMessage([fauxText("The scene still needs work")], { stopReason: "stop" });
+	const steps = scenario === "progressive" ? [mutate("first"), partial(), mutate("second"), partial(), mutate("third"), fauxAssistantMessage([fauxText("Complete")])] : [partial(), partial()];
+	const calls = installScripts(faux, steps);
+	const runner = createAgentRunner({ models, tools: [{ name: "mutate", parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] }, handler: async ({ id }) => { mutations.push(id); return { ok: true, authored: true }; } }] });
+	try {
+		const session = await runner.openSession(`studio-recovery-${scenario}`, { surface: "studio" });
+		const frames = await collect(session, { surface: "studio", text: "Build all three pieces", model: "faux/scripted", pendingStudioSteps: () => ["first", "second", "third"].filter(id => !mutations.includes(id)) });
+		assert.equal(calls.length, steps.length, `${scenario}: recover with progress, stop without progress`);
+		assert.deepEqual(mutations, scenario === "progressive" ? ["first", "second", "third"] : []);
+		assert.deepEqual(frames.filter(frame => frame.type === "error").map(frame => frame.code), scenario === "progressive" ? [] : ["tool_failed"]);
+		assert.equal(frames.filter(frame => frame.type === "done").length, 1);
+		console.log(`PASS Studio multi-stage recovery: ${scenario}`);
+	} finally { await runner.close(); }
+}
+
 // --- auth retry after a completed tool must not execute that tool again ---
 {
 	const sessionsDir = mkdtempSync(join(tmpdir(), "cozyclay-agent-runner-errors-post-tool-auth-"));

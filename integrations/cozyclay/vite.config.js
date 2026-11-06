@@ -9,6 +9,8 @@ const livePort = process.env.COZYCLAY_LIVE_PORT ?? "5184";
 const oauthPort = process.env.COZYCLAY_OAUTH_PORT?.trim();
 const oauthUrl = oauthPort ? `http://127.0.0.1:${oauthPort}` : null;
 const agentUrl = oauthUrl;
+const dracoFiles = ['draco_decoder.js', 'draco_wasm_wrapper.js', 'draco_decoder.wasm'];
+const dracoFile = name => new URL(`./node_modules/three/examples/jsm/libs/draco/gltf/${name}`, import.meta.url);
 
 export default defineConfig({
 	define: {
@@ -38,6 +40,20 @@ export default defineConfig({
 	},
 	plugins: [
 		react(),
+		{
+			name: 'local-draco-decoder',
+			generateBundle() {
+				for (const name of dracoFiles) this.emitFile({ type: 'asset', fileName: `draco/${name}`, source: readFileSync(dracoFile(name)) });
+			},
+			configureServer(server) {
+				server.middlewares.use((req, res, next) => {
+					const name = (req.url || '').split('?')[0].replace(/^\/(?:cozy\/)?draco\//, '');
+					if (!dracoFiles.includes(name)) return next();
+					res.setHeader('content-type', name.endsWith('.wasm') ? 'application/wasm' : 'text/javascript');
+					res.end(readFileSync(dracoFile(name)));
+				});
+			},
+		},
 		// The landing shows the release it was built from (#903).
 		{
 			name: "cozyclay-landing-version",

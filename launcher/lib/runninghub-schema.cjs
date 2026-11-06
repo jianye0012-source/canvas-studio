@@ -1,7 +1,7 @@
 const { parse } = require('yaml');
 
 const endpointPattern = /^[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*(?:\/[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*)+$/;
-const imageFields = new Set(['imageUrl', 'imageUrls', 'referenceImageUrl', 'referenceImageUrls', 'firstFrameUrl', 'lastFrameUrl', 'firstImageUrl', 'lastImageUrl']);
+const imageFields = new Set(['imageUrl', 'imageUrls', 'referenceImageUrl', 'referenceImageUrls', 'firstFrameUrl', 'lastFrameUrl', 'firstImageUrl', 'lastImageUrl', 'frontImageUrl', 'leftImageUrl', 'rightImageUrl', 'backImageUrl', 'topImageUrl', 'bottomImageUrl', 'leftFrontImageUrl', 'rightFrontImageUrl']);
 const controls = {
   prompt: ['string'], aspectRatio: ['string'], resolution: ['string'], duration: ['string', 'integer', 'number'],
   width: ['integer', 'number'], height: ['integer', 'number'], generateAudio: ['boolean'],
@@ -19,7 +19,7 @@ function matches(value, field) {
 
 function normalizeModel(endpoint, input) {
   if (typeof endpoint !== 'string' || endpoint.length > 240 || !endpointPattern.test(endpoint) ||
-      !['image', 'video'].includes(input?.type) || !Array.isArray(input.required) || !input.properties || typeof input.properties !== 'object') {
+      !['image', 'video', '3d'].includes(input?.type) || !Array.isArray(input.required) || !input.properties || typeof input.properties !== 'object') {
     throw new Error('RunningHub 模型的接口或参数格式无效');
   }
   const required = new Set(input.required);
@@ -38,7 +38,7 @@ function normalizeModel(endpoint, input) {
     const safeDefault = name !== 'prompt' && !media &&
       ((type === 'string' && field.enum) || ['boolean', 'integer', 'number'].includes(type)) && matches(raw.default, field);
     if (safeDefault) field.default = raw.default;
-    if (media || control || (required.has(name) && safeDefault)) {
+    if (media || control || (required.has(name) && safeDefault) || (input.type === '3d' && ['string', 'boolean', 'integer', 'number'].includes(type))) {
       fields[name] = field;
     }
   }
@@ -72,13 +72,16 @@ function parameters(spec, input) {
   const firstFrame = media.some(([name, field]) => field.type !== 'array' && name !== 'lastFrameUrl' && name !== 'lastImageUrl');
   const lastFrame = media.some(([name]) => name === 'lastFrameUrl' || name === 'lastImageUrl');
   const images = Array.isArray(input.imageUrls) ? input.imageUrls : [];
+  const mapped = spec.type === '3d' ? input.references || {} : {};
+  if (spec.type === '3d' && Object.keys(mapped).some(name => !imageFields.has(name) || !spec.properties[name])) throw new Error('所选 3D 模型不支持这些视角参考图');
   if (!media.length && (images.length || input.firstFrameUrl || input.lastFrameUrl)) throw new Error('所选 RunningHub 模型为纯文生模式，请移除参考图或切换模型');
   if ((input.firstFrameUrl && !firstFrame) || (input.lastFrameUrl && !lastFrame)) throw new Error('所选 RunningHub 模型不支持指定的首帧或尾帧，请切换模型或调整参考图');
   if (!plural && (images.length > (lastFrame ? 2 : 1) || (images.length && (input.firstFrameUrl || input.lastFrameUrl)))) throw new Error('所选 RunningHub 模型无法同时接收这些参考图和首尾帧，请调整输入');
   for (const [name, field] of Object.entries(spec.properties)) {
-    let value = Object.hasOwn(controls, name) ? input[name] : undefined;
+    let value = spec.type === '3d' && Object.hasOwn(input.parameters || {}, name) ? input.parameters[name] : Object.hasOwn(controls, name) ? input[name] : undefined;
     if (imageFields.has(name)) {
-      if (field.type === 'array') {
+      if (spec.type === '3d') value = mapped[name] || (field.type === 'array' ? images.length ? images : undefined : ['imageUrl', 'frontImageUrl'].includes(name) ? images[0] : undefined);
+      else if (field.type === 'array') {
         value = images.length ? images : undefined;
       }
       else if (name === 'lastFrameUrl' || name === 'lastImageUrl') value = input.lastFrameUrl || (!plural ? images[1] : undefined);
@@ -90,6 +93,7 @@ function parameters(spec, input) {
     } else {
       if (name === 'prompt') value = typeof value === 'string' ? value.trim() : '';
       if (name === 'duration' && value !== undefined && field.type !== 'string') value = Number(value);
+      if (value !== undefined && value !== '' && spec.type === '3d' && !matches(value, field)) throw new Error(`3D 模型参数 ${name} 超出支持范围或类型错误`);
       if (value === '' || !matches(value, field)) value = field.default;
     }
     if (value === undefined) {

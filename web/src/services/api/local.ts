@@ -1,6 +1,6 @@
-export type LocalCapability = 'text' | 'image' | 'video';
+export type LocalCapability = 'text' | 'image' | 'video' | '3d';
 export type RunningHubCatalogue = { models: { id: string; name: string; type: 'image' | 'video' | '3d' | 'audio' | 'other'; importable: boolean }[]; accountError: string };
-export type RunningHubModel = { name: string; type: 'image' | 'video'; docId: string; required: string[]; properties: Record<string, unknown> };
+export type RunningHubModel = { name: string; type: 'image' | 'video' | '3d'; docId: string; required: string[]; properties: Record<string, unknown> };
 export type LocalModelCatalogue = { models: string[]; modelCapabilities: Partial<Record<string, LocalCapability>>; modelToolSupport: Partial<Record<string, boolean>>; runningHub?: RunningHubCatalogue };
 export type LocalChannel = { id: string; name: string; protocol?: 'openai' | 'runninghub-standard'; baseUrl: string; enabled: boolean; models: string[]; modelCapabilities: Record<string, LocalCapability>; modelToolSupport?: Partial<Record<string, boolean>>; runningHubModels?: Record<string, RunningHubModel>; hasApiKey?: boolean; keyUnavailable?: boolean; apiKey?: string; clearApiKey?: boolean };
 export type LocalModelConfig = { channels: LocalChannel[]; directorModel: string; directorChannelId: string; textModel: string; textChannelId: string; imageModel: string; imageChannelId: string; videoModel: string; videoChannelId: string };
@@ -13,4 +13,4 @@ async function request<T>(url: string, input?: unknown) {
 }
 export const localConfig = (input?: Partial<LocalModelConfig>) => request<LocalModelConfig>('/local/config', input);
 export const testLocalChannel = (channel: LocalChannel) => request<LocalModelCatalogue>('/local/channels/test', channel);
-export const readLocalRunningHubModel = (id: string) => request<RunningHubModel & { endpoint: string }>('/local/channels/runninghub-model', { id });
+export const readLocalRunningHubModel = (id: string, baseUrl: string) => request<RunningHubModel & { endpoint: string }>('/local/channels/runninghub-model', { id, baseUrl });

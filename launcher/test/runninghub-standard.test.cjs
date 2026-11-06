@@ -7,6 +7,7 @@ const officialIndex = [
   '- Standard Model API > Image Generation & Processing > image-to-image > gpt [GPT Image 2](https://www.runninghub.ai/runninghub-api-doc-en/api-448184504.md):',
   '- Standard Model API > Video Generation & Processing > image-to-video [Video](https://www.runninghub.ai/runninghub-api-doc-en/api-123.md):',
   '- Standard Model API > 3D Generation & Processing > image-to-3D [3D [Deprecated]](https://www.runninghub.ai/runninghub-api-doc-en/api-456.md):',
+  '- 标准模型API > 其他 [hitem3d-v3/multi-image-to-3d](https://www.runninghub.ai/runninghub-api-doc-en/api-789.md):',
   '- Task Query & webhook [Query](https://www.runninghub.ai/runninghub-api-doc-en/api-1234.md):',
 ].join('\n');
 
@@ -78,7 +79,7 @@ test('RunningHub 检测联网读取并分类官方目录，账户密钥只发送
   store.value = validateConfig({ channels: [] });
   const result = await store.testChannel(channel);
   assert.deepEqual(result.models, []);
-  assert.deepEqual(result.runningHub.models.map(({ type, importable }) => [type, importable]), [['image', true], ['video', true], ['3d', false]]);
+  assert.deepEqual(result.runningHub.models.map(({ type, importable }) => [type, importable]), [['image', true], ['video', true], ['3d', false], ['3d', true]]);
   assert.equal(result.runningHub.models[2].name, '3D [Deprecated]');
   assert.equal(result.runningHub.accountError, '');
   assert.equal(calls[0].url, 'https://www.runninghub.ai/runninghub-api-doc-en/llms.txt');
@@ -110,7 +111,7 @@ test('RunningHub 目录可独立展示，读取失败不会返回内置目录或
   store.value = validateConfig({ channels: [channel], imageChannelId: channel.id, imageModel: model });
   assert.deepEqual(validateConfig({ channels: [{ ...channel, models: [] }] }).channels[0].models, []);
   const noKey = await store.testChannel(channel);
-  assert.equal(noKey.runningHub.models.length, 3);
+  assert.equal(noKey.runningHub.models.length, 4);
   assert.match(noKey.runningHub.accountError, /请填写/);
   assert.deepEqual(noKey.models, []);
   const invalidKey = await store.testChannel({ ...channel, apiKey: 'invalid-fixture' });

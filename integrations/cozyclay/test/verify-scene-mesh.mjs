@@ -221,10 +221,10 @@ await refuses("plain text named .glb is refused as not a GLB", glbFile(new TextE
 await refuses("a non-file is refused with a readable reason", null, /file/i);
 await refuses(
 	"a file past the source ceiling is refused before it is parsed",
-	{ name: "huge.glb", type: "model/gltf-binary", size: 64 * 1024 * 1024, arrayBuffer: async () => unitBytes.buffer.slice(0) },
-	/too large|larger than 32/i,
+	{ name: "huge.glb", type: "model/gltf-binary", size: 101 * 1024 * 1024, arrayBuffer: async () => unitBytes.buffer.slice(0) },
+	/too large|larger than 100/i,
 );
-expect("the source ceiling is the same 32 MiB pictures already use", ASSET_MAX_SOURCE_BYTES === 32 * 1024 * 1024);
+expect("the source ceiling accepts generated models up to 100 MiB", ASSET_MAX_SOURCE_BYTES === 100 * 1024 * 1024);
 
 const nulPadded = glbFromJson({ ...measurableGlbJson, extras: { note: "pad" } }, 0);
 const nulBounds = parseGlbBounds(nulPadded);
@@ -240,18 +240,11 @@ const dracoJson = {
 	meshes: [{ primitives: [{ attributes: { POSITION: 0 }, extensions: { KHR_draco_mesh_compression: { bufferView: 0 } } }] }],
 };
 const dracoBytes = glbFromJson(dracoJson);
-expect("Draco is named as compressed, not as unreadable geometry", /compress/i.test(compressedGlbReason(dracoBytes) ?? ""));
-await refuses(
-	"a Draco GLB is refused with a compression toast, not stood up as a grey box",
-	glbFile(dracoBytes, "draco-cube.glb", "model/gltf-binary"),
-	/compress/i,
-);
+expect("Draco geometry is accepted for the bundled decoder", compressedGlbReason(dracoBytes) === null);
+expect("Draco GLB retains measurable bounds", Boolean((await importMeshFile(glbFile(dracoBytes, "draco-cube.glb", "model/gltf-binary"))).asset));
 const meshoptBytes = glbFromJson({ ...measurableGlbJson, extensionsRequired: ["EXT_meshopt_compression"] });
-await refuses(
-	"meshopt is refused the same way",
-	glbFile(meshoptBytes, "meshopt-cube.glb", "model/gltf-binary"),
-	/compress/i,
-);
+expect("meshopt GLB is accepted for the bundled decoder", Boolean((await importMeshFile(glbFile(meshoptBytes, "meshopt-cube.glb", "model/gltf-binary"))).asset));
+await refuses("KTX2 texture gives an actionable unsupported-format error", glbFile(glbFromJson({ ...measurableGlbJson, extensionsRequired: ['KHR_texture_basisu'] }), "ktx.glb", "model/gltf-binary"), /KTX2/);
 expect("an ordinary cube is not compressed", compressedGlbReason(unitBytes) === null);
 expect("OBJ bytes are not a compressed GLB", compressedGlbReason(unitObjBytes) === null);
 

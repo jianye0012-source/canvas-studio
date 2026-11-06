@@ -53,6 +53,23 @@ export function agentImageBody({ prompt, imageDataUrl, referenceDataUrl, referen
 
 /** POST /agent/image; answers `{ dataUrl, width, height }`. */
 export function requestAgentImage(payload, { fetchImpl = globalThis.fetch?.bind(globalThis), signal } = {}) {
+	if (globalThis.__CANVAS_LOCAL__ && globalThis.parent !== globalThis) {
+		return new Promise((resolve, reject) => {
+			const requestId = crypto.randomUUID();
+			const finish = (error, value) => { clearTimeout(timer); globalThis.removeEventListener("message", receive); signal?.removeEventListener("abort", abort); error ? reject(error) : resolve(value); };
+			const receive = event => {
+				if (event.origin !== location.origin || event.source !== parent || event.data?.type !== "storyai:director-image-result" || event.data.payload?.requestId !== requestId) return;
+				const value = event.data.payload;
+				finish(value.ok ? null : new Error(value.error || "导演台图片生成失败"), value);
+			};
+			const abort = () => { parent.postMessage({ type: "storyai:director-image-cancel", payload: { requestId } }, location.origin); finish(signal?.reason || new DOMException("已取消", "AbortError")); };
+			const timer = setTimeout(() => { parent.postMessage({ type: "storyai:director-image-cancel", payload: { requestId } }, location.origin); finish(new Error("导演台图片生成等待超时，请核对生成任务记录")); }, 11 * 60 * 1000);
+			globalThis.addEventListener("message", receive);
+			signal?.addEventListener("abort", abort, { once: true });
+			if (signal?.aborted) { abort(); return; }
+			parent.postMessage({ type: "storyai:director-image-request", payload: { ...agentImageBody(payload), requestId } }, location.origin);
+		});
+	}
 	return sidecarRequest(fetchImpl, "/agent/image", { method: "POST", body: JSON.stringify(agentImageBody(payload)), signal });
 }
 

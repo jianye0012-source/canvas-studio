@@ -13,6 +13,7 @@ const DEFAULT_MODEL = "gpt-6-astra";
 // request sleeps for a provider-requested Retry-After before pi's own
 // SDK-level retry gives up and surfaces the error to us.
 const RETRY_MAX_DELAY_MS = 20000;
+const MAX_STUDIO_CONTINUATIONS = 6;
 
 const AUTH_ERROR_PATTERN = /\b(401|403)\b|unauthorized|forbidden/i;
 const RATE_LIMIT_PATTERN = /\b429\b|rate.?limit|too many requests/i;
@@ -424,13 +425,15 @@ export function createAgentRunner({ models: suppliedModels, sessionStore, tools 
 						const pendingSteps = state.lastInput?.pendingStudioSteps;
 						if (!pendingSteps || !state.active || state.active.abortRequested || signal?.aborted) return;
 						const truncated = message.stopReason === "length";
-						if (state.active.continued && truncated) return { action: "end" };
-						state.active.sceneChanged ||= toolResults.some(result => result.details?.authored === true ||
-							result.details?.calls?.some?.(call => call.ok && Number.isSafeInteger(call.revision?.after) && call.revision.after !== call.revision.before));
-						if (state.active.continued) return;
-						const steps = state.active.sceneChanged ? pendingSteps() : [];
+						const edits = toolResults.filter(result => result.details?.authored === true ||
+							result.details?.calls?.some?.(call => call.ok && Number.isSafeInteger(call.revision?.after) && call.revision.after !== call.revision.before)).length;
+						state.active.sceneEdits = (state.active.sceneEdits || 0) + edits;
+						const steps = pendingSteps();
 						if (!truncated && !(message.stopReason === "stop" && !toolResults.length && steps.length)) return;
-						state.active.continued = true;
+						const progress = JSON.stringify([state.active.sceneEdits, steps]);
+						if (state.active.continued >= MAX_STUDIO_CONTINUATIONS || state.active.lastContinuationProgress === progress) return { action: "end" };
+						state.active.continued = (state.active.continued || 0) + 1;
+						state.active.lastContinuationProgress = progress;
 						if (truncated && toolResults.length) return; // Pi already schedules a retry from the failed tool results.
 						const reason = truncated ? "The previous response reached its output limit." : "The current plan still has unfinished steps.";
 						const unfinished = steps.length ? ` Unfinished steps: ${steps.join(" / ")}.` : "";
@@ -504,7 +507,7 @@ export function createAgentRunner({ models: suppliedModels, sessionStore, tools 
 				// failed or cancelled request there (stopReason error/aborted).
 				const last = event.messages.findLast((message) => message.role === "assistant");
 				const pendingSteps = state.lastInput?.pendingStudioSteps;
-				const remaining = last?.stopReason === "stop" && state.active.sceneChanged ? pendingSteps?.() : null;
+				const remaining = last?.stopReason === "stop" ? pendingSteps?.() : null;
 				const incomplete = remaining?.length ? `导演台还有以下步骤未完成。${remaining.join("、")}。已执行的修改已保留，可以继续处理剩余步骤。` : null;
 				const outOfTokens = last?.stopReason === "length" && (pendingSteps || !last.content?.some((part) => part?.type === "toolCall" || (part?.type === "text" && part.text)))
 					? pendingSteps ? "模型达到输出上限，导演台任务尚未完成。已执行的修改已保留，可以继续处理剩余步骤。" : `The model used all ${state.active?.maxTokens ?? state.currentModel?.maxTokens} output tokens before answering. Lower the reasoning effort or raise the output limit.` : null;

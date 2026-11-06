@@ -75,11 +75,11 @@ async function readPublic(url, fetchImpl, label) {
 async function readCatalogue(baseUrl, fetchImpl) {
   const source = await readPublic(docsURL(baseUrl) + '/llms.txt', fetchImpl, '模型目录');
   const models = new Map();
-  const entries = /^- (?:Standard Model API|模型API) > ([^>\r\n]+?)(?: > [^\r\n]+?)? \[([^\r\n]{1,500}?)\]\((https:\/\/www\.runninghub\.(?:ai|cn)\/runninghub-api-doc-(?:en|cn)\/api-(\d+)\.md)\)/gm;
+  const entries = /^- (?:Standard Model API|模型API|标准模型API) > ([^>\r\n]+?)(?: > [^\r\n]+?)? \[([^\r\n]{1,500}?)\]\((https:\/\/www\.runninghub\.(?:ai|cn)\/runninghub-api-doc-(?:en|cn)\/api-(\d+)\.md)\)/gm;
   for (const [, category, name, docUrl, id] of source.matchAll(entries)) {
     if (!docUrl.startsWith(docsURL(baseUrl) + '/')) continue;
-    const type = catalogueTypes.get(category) || (/\/(?:text-to-image|image-to-image|image-upscale|layer-decomposition)$/.test(name) ? 'image' : 'other');
-    models.set(id, { id, name, type, docUrl, importable: ['image', 'video'].includes(type) && !/\bdeprecated\b|已下架|已弃用/i.test(name) });
+    const type = catalogueTypes.get(category) || (/\/(?:text|image|multi-image)-to-3d$/i.test(name) ? '3d' : /\/(?:text-to-image|image-to-image|image-upscale|layer-decomposition)$/.test(name) ? 'image' : 'other');
+    models.set(id, { id, name, type, docUrl, importable: ['image', 'video', '3d'].includes(type) && !/\bdeprecated\b|已下架|已弃用/i.test(name) });
   }
   if (!models.size) throw new Error('RunningHub 官方目录未返回可识别的模型，请稍后重试');
   return [...models.values()];
@@ -96,7 +96,7 @@ async function detect(channel, { fetchImpl, catalogueFetch = fetchImpl, keyUnava
 
 async function loadModel(id, catalogue, fetchImpl) {
   const entry = catalogue.find(model => model.id === id && model.importable);
-  if (!entry || !/^\d{1,20}$/.test(id)) throw new Error('请先检测渠道，并选择一个可添加的图片或视频模型');
+  if (!entry || !/^\d{1,20}$/.test(id)) throw new Error('请先检测渠道，并选择可添加的图片、视频或 3D 模型');
   const source = await readPublic(entry.docUrl, fetchImpl, '模型参数');
   return { ...parseModel(source, entry.type), docId: id };
 }
@@ -173,4 +173,4 @@ async function callStandardVideo(channel, input, options) {
   return { id, task_id: id, status: state === 'RUNNING' ? 'running' : 'queued' };
 }
 
-module.exports = { protocol, model, baseURL, normalizeRunningHubURL, detect, loadModel, configuredModels, callStandardImage, callStandardVideo };
+module.exports = { protocol, model, baseURL, normalizeRunningHubURL, detect, loadModel, configuredModels, callStandardImage, callStandardVideo, submit3D: (channel, input, options) => submit(channel, input, '3d', options), query };

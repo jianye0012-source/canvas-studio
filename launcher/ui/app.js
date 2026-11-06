@@ -2,7 +2,7 @@ const $ = selector => document.querySelector(selector);
 const titles = { home: '一键启动', models: '模型配置', skills: 'Skill 管理', storage: '存储设置', logs: '运行日志', repair: '检查与修复', about: '关于' };
 let config, state, updateState, draft, activeId = '';
 const roles = { director: '白模导演', text: '画布文字', image: '图片生成', video: '视频生成' };
-const capabilities = { text: '文字 / 白模', image: '图片', video: '视频' };
+const capabilities = { text: '文字 / 白模', image: '图片', video: '视频', '3d': '3D 模型' };
 const catalogues = new Map();
 const runningHubCatalogues = new Map();
 const runningHubTypes = { image: '图片', video: '视频', '3d': '3D', audio: '音频', other: '其他' };
@@ -151,7 +151,7 @@ function renderModels() {
   $('#runninghub-site').value = runningHubSite(channel);
   $('#custom-model-entry').hidden = runningHub;
   $('#test-models').textContent = runningHub ? '检测渠道并读取模型' : '测试此渠道 / 读取模型';
-  $('#model-entry-help').textContent = runningHub ? '展开图片或视频目录，点击「添加」读取该模型的官方参数。每个渠道可保存多个模型。文字和白模导演使用 OpenAI 兼容渠道。' : '加入可选模型；无法识别类型的模型可从列表选取并手动分类。白模导演使用文字模型，参考图需支持视觉输入。';
+  $('#model-entry-help').textContent = runningHub ? '展开图片、视频或 3D 目录，点击「添加」读取该模型的官方参数。每个渠道可保存多个模型。文字和白模导演使用 OpenAI 兼容渠道。' : '加入可选模型；无法识别类型的模型可从列表选取并手动分类。白模导演使用文字模型，参考图需支持视觉输入。';
   renderRunningHubCatalogue(channel);
   $('#model-list').replaceChildren(...(catalogues.get(channel.id) || []).map(model => new Option(model, model)));
   $('#channel-models').replaceChildren(...channel.models.map(model => {

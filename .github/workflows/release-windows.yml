@@ -34,12 +34,16 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force work/tmp | Out-Null
-          node --test launcher/test/process-control.test.cjs launcher/test/self-update.test.cjs
+          node --test launcher/test/process-control.test.cjs launcher/test/self-update.test.cjs launcher/test/model-3d-tasks.test.cjs launcher/test/runninghub-standard.test.cjs
           exit $LASTEXITCODE
       - name: Build portable package
         run: node launcher/scripts/package.mjs
       - name: Verify portable projects on isolated Windows workspaces
         run: node launcher/test/portable-browser-smoke.cjs
+        env:
+          TMPDIR: ${{ github.workspace }}/work/tmp
+      - name: Verify director lifecycle and mocked 3D generation on Windows
+        run: node launcher/test/director-lifecycle.cjs
         env:
           TMPDIR: ${{ github.workspace }}/work/tmp
       - name: Verify direct installation and official rollback on Windows

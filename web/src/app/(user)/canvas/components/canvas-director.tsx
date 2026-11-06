@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffectiveConfig } from "@/stores/use-config-store";
 
 import type { CanvasDirectorCapture, CanvasDirectorPanorama, CanvasDirectorVideo } from "../types";
 
@@ -31,8 +32,11 @@ export function CanvasDirector({
     const iframeRef = useRef<HTMLIFrameElement>(null);
     const projectRef = useRef(project);
     const themeRef = useRef(theme);
-    const sessionSentRef = useRef(false);
-    const [ready, setReady] = useState(false);
+    const imageConfig = useEffectiveConfig();
+    const imageConfigRef = useRef(imageConfig);
+    imageConfigRef.current = imageConfig;
+    const imageRequestsRef = useRef(new Map<string, AbortController>());
+    const [readyEpoch, setReadyEpoch] = useState(0);
 
     useEffect(() => {
         projectRef.current = project;
@@ -46,13 +50,29 @@ export function CanvasDirector({
         iframeRef.current?.contentWindow?.postMessage({ type, payload }, window.location.origin);
     }, []);
 
+    useEffect(() => () => { for (const controller of imageRequestsRef.current.values()) controller.abort(); imageRequestsRef.current.clear(); }, [nodeId]);
+
     useEffect(() => {
         function handleMessage(event: MessageEvent) {
             if (event.origin !== window.location.origin || event.source !== iframeRef.current?.contentWindow) return;
 
             const type = event.data?.type;
+            if (type === "storyai:director-image-cancel") { imageRequestsRef.current.get(event.data?.payload?.requestId)?.abort(); return; }
+            if (type === "storyai:director-image-request") {
+                const requestId = event.data?.payload?.requestId;
+                if (typeof requestId !== "string" || !/^[a-f0-9-]{36}$/.test(requestId) || imageRequestsRef.current.has(requestId)) return;
+                const controller = new AbortController();
+                imageRequestsRef.current.set(requestId, controller);
+                void import("./director-image-generation").then(async ({ generateDirectorImage }) => {
+                    const image = await generateDirectorImage(imageConfigRef.current, event.data?.payload || {}, nodeId, requestId, controller.signal);
+                    controller.signal.throwIfAborted();
+                    if (await onCapturesSent(nodeId, [{ dataUrl: image.dataUrl, fileName: "导演台建模参考图.png" }]) === false) throw new Error("生成的建模参考图未保存，请检查数据目录");
+                    postToDesk("storyai:director-image-result", { requestId, ok: true, ...image });
+                }).catch(error => postToDesk("storyai:director-image-result", { requestId, ok: false, error: error instanceof Error ? error.message : "图片生成失败" })).finally(() => imageRequestsRef.current.delete(requestId));
+                return;
+            }
             if (type === "storyai:director-ready") {
-                setReady(true);
+                setReadyEpoch(value => value + 1);
                 return;
             }
 
@@ -80,15 +100,16 @@ export function CanvasDirector({
                         .filter((capture: DirectorCapturePayload): capture is { dataUrl: string; fileName?: unknown } => typeof capture?.dataUrl === "string" && capture.dataUrl.startsWith("data:image/"))
                         .map((capture: { dataUrl: string; fileName?: unknown }, index: number) => ({ dataUrl: capture.dataUrl, fileName: typeof capture.fileName === "string" && capture.fileName.trim() ? capture.fileName.trim() : "导演台截图-" + (index + 1) + ".png" }))
                     : [];
-                if (captures.length) void onCapturesSent(nodeId, captures)
+                if (!captures.length) { postToDesk("storyai:director-output-result", { requestId: event.data?.payload?.requestId, ok: false, error: "没有收到有效的导演台截图" }); return; }
+                void onCapturesSent(nodeId, captures)
                     .then((ok) => postToDesk("storyai:director-output-result", { requestId: event.data?.payload?.requestId, ok: ok !== false }))
-                    .catch(() => postToDesk("storyai:director-output-result", { requestId: event.data?.payload?.requestId, ok: false }));
+                    .catch(error => postToDesk("storyai:director-output-result", { requestId: event.data?.payload?.requestId, ok: false, error: error instanceof Error ? error.message : "截图保存失败" }));
                 return;
             }
 
             if (type === "storyai:director-video-sent") {
                 const blob = event.data?.payload?.blob;
-                if (!(blob instanceof Blob) || !blob.size || !blob.type.startsWith("video/mp4")) return;
+                if (!(blob instanceof Blob) || !blob.size || !blob.type.startsWith("video/mp4")) { postToDesk("storyai:director-output-result", { requestId: event.data?.payload?.requestId, ok: false, error: "没有收到有效的 MP4 动画" }); return; }
                 const fileName = typeof event.data?.payload?.fileName === "string" && event.data.payload.fileName.trim()
                     ? event.data.payload.fileName.trim()
                     : "导演台视频.mp4";
@@ -102,7 +123,7 @@ export function CanvasDirector({
                     height: Number.isFinite(height) && height > 0 ? height : 720,
                     durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : 0,
                 }).then((ok) => postToDesk("storyai:director-output-result", { requestId: event.data?.payload?.requestId, ok: ok !== false }))
-                    .catch(() => postToDesk("storyai:director-output-result", { requestId: event.data?.payload?.requestId, ok: false }));
+                    .catch(error => postToDesk("storyai:director-output-result", { requestId: event.data?.payload?.requestId, ok: false, error: error instanceof Error ? error.message : "动画保存失败" }));
                 return;
             }
         }
@@ -112,23 +133,22 @@ export function CanvasDirector({
     }, [nodeId, onCapturesSent, onClose, onPanoramaRemoved, onProjectChange, onVideoSent, postToDesk]);
 
     useEffect(() => {
-        if (!ready || sessionSentRef.current) return;
-        sessionSentRef.current = true;
+        if (!readyEpoch) return;
         postToDesk("storyai:director-session", {
-            instanceId: (projectRef.current as { projectId?: string } | undefined)?.projectId || nodeId,
+            instanceId: nodeId,
             theme: themeRef.current,
             project: projectRef.current,
         });
-    }, [nodeId, postToDesk, ready]);
+    }, [nodeId, postToDesk, readyEpoch]);
 
     useEffect(() => {
-        if (!ready || !sessionSentRef.current) return;
+        if (!readyEpoch) return;
         postToDesk("storyai:director-panoramas", { panoramas });
-    }, [panoramas, postToDesk, ready]);
+    }, [panoramas, postToDesk, readyEpoch]);
 
     return (
         <div className="fixed inset-0 z-[2000]">
-            <iframe ref={iframeRef} title="3D导演台" src="/cozy/app/?canvas=1" className="block h-full w-full border-0" />
+            <iframe key={nodeId} ref={iframeRef} title="3D导演台" src="/cozy/app/?canvas=1" className="block h-full w-full border-0" />
         </div>
     );
 }

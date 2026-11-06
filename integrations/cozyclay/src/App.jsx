@@ -4447,8 +4447,8 @@ export default function App() {
 				...sculptBlueprint,
 				prompt: buildBlueprintPrompt({ pose: sculptBlueprint.pose, notes: sculptBlueprint.notes }),
 				layout: BLUEPRINT_LAYOUT,
-				// The image model is ChatGPT-only: without a ChatGPT token the button is hidden and this says why (#970).
-				refusal: !sculptChatgpt ? ko("Sign in with ChatGPT in the Agent panel to generate a blueprint.", "도면을 생성하려면 에이전트 패널에서 ChatGPT로 로그인하세요.") : null,
+				// Local Canvas uses its configured image channel; standalone CozyClay uses ChatGPT.
+				refusal: !sculptChatgpt && !globalThis.__CANVAS_LOCAL__ ? ko("Sign in with ChatGPT in the Agent panel to generate a blueprint.", "도면을 생성하려면 에이전트 패널에서 ChatGPT로 로그인하세요.") : null,
 				onPose: (pose) => setSculptBlueprint((current) => ({ ...current, pose })),
 				onNotes: (notes) => setSculptBlueprint((current) => ({ ...current, notes })),
 				onGenerate: () => void generateSculptBlueprint(),

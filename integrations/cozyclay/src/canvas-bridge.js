@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { importHdrFile } from './stage-hdr-library.js';
+import { openModelGenerator } from './canvas-model-generator.js';
 import './canvas-bridge.css';
 
 // The .cclayproject envelope includes meshes, HDRs, images, motion specs and
@@ -59,6 +60,7 @@ export function useCanvasBridge(api) {
       label.textContent = '动画已发送到画布';
     };
     button('← 返回画布', async () => { await save(true); post('storyai:director-close'); });
+    button('AI 生成 3D 模型', async () => { if (!initialized) throw new Error('请等待导演台连接完成'); await openModelGenerator({ sceneId: session.instanceId, run, save }); });
     button('保存场景', () => save(true)); button('截图到画布', capture); button('动画到画布', video);
     button('导演台 MCP', async () => {
       const response = await fetch('/local/mcp/config'); if (!response.ok) throw new Error('MCP 配置读取失败');
@@ -111,7 +113,7 @@ export function useCanvasBridge(api) {
       try {
         if (event.data?.type === 'storyai:director-output-result') {
           const request = pendingOutputs.get(event.data.payload?.requestId);
-          if (request) { clearTimeout(request.timer); pendingOutputs.delete(event.data.payload.requestId); if (event.data.payload.ok) request.resolve(); else request.reject(new Error('截图或动画未写入磁盘，请检查数据目录并重试')); }
+          if (request) { clearTimeout(request.timer); pendingOutputs.delete(event.data.payload.requestId); if (event.data.payload.ok) request.resolve(); else request.reject(new Error(typeof event.data.payload.error === 'string' ? event.data.payload.error.slice(0, 300) : '截图或动画未写入磁盘，请检查数据目录并重试')); }
           return;
         }
         if (event.data?.type === 'storyai:director-session') {
@@ -119,7 +121,12 @@ export function useCanvasBridge(api) {
           session = event.data.payload;
           if (!/^[a-zA-Z0-9_-]{1,160}$/.test(session.instanceId)) throw new Error('导演台编号无效');
           if (session.project && session.project.engine !== 'cozyclay') throw new Error('旧导演台格式无法直接打开，请新建导演台节点');
-          const response = await fetch(`/local/director/${session.instanceId}`);
+          let response = await fetch(`/local/director/${session.instanceId}`);
+          const sourceId = session.project?.projectId;
+          if (response.status === 404 && sourceId && sourceId !== session.instanceId) {
+            if (!/^[a-zA-Z0-9_-]{1,160}$/.test(sourceId)) throw new Error('原导演台编号无效');
+            response = await fetch(`/local/director/${sourceId}`);
+          }
           if (response.ok) {
             const saved = await response.json();
             if (saved.engine !== 'cozyclay' || saved.schemaVersion !== 1) throw new Error('导演台保存格式不受支持');
