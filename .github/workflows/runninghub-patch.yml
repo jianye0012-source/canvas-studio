@@ -1,4 +1,4 @@
-name: Build RunningHub site patch
+name: Build legacy RunningHub site patch
 on:
   workflow_dispatch:
 permissions:
@@ -9,6 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: 511a7f511b621d5c5053119515bc3ad6947e702c
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
