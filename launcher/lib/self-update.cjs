@@ -9,6 +9,11 @@ const { terminateChild } = require('./process-control.cjs');
 const executable = '画布工作台启动器.exe';
 const optional = file => fs.readFile(file).catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
 const quote = value => "'" + value.replaceAll("'", "''") + "'";
+async function digest(file) {
+  const hash = crypto.createHash('sha256');
+  for await (const chunk of require('node:fs').createReadStream(file)) hash.update(chunk);
+  return hash.digest('hex');
+}
 function entries(manifest) {
   if (manifest.application !== 'canvas-studio' || manifest.format !== 1 || manifest.platform !== 'win32-x64' || !Array.isArray(manifest.files)) throw new Error('程序文件清单无效');
   const names = ['package-manifest.json', ...manifest.files.map(entry => entry.path)];
@@ -84,13 +89,17 @@ async function rollback(job, directory) {
   const plan = JSON.parse(await fs.readFile(path.join(directory, 'plan.json'), 'utf8'));
   const previous = new Set(entries(job.previous)), next = new Set(entries(job.next));
   if (!Array.isArray(plan.replace) || !Array.isArray(plan.previous) || plan.replace.some(name => !next.has(name)) || plan.previous.some(name => !previous.has(name))) throw new Error('更新恢复计划无效');
+  const savedNames = new Set(plan.previous);
   for (const name of plan.replace) {
+    if (savedNames.has(name)) continue;
     const target = await safeFile(job.root, name);
     if (target.exists) await fs.rm(target.file);
   }
   for (const name of plan.previous) {
-    const saved = await optional(path.join(directory, 'previous', name));
-    if (saved) await copy(path.join(directory, 'previous', name), (await safeFile(job.root, name)).file);
+    const saved = await safeFile(path.join(directory, 'previous'), name), target = await safeFile(job.root, name);
+    if (saved.exists) {
+      if (!target.exists || await digest(target.file) !== await digest(saved.file)) await copy(saved.file, target.file);
+    } else if (target.exists && plan.replace.includes(name)) await fs.rm(target.file);
   }
   const pointer = path.join(job.root, '.versions/active.json');
   if (job.pointer) await atomicJson(pointer, job.pointer);
@@ -115,9 +124,7 @@ async function applySelfUpdate(jobFile, { start = launch, cleanup = true } = {})
       if (target.exists && !oldNames.has(name)) throw new Error('新程序文件与现有额外文件冲突：' + name);
       const old = oldEntries.get(name), entry = newEntries.get(name);
       if (target.exists && entry && old?.sha256 === entry.sha256) {
-        const hash = crypto.createHash('sha256');
-        for await (const chunk of require('node:fs').createReadStream(target.file)) hash.update(chunk);
-        if (hash.digest('hex') === entry.sha256) continue;
+        if (await digest(target.file) === entry.sha256) continue;
       }
       replace.push(name);
     }

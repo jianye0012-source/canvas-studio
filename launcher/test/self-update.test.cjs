@@ -109,3 +109,25 @@ test('相同运行时即使被外部 MCP 占用也不替换或回滚覆盖', asy
   assert.equal(await fs.readFile(path.join(root, 'resources/bundle/runtime/node.exe'), 'utf8'), 'node');
   await assert.rejects(fs.access(path.join(path.dirname(jobFile), 'previous/resources/bundle/runtime/node.exe')), { code: 'ENOENT' });
 });
+
+test('变化的运行时被占用而未能替换时，回滚保留原文件并恢复其他程序', async t => {
+  const { root, jobFile } = await fixture(t);
+  const job = JSON.parse(await fs.readFile(jobFile));
+  const changed = Buffer.from('new-node');
+  Object.assign(job.next.files.find(entry => entry.path === 'resources/bundle/runtime/node.exe'), { size: changed.length, sha256: crypto.createHash('sha256').update(changed).digest('hex') });
+  await fs.writeFile(path.join(path.dirname(jobFile), 'next/resources/bundle/runtime/node.exe'), changed);
+  await fs.writeFile(path.join(path.dirname(jobFile), 'next/package-manifest.json'), JSON.stringify(job.next));
+  await fs.writeFile(jobFile, JSON.stringify(job));
+  const rename = fs.rename, rm = fs.rm;
+  t.mock.method(fs, 'rename', async (from, to) => {
+    if (to === path.join(root, 'resources/bundle/runtime/node.exe')) throw new Error('模拟运行时被占用');
+    return rename(from, to);
+  });
+  t.mock.method(fs, 'rm', async (file, options) => {
+    assert.notEqual(file, path.join(root, 'resources/bundle/runtime/node.exe'), '回滚不能删除仍然是原内容的运行时');
+    return rm(file, options);
+  });
+  await assert.rejects(applySelfUpdate(jobFile, { start: async () => {} }), /模拟运行时被占用/);
+  assert.equal(await fs.readFile(path.join(root, 'resources/bundle/runtime/node.exe'), 'utf8'), 'node');
+  assert.equal(await fs.readFile(path.join(root, '画布工作台启动器.exe'), 'utf8'), '1.3.11');
+});
