@@ -163,7 +163,7 @@ function renderModels() {
 }
 function renderUpdate(value) {
   updateState = value;
-  const busy = ['checking', 'downloading', 'verifying', 'installing'].includes(value.phase);
+  const busy = ['checking', 'downloading', 'verifying', 'installing', 'restarting'].includes(value.phase);
   $('#update-version').textContent = `当前运行 ${value.currentVersion}${value.latestVersion ? ' · 最新正式版 ' + value.latestVersion : ''}${value.installedVersion ? ' · 已安装 ' + value.installedVersion : ''}`;
   $('#update-message').textContent = value.message;
   $('#update-progress').hidden = !['downloading', 'verifying'].includes(value.phase);
@@ -277,7 +277,7 @@ $('#test-models').onclick = async () => {
 };
 $('#clear-key').onclick = () => { const channel = activeChannel(); if (channel) { channel.apiKey = ''; channel.hasApiKey = false; channel.clearApiKey = true; renderModels(); notice('此渠道密钥将于保存时清除。'); } };
 window.launcher.subscribe(event => { if (event.type === 'status') status(event.value); else if (event.type === 'update') renderUpdate(event.value); else { $('#logs').textContent = event.value.join('\n'); $('#logs').scrollTop = $('#logs').scrollHeight; } });
-invoke('app:load').then(result => { fill(result.config); renderExports(result.exports); status(result.status); renderUpdate(result.update); if (result.logs.length) $('#logs').textContent = result.logs.join('\n'); }).catch(() => {});
+invoke('app:load').then(async result => { fill(result.config); renderExports(result.exports); status(result.status); renderUpdate(result.update); if (result.logs.length) $('#logs').textContent = result.logs.join('\n'); await invoke('app:ready'); }).catch(() => {});
 
 let skills = [];
 function editSkill(skill = {}) { for (const key of ['id','name','description','content']) $('#skill-form').elements[key].value = skill[key] || ''; $('#skills-export').disabled = $('#skills-delete').disabled = !skill.id; }

@@ -34,7 +34,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force work/tmp | Out-Null
-          node --test launcher/test/process-control.test.cjs
+          node --test launcher/test/process-control.test.cjs launcher/test/self-update.test.cjs
           exit $LASTEXITCODE
       - name: Build portable package
         run: node launcher/scripts/package.mjs
@@ -68,5 +68,6 @@ jobs:
           gh release view $releaseTag --repo $env:GITHUB_REPOSITORY
           if ($LASTEXITCODE) { gh release create $releaseTag --target '${{ github.sha }}' --title "画布工作台 $releaseVersion" --notes 'Windows x64 便携整合包。完整解压到机械盘后运行启动器。真实模型服务和 Windows 实机功能请按使用说明验收。' }
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          gh release upload $releaseTag $releaseZip "$releaseZip.sha256" --clobber
+          $upgradeZip = "outputs/CanvasStudio-Launcher-Upgrade-$releaseVersion.zip"
+          gh release upload $releaseTag $releaseZip "$releaseZip.sha256" $upgradeZip "$upgradeZip.sha256" --clobber
           exit $LASTEXITCODE

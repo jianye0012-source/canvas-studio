@@ -8,6 +8,7 @@ const { Runtime } = require('./lib/runtime.cjs');
 const { ReleaseUpdater } = require('./lib/release-update.cjs');
 const { createUpdateFetch } = require('./lib/update-network.cjs');
 const { MediaExports } = require('./lib/media-files.cjs');
+const { prepareSelfUpdate, startSelfUpdate, markUpdateReady } = require('./lib/self-update.cjs');
 const { installationPaths, executableName, versionDirectory, stageUpdate, applyUpdate, clearInactiveVersions } = require('./lib/update.cjs');
 const updateSource = require('./update-source.json');
 
@@ -15,6 +16,8 @@ const programRoot = app.isPackaged ? path.dirname(process.execPath) : process.en
 const { root: portableRoot, pointer } = installationPaths(programRoot);
 const trial = app.isPackaged && programRoot !== portableRoot && process.env.CANVAS_STUDIO_TRIAL === path.basename(programRoot);
 const updateFailed = process.env.CANVAS_STUDIO_UPDATE_FAILED === '1';
+let updateReceipt = process.env.CANVAS_STUDIO_UPDATE_RECEIPT;
+delete process.env.CANVAS_STUDIO_UPDATE_RECEIPT;
 delete process.env.CANVAS_STUDIO_TRIAL;
 if (app.isPackaged && !trial && !process.argv.includes('--recover')) {
   try {
@@ -52,7 +55,7 @@ app.setAppLogsPath(path.join(dataDir, 'logs'));
 app.commandLine.appendSwitch('disk-cache-dir', path.join(dataDir, 'cache', 'launcher'));
 app.disableHardwareAcceleration();
 
-let window, runtime, store, updater, quitting = false, installing = false;
+let window, runtime, store, updater, quitting = false, installing = false, queuedVersion = '', checking, updateTimer;
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => { window?.show(); window?.focus(); });
@@ -88,12 +91,16 @@ else {
       chooseFolder: async () => (await choose({ title: '选择 FOR 循环的输入文件夹', properties: ['openDirectory'] }))[0],
       chooseMedia: (kind, multiple) => choose({ title: '选择本机素材', properties: ['openFile', ...(multiple ? ['multiSelections'] : [])], filters: [{ name: '支持的媒体文件', extensions: mediaExtensions[kind] }] }),
     });
-    updater = await new ReleaseUpdater({ dataDir: store.dataDir, currentVersion: app.getVersion(), source: updateSource, fetchImpl: systemFetch }).initialize({ skipPending: trial });
+    updater = await new ReleaseUpdater({ dataDir: store.dataDir, currentVersion: app.getVersion(), source: updateSource, fetchImpl: systemFetch, index: null }).initialize({ skipPending: trial || Boolean(updateReceipt) });
+    if (updateReceipt) updater.update({ phase: 'current', message: `已打开新版 ${app.getVersion()}，正在确认界面就绪…` });
     window = new BrowserWindow({ width: 1120, height: 780, minWidth: 960, minHeight: 680, title: '画布工作台启动器', backgroundColor: '#f6f7fb', autoHideMenuBar: true, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true } });
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     window.webContents.on('will-navigate', event => event.preventDefault());
     const send = (event, value) => { if (window && !window.isDestroyed()) window.webContents.send(event, value); };
-    runtime.on('status', value => send('runtime:status', value)); runtime.on('log', value => send('runtime:logs', value));
+    runtime.on('status', value => {
+      send('runtime:status', value);
+      if (value.phase === 'stopped' && queuedVersion && !installing && !quitting) setTimeout(() => { if (queuedVersion && !installing && !quitting) void installOnce(() => install(updater.staged.path)).catch(error => runtime.log('自动更新：' + error.message)); }, 100);
+    }); runtime.on('log', value => send('runtime:logs', value));
     updater.on('status', value => send('update:status', value));
     const confirmRollback = async version => {
       if (!semver.valid(version)) throw new Error('发行包版本无效');
@@ -104,6 +111,16 @@ else {
     const install = async staged => {
       updater.update({ phase: 'installing', message: '正在写入所选版本的程序文件…' });
       try {
+        const manifest = JSON.parse(await fsp.readFile(path.join(staged, 'package-manifest.json'), 'utf8'));
+        if (manifest.updateProtocol === 2) {
+          await runtime.stop();
+          const job = await prepareSelfUpdate(staged, portableRoot, store.dataDir);
+          await startSelfUpdate(job);
+          queuedVersion = '';
+          updater.update({ phase: 'restarting', message: '正在关闭启动器并自动替换程序，完成后会重新打开…' });
+          setTimeout(() => app.quit(), 300);
+          return updater.status();
+        }
         const prepared = await applyUpdate(staged, portableRoot, store.dataDir);
         await updater.finishInstallation(staged, prepared.version);
         return updater.status();
@@ -117,8 +134,39 @@ else {
       installing = true;
       try { return await action(); } finally { installing = false; }
     };
+    const checkAndUpdate = async (automatic = false) => {
+      if (checking) return checking;
+      if (installing || quitting || automatic && !store.value.autoCheckUpdates) return updater.status();
+      checking = (async () => {
+        await updater.check();
+        const latest = updater.status().versions.find(entry => entry.installable && semver.gt(entry.version, app.getVersion()));
+        if (!latest) return updater.status();
+        if (automatic) {
+          const last = await fsp.readFile(path.join(store.dataDir, 'updates/last-install.json'), 'utf8').then(JSON.parse, () => ({}));
+          if (last.success === false && last.failedVersion === latest.version) { updater.update({ phase: 'error', message: `版本 ${latest.version} 上次启动失败，已恢复原程序。可手动检查更新后重试。` }); return updater.status(); }
+        }
+        await updater.selectVersion(latest.version);
+        await updater.download();
+        if (automatic && !store.value.autoCheckUpdates) return updater.status();
+        if (!['stopped', 'error'].includes(runtime.state.phase)) {
+          queuedVersion = latest.version;
+          updater.update({ phase: 'ready', message: `新版 ${latest.version} 已下载并校验，停止服务后将自动更新并重新打开启动器。` });
+          return updater.status();
+        }
+        return installOnce(() => install(updater.staged.path));
+      })().finally(() => { checking = null; });
+      return checking;
+    };
     const handlers = {
       'app:load': async () => ({ config: store.public(), status: runtime.status(), logs: runtime.lines, update: updater.status(), exports: await exports.settings() }),
+      'app:ready': async () => {
+        if (updateReceipt) {
+          await markUpdateReady(updateReceipt, portableRoot, store.dataDir, app.getVersion());
+          updater.update({ phase: 'current', installedVersion: app.getVersion(), message: `已自动更新至 ${app.getVersion()}，新版启动成功。` });
+        }
+        updateReceipt = '';
+        return true;
+      },
       'runtime:start': () => runtime.start(),
       'runtime:stop': () => runtime.stop(),
       'runtime:force-stop': () => runtime.forceStop(),
@@ -138,7 +186,7 @@ else {
         const result = await dialog.showSaveDialog(window, { title: '导出 Skill', defaultPath: path.join(store.dataDir, 'outputs', skill.name.replace(/[<>:"/\\|?*]/g, '_') + '.md'), filters: [{ name: 'Markdown Skill', extensions: ['md'] }] });
         if (result.canceled) return false; await fsp.writeFile(result.filePath, skill.content, 'utf8'); return true;
       },
-      'config:save': async (_event, value) => { const result = await store.save(value); if (runtime.state.phase === 'running' && value.channels) await runtime.configureCanvas(); return result; },
+      'config:save': async (_event, value) => { const result = await store.save(value); if (value.autoCheckUpdates === false) queuedVersion = ''; if (runtime.state.phase === 'running' && value.channels) await runtime.configureCanvas(); return result; },
       'config:test': (_event, value) => store.testChannel(value),
       'config:runninghub-model': (_event, input) => store.readRunningHubModel(input.id, input.baseUrl),
       'storage:open': () => shell.openPath(store.dataDir),
@@ -154,7 +202,7 @@ else {
         await store.selectDataDir(result.filePaths[0]); app.relaunch(); app.quit(); return true;
       },
       'browser:choose': async () => { const result = await dialog.showOpenDialog(window, { title: '选择浏览器主程序（Chrome、Edge、Firefox 或其他 Chromium 浏览器）', properties: ['openFile'], ...(process.platform === 'win32' ? { filters: [{ name: '浏览器程序', extensions: ['exe'] }] } : {}) }); return result.canceled ? '' : result.filePaths[0]; },
-      'update:check': () => updater.check(),
+      'update:check': () => checkAndUpdate(),
       'update:clear-cache': () => installOnce(async () => {
         const downloads = await updater.clearCache();
         const versions = app.isPackaged && !trial ? await clearInactiveVersions(portableRoot, programRoot, store.dataDir) : 0;
@@ -189,16 +237,18 @@ else {
     };
     for (const [channel, handler] of Object.entries(handlers)) ipcMain.handle(channel, async (event, ...args) => {
       if (event.sender !== window.webContents || !event.senderFrame?.url.startsWith('file:')) throw new Error('请求来源无效');
-      if (installing && !['app:load', 'runtime:force-stop'].includes(channel)) throw new Error('正在安装发行包，请稍候');
+      if ((installing || updater.status().phase === 'restarting') && !['app:load', 'app:ready', 'runtime:force-stop'].includes(channel)) throw new Error('正在安装发行包，请稍候');
       return handler(event, ...args);
     });
     await window.loadFile(path.join(__dirname, 'ui', 'index.html'));
     if (trial) await fsp.writeFile(path.join(programRoot, 'launch-ready'), 'ready', { flag: 'wx' });
     if (updateFailed) void dialog.showMessageBox(window, { type: 'warning', title: '更新未完成', message: '已重新打开原程序', detail: '项目仍在原数据目录。可以在“检查与修复”重试。安装记录位于 ' + path.join(store.dataDir, 'logs', 'update.log') });
-    if (store.value.autoCheckUpdates) setTimeout(() => { if (store.value.autoCheckUpdates && !installing) updater.check().catch(error => runtime.log('检查更新：' + error.message)); }, 2000);
+    const autoUpdate = () => { if (app.isPackaged && !trial && !updateReceipt && store.value.autoCheckUpdates && !installing) void checkAndUpdate(true).catch(error => runtime.log('自动更新：' + error.message)); };
+    setTimeout(autoUpdate, 2000);
+    updateTimer = setInterval(autoUpdate, 30 * 60 * 1000);
   }).catch(error => { dialog.showErrorBox('启动器无法启动', error.message); app.quit(); });
   app.on('before-quit', event => {
-    if (!quitting && runtime) { event.preventDefault(); quitting = true; Promise.allSettled([runtime.stop(), updater?.close()]).finally(() => app.quit()); }
+    if (!quitting && runtime) { event.preventDefault(); quitting = true; clearInterval(updateTimer); Promise.allSettled([runtime.stop(), updater?.close()]).finally(() => app.quit()); }
   });
   app.on('window-all-closed', () => app.quit());
 }

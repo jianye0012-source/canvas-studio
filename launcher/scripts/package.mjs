@@ -36,6 +36,8 @@ await pipeline(nodeEntry.stream(), createWriteStream(path.join(bundle, 'runtime/
 
 const app = path.join(taskWork, 'launcher-app'); await fs.rm(app, { recursive: true, force: true }); await fs.mkdir(app, { recursive: true });
 for (const name of ['main.cjs', 'preload.cjs', 'ui', 'lib', 'package.json', 'package-lock.json', 'update-source.json']) await fs.cp(path.join(sourceRoot, 'launcher', name), path.join(app, name), { recursive: true });
+await fs.mkdir(path.join(app, 'scripts'), { recursive: true });
+await fs.copyFile(path.join(sourceRoot, 'launcher/scripts/update-progress.ps1'), path.join(app, 'scripts/update-progress.ps1'));
 await run('npm', ['ci', '--prefix', app, '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund']);
 const paths = await packager({ dir: app, out: path.join(taskWork, 'packaged'), name: '画布工作台启动器', executableName: '画布工作台启动器', platform: 'win32', arch: 'x64', electronVersion: '45.1.0', appVersion, overwrite: true, asar: false, prune: false, tmpdir: path.join(taskWork, 'tmp'), download: { cacheRoot: path.join(taskWork, 'cache/electron') }, win32metadata: { ProductName: '画布工作台启动器', FileDescription: '本地画布与动态白模创作工作台', CompanyName: 'Canvas Studio' } });
 const packaged = paths[0]; await fs.cp(bundle, path.join(packaged, 'resources/bundle'), { recursive: true });
@@ -48,9 +50,19 @@ for (const [source, target] of [['使用说明.txt', '使用说明.txt'], ['SOUR
 await fs.copyFile(path.join(sourceRoot, 'launcher/恢复原启动器.cmd'), path.join(packaged, '恢复原启动器.cmd'));
 async function zip(output, populate) { const writer = createWriteStream(output); const archive = archiver('zip', { zlib: { level: 6 } }); const finished = new Promise((resolve, reject) => { writer.once('close', resolve); writer.once('error', reject); archive.once('error', reject); }); archive.pipe(writer); populate(archive); await archive.finalize(); await finished; }
 await fs.writeFile(path.join(packaged, 'resources/bundle/bundle-manifest.json'), JSON.stringify({ format: 1, version: appVersion, files: await fileManifest(path.join(packaged, 'resources/bundle'), ['bundle-manifest.json']) }));
-await fs.writeFile(path.join(packaged, 'package-manifest.json'), JSON.stringify({ application: 'canvas-studio', format: 1, platform: 'win32-x64', version: appVersion, files: await fileManifest(packaged, ['package-manifest.json']) }));
+await fs.writeFile(path.join(packaged, 'package-manifest.json'), JSON.stringify({ application: 'canvas-studio', format: 1, updateProtocol: 2, platform: 'win32-x64', version: appVersion, files: await fileManifest(packaged, ['package-manifest.json']) }));
 const output = path.join(outputs, `CanvasStudio-Windows-x64-${appVersion}.zip`);
 await zip(output, archive => archive.directory(packaged, '画布工作台'));
 const digest = crypto.createHash('sha256'); for await (const chunk of createReadStream(output)) digest.update(chunk);
 await fs.writeFile(output + '.sha256', digest.digest('hex') + '  ' + path.basename(output) + '\n');
+const upgrade = path.join(outputs, `CanvasStudio-Launcher-Upgrade-${appVersion}.zip`);
+const upgradeScript = await fs.readFile(path.join(sourceRoot, 'launcher/scripts/upgrade-launcher.ps1'), 'utf8');
+await zip(upgrade, archive => {
+  archive.directory(path.join(packaged, 'resources/app'), 'app');
+  archive.file(path.join(sourceRoot, 'launcher/scripts/Upgrade-Launcher.cmd'), { name: '一键升级启动器.cmd' });
+  archive.file(path.join(sourceRoot, 'launcher/scripts/upgrade-launcher.cjs'), { name: 'upgrade-launcher.cjs' });
+  archive.append('\uFEFF' + upgradeScript, { name: 'upgrade-launcher.ps1' });
+});
+const upgradeDigest = crypto.createHash('sha256'); for await (const chunk of createReadStream(upgrade)) upgradeDigest.update(chunk);
+await fs.writeFile(upgrade + '.sha256', upgradeDigest.digest('hex') + '  ' + path.basename(upgrade) + '\n');
 console.log(output);

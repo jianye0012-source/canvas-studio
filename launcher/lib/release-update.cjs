@@ -129,8 +129,8 @@ class ReleaseUpdater extends EventEmitter {
     if (!releases) releases = await this.readGitHubReleases();
     this.releases = releases;
     const versions = [...releases.keys()].sort(semver.rcompare).map(version => ({ version, publishedAt: releases.get(version).published_at || '', notes: String(releases.get(version).body || '').slice(0, 20000), intent: this.intent(version), installable: this.hasAssets(releases.get(version), version) }));
-    const version = versions[0]?.version || '';
-    this.update({ versions, latestVersion: version });
+    const version = versions.find(entry => entry.installable)?.version || '';
+    this.update({ versions, latestVersion: versions[0]?.version || '' });
     if (!version) { this.update({ phase: this.staged ? 'ready' : 'current', message: this.staged ? '已有校验好的更新，可直接安装' : '尚无公开正式版本，可继续使用当前版本或导入发行包' }); return this.status(); }
     if (this.staged && releases.has(this.staged.version)) return this.prepareVersion(this.staged.version);
     if (this.staged) { this.update({ phase: 'ready', selectedVersion: this.staged.version, intent: this.staged.intent, message: `版本 ${this.staged.version} 已校验，可以安装；也可选择其他正式版本` }); return this.status(); }

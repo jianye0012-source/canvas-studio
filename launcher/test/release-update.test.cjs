@@ -218,7 +218,8 @@ test('中断后按已保存的字节继续下载，正式版标签与安装目�
     assert.equal(options.headers.Range, `bytes=${midpoint}-`);
     return new Response(bytes.subarray(midpoint), { status: 206, headers: { 'content-range': `bytes ${midpoint}-${bytes.length - 1}/${bytes.length}` } });
   };
-  await assert.rejects(() => updater.check(), /缺少/);
+  assert.equal((await updater.check()).phase, 'available');
+  assert.equal(updater.status().versions.find(entry => entry.version === '1.4.0').installable, false);
   await updater.selectVersion('1.3.0');
   await assert.rejects(() => updater.download(), /续传/);
   assert.equal(updater.status().retryDownload, true);
