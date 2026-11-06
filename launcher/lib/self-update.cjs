@@ -81,11 +81,14 @@ async function launch(job, receipt) {
   } catch (error) { await terminateChild(child, true); throw error; }
 }
 async function rollback(job, directory) {
-  for (const name of entries(job.next)) {
+  const plan = JSON.parse(await fs.readFile(path.join(directory, 'plan.json'), 'utf8'));
+  const previous = new Set(entries(job.previous)), next = new Set(entries(job.next));
+  if (!Array.isArray(plan.replace) || !Array.isArray(plan.previous) || plan.replace.some(name => !next.has(name)) || plan.previous.some(name => !previous.has(name))) throw new Error('更新恢复计划无效');
+  for (const name of plan.replace) {
     const target = await safeFile(job.root, name);
     if (target.exists) await fs.rm(target.file);
   }
-  for (const name of entries(job.previous)) {
+  for (const name of plan.previous) {
     const saved = await optional(path.join(directory, 'previous', name));
     if (saved) await copy(path.join(directory, 'previous', name), (await safeFile(job.root, name)).file);
   }
@@ -104,23 +107,37 @@ async function applySelfUpdate(jobFile, { start = launch, cleanup = true } = {})
     await fs.mkdir(path.join(job.dataDir, 'logs'), { recursive: true });
     if (state.phase === 'replacing') throw new Error('上次更新中断，先恢复原程序');
     await verifyManifest(path.join(directory, 'next'), { filename: 'package-manifest.json' });
-    await atomicJson(stateFile, { phase: 'preparing', progress: 5, message: '正在准备替换程序，项目和素材继续保存在原目录。' });
-    for (const name of previous) {
-      const source = await safeFile(job.root, name);
-      if (source.exists) await copy(source.file, path.join(directory, 'previous', name));
-    }
+    const oldEntries = new Map(job.previous.files.map(entry => [entry.path, entry]));
+    const newEntries = new Map(job.next.files.map(entry => [entry.path, entry]));
+    const oldNames = new Set(previous), newNames = new Set(next), replace = [];
     for (const name of next) {
       const target = await safeFile(job.root, name);
-      if (target.exists && !previous.includes(name)) throw new Error('新程序文件与现有额外文件冲突：' + name);
+      if (target.exists && !oldNames.has(name)) throw new Error('新程序文件与现有额外文件冲突：' + name);
+      const old = oldEntries.get(name), entry = newEntries.get(name);
+      if (target.exists && entry && old?.sha256 === entry.sha256) {
+        const hash = crypto.createHash('sha256');
+        for await (const chunk of require('node:fs').createReadStream(target.file)) hash.update(chunk);
+        if (hash.digest('hex') === entry.sha256) continue;
+      }
+      replace.push(name);
+    }
+    const remove = previous.filter(name => !newNames.has(name));
+    const changed = new Set([...replace, ...remove]);
+    const originals = previous.filter(name => changed.has(name));
+    await atomicJson(path.join(directory, 'plan.json'), { replace, previous: originals });
+    await atomicJson(stateFile, { phase: 'preparing', progress: 5, message: '正在准备替换程序，项目和素材继续保存在原目录。' });
+    for (const name of originals) {
+      const source = await safeFile(job.root, name);
+      if (source.exists) await copy(source.file, path.join(directory, 'previous', name));
     }
     await atomicJson(stateFile, { phase: 'replacing', progress: 30, message: '正在替换启动器和工作台程序…' });
     await log(job, '开始替换程序 ' + job.previous.version + ' -> ' + job.next.version);
     let copied = 0;
-    for (const name of next) {
+    for (const name of replace) {
       await copy(path.join(directory, 'next', name), (await safeFile(job.root, name)).file);
-      if (++copied % 200 === 0) await atomicJson(stateFile, { phase: 'replacing', progress: 30 + Math.floor(55 * copied / next.length), message: `正在替换程序文件 ${copied}/${next.length}…` });
+      if (++copied % 200 === 0) await atomicJson(stateFile, { phase: 'replacing', progress: 30 + Math.floor(55 * copied / replace.length), message: `正在替换程序文件 ${copied}/${replace.length}…` });
     }
-    for (const name of previous.filter(name => !next.includes(name))) {
+    for (const name of remove) {
       const target = await safeFile(job.root, name);
       if (target.exists) await fs.rm(target.file);
     }
@@ -132,13 +149,14 @@ async function applySelfUpdate(jobFile, { start = launch, cleanup = true } = {})
     await log(job, '新版界面已就绪，更新完成 ' + job.next.version);
   } catch (error) {
     const current = JSON.parse((await optional(stateFile)) || '{}');
+    if (current.phase === 'complete') throw error;
     if (current.phase === 'replacing') {
       await rollback(job, directory);
-      await atomicJson(stateFile, { phase: 'restored' });
-      await atomicJson(path.join(job.dataDir, 'updates/last-install.json'), { id: job.id, version: job.previous.version, failedVersion: job.next.version, success: false, message: error.message });
-      await log(job, '更新失败，已恢复原程序：' + error.message);
-      await start(job, false);
     }
+    await atomicJson(stateFile, { phase: 'restored' });
+    await atomicJson(path.join(job.dataDir, 'updates/last-install.json'), { id: job.id, version: job.previous.version, failedVersion: job.next.version, success: false, message: error.message });
+    await log(job, '更新失败，已恢复原程序：' + error.message);
+    await start(job, false);
     throw error;
   }
   if (cleanup) {

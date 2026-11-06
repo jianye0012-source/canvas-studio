@@ -88,11 +88,24 @@ test('更新中断后可按事务记录恢复原文件', async t => {
 test('拒绝损坏包、额外文件冲突与伪造界面回执，原程序不变', async t => {
   const { root, dataDir, jobFile } = await fixture(t);
   await fs.writeFile(path.join(root, 'new.dll'), '用户自己的文件');
-  await assert.rejects(applySelfUpdate(jobFile), /现有额外文件冲突/);
+  await assert.rejects(applySelfUpdate(jobFile, { start: async () => {} }), /现有额外文件冲突/);
   assert.equal(await fs.readFile(path.join(root, 'new.dll'), 'utf8'), '用户自己的文件');
   await fs.rm(path.join(root, 'new.dll'));
+  await fs.rm(path.join(path.dirname(jobFile), 'state.json'));
   await fs.writeFile(path.join(path.dirname(jobFile), 'next/new.dll'), '损坏');
-  await assert.rejects(applySelfUpdate(jobFile), /文件大小不匹配|文件校验失败/);
+  await assert.rejects(applySelfUpdate(jobFile, { start: async () => {} }), /文件大小不匹配|文件校验失败/);
   await assert.rejects(markUpdateReady(jobFile, root, dataDir, '9.9.9'), /校验不匹配/);
   assert.equal(await fs.readFile(path.join(root, '画布工作台启动器.exe'), 'utf8'), '1.3.11');
+});
+
+test('相同运行时即使被外部 MCP 占用也不替换或回滚覆盖', async t => {
+  const { root, jobFile } = await fixture(t);
+  const rename = fs.rename;
+  t.mock.method(fs, 'rename', async (from, to) => {
+    if (to === path.join(root, 'resources/bundle/runtime/node.exe')) throw new Error('不应写入未变化的运行时');
+    return rename(from, to);
+  });
+  await assert.rejects(applySelfUpdate(jobFile, { start: async (_job, receipt) => { if (receipt) throw new Error('模拟新版失败'); } }), /模拟新版失败/);
+  assert.equal(await fs.readFile(path.join(root, 'resources/bundle/runtime/node.exe'), 'utf8'), 'node');
+  await assert.rejects(fs.access(path.join(path.dirname(jobFile), 'previous/resources/bundle/runtime/node.exe')), { code: 'ENOENT' });
 });
