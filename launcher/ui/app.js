@@ -87,7 +87,7 @@ function renderRunningHubCatalogue(channel) {
   const result = catalogue && catalogue.baseUrl === runningHubSite(channel) && catalogue;
   section.hidden = !result;
   if (!result) return;
-  $('#runninghub-catalogue-summary').textContent = `从 RunningHub ${result.baseUrl.endsWith('.cn') ? '国内站 .cn' : '国际站 .ai'}读取 ${result.models.length} 个模型条目`;
+  $('#runninghub-catalogue-summary').textContent = `本次联网读取 RunningHub ${result.baseUrl.endsWith('.cn') ? '国内站 .cn' : '国际站 .ai'} ${result.models.length} 个模型条目 · ${new Date(result.fetchedAt).toLocaleTimeString()}`;
   const account = result.account;
   $('#runninghub-account-status').textContent = result.accountError || (account && account.remainMoney !== '' ? `密钥检查通过。钱包余额 ${account.remainMoney} ${account.currency}，RH 币 ${account.remainCoins || '0'}。` : '密钥已通过账户检查。具体模型权限以 RunningHub 提交结果为准。');
   const groups = $('#runninghub-catalogue-groups');
@@ -108,11 +108,11 @@ function renderRunningHubCatalogue(channel) {
       name.textContent = model.name;
       const added = Object.values(channel.runningHubModels || {}).some(spec => spec.docId === model.id);
       row.append(name);
-      if (model.importable && !added) {
+      if (model.importable) {
         const add = document.createElement('button');
         add.type = 'button';
-        add.textContent = '添加';
-        add.setAttribute('aria-label', '添加 ' + model.name);
+        add.textContent = added ? '更新参数' : '添加';
+        add.setAttribute('aria-label', (added ? '更新参数 ' : '添加 ') + model.name);
         add.onclick = async () => {
           const baseUrl = channel.baseUrl;
           add.disabled = true;
@@ -126,7 +126,7 @@ function renderRunningHubCatalogue(channel) {
             if (!channel.models.includes(endpoint)) channel.models.push(endpoint);
             renderModels();
             notice(`已添加 ${spec.name}，请保存配置。`);
-          } catch {} finally { add.disabled = false; add.textContent = '添加'; }
+          } catch {} finally { add.disabled = false; add.textContent = added ? '更新参数' : '添加'; }
         };
         row.append(add);
       } else {
@@ -157,6 +157,9 @@ function renderModels() {
   $('#channel-models').replaceChildren(...channel.models.map(model => {
     const item = document.createElement('li'); const name = document.createElement('span'); name.textContent = model;
     const type = document.createElement('small'); type.textContent = channel.modelToolSupport?.[model] === false ? '文字' : capabilities[channel.modelCapabilities[model]];
+    const latest = runningHubCatalogues.get(channel.id);
+    const listed = runningHub ? latest && latest.baseUrl === runningHubSite(channel) && latest.models.some(entry => entry.importable && entry.id === channel.runningHubModels?.[model]?.docId) : catalogues.has(channel.id) && catalogues.get(channel.id).includes(model);
+    if ((runningHub && latest || !runningHub && catalogues.has(channel.id)) && !listed) type.textContent += ' · 本次目录未返回可用条目';
     const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '移除'; remove.setAttribute('aria-label', '移除模型 ' + model);
     remove.onclick = () => { channel.models = channel.models.filter(entry => entry !== model); if (channel.runningHubModels) delete channel.runningHubModels[model]; repairSelections(); renderModels(); }; item.append(name, type, remove); return item;
   }));
@@ -213,7 +216,7 @@ action('#check-update', 'update:check'); action('#open-releases', 'update:open-r
 $('#auto-check-updates').addEventListener('change', async event => { const enabled = event.target.checked; try { const saved = await invoke('config:save', { autoCheckUpdates: enabled }); config.autoCheckUpdates = saved.autoCheckUpdates; draft.autoCheckUpdates = saved.autoCheckUpdates; } catch { event.target.checked = config.autoCheckUpdates; } });
 action('#import-update', 'update:import');
 $('#model-form').addEventListener('submit', event => { event.preventDefault(); $('#save-models').click(); });
-for (const input of $('#model-form').elements) if (input.name) input.addEventListener('input', () => { const channel = activeChannel(); if (!channel) return; channel[input.name] = input.type === 'checkbox' ? input.checked : input.value; if (input.name === 'apiKey') channel.clearApiKey = false; if (input.name === 'baseUrl' && isRunningHub(channel)) { runningHubCatalogues.delete(channel.id); $('#runninghub-site').value = runningHubSite(channel); renderRunningHubCatalogue(channel); } repairSelections(); renderChannelList(); renderRoleSelectors(); });
+for (const input of $('#model-form').elements) if (input.name) input.addEventListener('input', () => { const channel = activeChannel(); if (!channel) return; channel[input.name] = input.type === 'checkbox' ? input.checked : input.value; if (input.name === 'apiKey') channel.clearApiKey = false; if (['baseUrl', 'apiKey'].includes(input.name)) { catalogues.delete(channel.id); runningHubCatalogues.delete(channel.id); $('#model-list').replaceChildren(); renderRunningHubCatalogue(channel); } if (input.name === 'baseUrl' && isRunningHub(channel)) { runningHubCatalogues.delete(channel.id); $('#runninghub-site').value = runningHubSite(channel); renderRunningHubCatalogue(channel); } repairSelections(); renderChannelList(); renderRoleSelectors(); });
 $('#runninghub-site').addEventListener('change', event => {
   const channel = activeChannel();
   if (!channel || !isRunningHub(channel)) return;
@@ -249,6 +252,8 @@ $('#test-models').onclick = async () => {
   const { baseUrl, protocol, apiKey, clearApiKey } = channel;
   $('#test-models').disabled = true;
   $('#notice').hidden = true;
+  catalogues.delete(channel.id);
+  $('#model-list').replaceChildren();
   if (isRunningHub(channel)) {
     runningHubCatalogues.delete(channel.id);
     renderRunningHubCatalogue(channel);
@@ -265,10 +270,10 @@ $('#test-models').onclick = async () => {
       if (Object.hasOwn(catalogue.modelToolSupport, model)) channel.modelToolSupport[model] = catalogue.modelToolSupport[model];
     }
     const pending = catalogue.models.filter(model => !channel.models.includes(model));
-    catalogues.set(channel.id, pending);
+    catalogues.set(channel.id, catalogue.models);
     if (catalogue.runningHub) runningHubCatalogues.set(channel.id, catalogue.runningHub);
     renderModels();
-    notice(catalogue.runningHub ? `已读取 RunningHub 官方模型目录。 ${catalogue.runningHub.accountError || '可从目录添加多个模型。'}` : `读取到 ${catalogue.models.length} 个模型，自动加入 ${added.length} 个，${pending.length} 个可手动添加。原有选择已保留，请保存配置。`, Boolean(catalogue.runningHub?.accountError));
+    notice(catalogue.runningHub ? `已联网读取 RunningHub 官方模型目录。 ${catalogue.runningHub.accountError || '可从目录添加多个模型，已添加的模型可更新参数。'}` : `本次联网读取 ${catalogue.models.length} 个模型 · ${new Date(catalogue.fetchedAt).toLocaleTimeString()}。新增 ${added.length} 个，${pending.length} 个可手动分类。已配置模型另行保留，请保存配置。`, Boolean(catalogue.runningHub?.accountError));
   } catch {} finally {
     $('#test-models').disabled = false;
     const current = activeChannel();

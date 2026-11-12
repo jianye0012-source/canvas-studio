@@ -34,10 +34,23 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force work/tmp | Out-Null
-          node --test launcher/test/process-control.test.cjs launcher/test/self-update.test.cjs launcher/test/model-3d-tasks.test.cjs launcher/test/runninghub-standard.test.cjs
+          node --test launcher/test/process-control.test.cjs launcher/test/self-update.test.cjs launcher/test/model-3d-tasks.test.cjs launcher/test/runninghub-standard.test.cjs launcher/test/native-picker.test.cjs
           exit $LASTEXITCODE
       - name: Build portable package
         run: node launcher/scripts/package.mjs
+      - name: Verify packaged native picker and live catalogue on Windows
+        shell: pwsh
+        run: |
+          node launcher/test/native-picker-smoke.cjs --packaged
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node launcher/test/live-models-launcher.cjs
+          exit $LASTEXITCODE
+        env:
+          TMPDIR: ${{ github.workspace }}/work/tmp
+      - name: Verify media selection and reference requests on Windows
+        run: node launcher/test/media-reference-smoke.cjs
+        env:
+          TMPDIR: ${{ github.workspace }}/work/tmp
       - name: Verify portable projects on isolated Windows workspaces
         run: node launcher/test/portable-browser-smoke.cjs
         env:

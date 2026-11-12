@@ -1,4 +1,5 @@
 const { endpointPattern, imageFields, normalizeModel, parseModel, parameters } = require('./runninghub-schema.cjs');
+const { randomUUID } = require('node:crypto');
 
 const protocol = 'runninghub-standard';
 const model = 'rhart-image-g-2/image-to-image';
@@ -63,7 +64,9 @@ async function checkAccount(channel, options) {
 
 async function readPublic(url, fetchImpl, label) {
   try {
-    const response = await fetchImpl(url, { cache: 'no-store', credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(15000) });
+    const fresh = new URL(url);
+    fresh.searchParams.set('_canvasFresh', randomUUID());
+    const response = await fetchImpl(fresh.href, { cache: 'no-store', headers: { 'Cache-Control': 'no-cache, no-store, max-age=0', Pragma: 'no-cache' }, credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(15000) });
     if (!response.ok) throw new Error('HTTP ' + response.status);
     return await response.text();
   } catch (error) {
@@ -91,7 +94,7 @@ async function detect(channel, { fetchImpl, catalogueFetch = fetchImpl, keyUnava
     readCatalogue(baseUrl, catalogueFetch),
     keyUnavailable ? { error: '该渠道密钥无法解密，请重新填写' } : checkAccount(channel, { fetchImpl }).then(data => ({ data }), error => ({ error: error.message })),
   ]);
-  return { models: [], modelCapabilities: {}, modelToolSupport: {}, runningHub: { models, baseUrl, account: account.data, accountError: account.error || '' } };
+  return { models: [], modelCapabilities: {}, modelToolSupport: {}, fetchedAt: Date.now(), runningHub: { models, baseUrl, fetchedAt: Date.now(), account: account.data, accountError: account.error || '' } };
 }
 
 async function loadModel(id, catalogue, fetchImpl) {
@@ -173,4 +176,4 @@ async function callStandardVideo(channel, input, options) {
   return { id, task_id: id, status: state === 'RUNNING' ? 'running' : 'queued' };
 }
 
-module.exports = { protocol, model, baseURL, normalizeRunningHubURL, detect, loadModel, configuredModels, callStandardImage, callStandardVideo, submit3D: (channel, input, options) => submit(channel, input, '3d', options), query };
+module.exports = { protocol, model, baseURL, normalizeRunningHubURL, detect, readCatalogue, loadModel, configuredModels, callStandardImage, callStandardVideo, submit3D: (channel, input, options) => submit(channel, input, '3d', options), query };

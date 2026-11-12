@@ -17,13 +17,14 @@ export function CanvasNodeReferenceBar({ nodeId, connectedNodes, onDisconnect, o
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision, getImagePreviewRevision);
     return (
         <div className="mb-2">
-            <div className="mb-1.5 text-[11px] font-medium" style={{ color: theme.node.muted }}>参考内容</div>
+            <div className="mb-1.5 text-[11px] font-medium" style={{ color: theme.node.muted }}>参考内容{references.length ? ` · ${references.length}` : ''}</div>
             <div className="thin-scrollbar flex min-h-12 gap-2 overflow-x-auto pb-1">
                 {references.map((reference) => <ReferenceItem key={reference.id} reference={reference} onRemove={() => onDisconnect?.(reference.nodeId, nodeId)} />)}
-                <button type="button" className="grid size-12 shrink-0 place-items-center rounded-xl border bg-transparent transition hover:opacity-70" style={{ borderColor: theme.toolbar.border, color: theme.node.muted }} title="从画布选择参考节点" onClick={() => onStartSelection?.(nodeId)}>
+                <button type="button" className="grid size-12 shrink-0 place-items-center rounded-xl border bg-transparent transition hover:opacity-70" style={{ borderColor: theme.toolbar.border, color: theme.node.muted }} aria-label="从画布选择参考节点" title="从画布选择参考节点" onClick={() => onStartSelection?.(nodeId)}>
                     <Plus className="size-4" />
                 </button>
             </div>
+            {!references.length && <p className="text-[11px]" style={{ color: theme.node.muted }}>点击＋，在画布选择已有素材作为参考</p>}
         </div>
     );
 }

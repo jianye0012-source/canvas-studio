@@ -11,6 +11,42 @@ const officialIndex = [
   '- Task Query & webhook [Query](https://www.runninghub.ai/runninghub-api-doc-en/api-1234.md):',
 ].join('\n');
 
+test('读取已添加的 RunningHub 模型前重新拉取目录，失效模型不使用缓存', async () => {
+  const baseUrl = 'https://www.runninghub.cn';
+  let available = true;
+  const reads = [];
+  const store = new ConfigStore('', null, null, async (url, request) => {
+    reads.push(url);
+    assert.equal(request.cache, 'no-store');
+    assert.match(request.headers['Cache-Control'], /no-cache/);
+    const pathname = new URL(url).pathname;
+    if (pathname.endsWith('/llms.txt')) return new Response(`- 模型API > 图像生成与处理 > image-to-image [${available ? '当前模型' : '新模型'}](${baseUrl}/runninghub-api-doc-cn/api-${available ? '123' : '456'}.md):`);
+    const schema = { required: ['prompt'], properties: { prompt: { type: 'string' } } };
+    const definition = { paths: { '/openapi/v2/current/image-to-image': { post: { requestBody: { content: { 'application/json': { schema } } } } } } };
+    return new Response(['# 当前模型', '```yaml', JSON.stringify(definition), '```'].join('\n'));
+  });
+  await store.readRunningHubModel('123', baseUrl);
+  available = false;
+  await assert.rejects(store.readRunningHubModel('123', baseUrl), /请先检测/);
+  const catalogues = reads.filter(url => new URL(url).pathname.endsWith('/llms.txt'));
+  assert.equal(catalogues.length, 2); assert.notEqual(catalogues[0], catalogues[1]);
+});
+
+test('OpenAI 兼容渠道每次检测联网读取模型，失败直接报错', async () => {
+  let version = 0;
+  const store = new ConfigStore('', null, null, async (_url, request) => {
+    assert.equal(request.cache, 'no-store'); assert.equal(request.credentials, 'omit');
+    assert.match(request.headers['Cache-Control'], /no-cache/);
+    version++;
+    return version === 3 ? new Response(null, { status: 503 }) : Response.json({ data: [{ id: 'gpt-live-' + version }] });
+  });
+  store.value = validateConfig({ channels: [] });
+  const channel = { id: 'live', name: '实时渠道', baseUrl: 'https://example.com', apiKey: 'test-key', models: [], modelCapabilities: {} };
+  assert.deepEqual((await store.testChannel(channel)).models, ['gpt-live-1']);
+  assert.deepEqual((await store.testChannel(channel)).models, ['gpt-live-2']);
+  await assert.rejects(store.testChannel(channel), /503/);
+});
+
 test('RunningHub 保留国内和国际站地址，拒绝外部域名、端口、凭据和跳转参数', () => {
   for (const site of ['cn', 'ai']) {
     const root = 'https://www.runninghub.' + site;
@@ -30,17 +66,18 @@ test('国内目录、模型参数、账户、上传、提交和查询使用同�
   const store = new ConfigStore('', null, null, async (url, request) => {
     calls.push(url);
     const cn = new URL(url).hostname.endsWith('.cn');
-    if (url.endsWith('/llms.txt')) return new Response(`- ${cn ? '模型API > 图像生成与处理' : 'Standard Model API > Image Generation & Processing'} > text-to-image [${cn ? '悠船' : 'Other'}](https://www.runninghub.${cn ? 'cn/runninghub-api-doc-cn' : 'ai/runninghub-api-doc-en'}/api-123.md):`);
-    if (url.endsWith('.md')) {
-      assert.equal(request.headers, undefined);
+    if (new URL(url).pathname.endsWith('/llms.txt')) return new Response(`- ${cn ? '模型API > 图像生成与处理' : 'Standard Model API > Image Generation & Processing'} > text-to-image [${cn ? '悠船' : 'Other'}](https://www.runninghub.${cn ? 'cn/runninghub-api-doc-cn' : 'ai/runninghub-api-doc-en'}/api-123.md):`);
+    if (new URL(url).pathname.endsWith('.md')) {
+      assert.equal(request.headers.authorization, undefined);
+      assert.match(request.headers['Cache-Control'], /no-cache/);
       const schema = { required: ['prompt'], properties: { prompt: { type: 'string' } } };
       const definition = { paths: { ['/openapi/v2/' + (cn ? endpoint : 'example/text-to-image')]: { post: { requestBody: { content: { 'application/json': { schema } } } } } } };
       return new Response(['# 测试模型', '\x60\x60\x60yaml', JSON.stringify(definition), '\x60\x60\x60'].join('\n'));
     }
     assert.equal(request.headers.authorization, 'Bearer ' + key);
     assert.equal(request.credentials, 'omit');
-    if (url.endsWith('/accountStatus')) return Response.json({ code: 0, data: { remainMoney: cn ? '0.00' : '8.00', remainCoins: '0', currency: 'CNY' } });
-    if (url.endsWith('/media/upload/binary')) return Response.json({ code: 0, data: { download_url: 'https://cdn.example.org/reference.png' } });
+    if (new URL(url).pathname.endsWith('/accountStatus')) return Response.json({ code: 0, data: { remainMoney: cn ? '0.00' : '8.00', remainCoins: '0', currency: 'CNY' } });
+    if (new URL(url).pathname.endsWith('/media/upload/binary')) return Response.json({ code: 0, data: { download_url: 'https://cdn.example.org/reference.png' } });
     return Response.json({ taskId: '321', status: 'RUNNING' });
   });
   store.value = validateConfig({ channels: [] });
@@ -73,8 +110,8 @@ test('RunningHub 检测联网读取并分类官方目录，账户密钥只发送
   let index = officialIndex;
   const store = new ConfigStore('', null, null, async (url, request) => {
     calls.push({ url, request });
-    if (url.endsWith('/llms.txt')) return new Response(index);
-    return Response.json(url.endsWith('/v1/models') ? { data: [{ id: 'other-model' }] } : { code: 0, data: { apiType: 'NORMAL' } });
+    if (new URL(url).pathname.endsWith('/llms.txt')) return new Response(index);
+    return Response.json(new URL(url).pathname.endsWith('/v1/models') ? { data: [{ id: 'other-model' }] } : { code: 0, data: { apiType: 'NORMAL' } });
   });
   store.value = validateConfig({ channels: [] });
   const result = await store.testChannel(channel);
@@ -82,8 +119,9 @@ test('RunningHub 检测联网读取并分类官方目录，账户密钥只发送
   assert.deepEqual(result.runningHub.models.map(({ type, importable }) => [type, importable]), [['image', true], ['video', true], ['3d', false], ['3d', true]]);
   assert.equal(result.runningHub.models[2].name, '3D [Deprecated]');
   assert.equal(result.runningHub.accountError, '');
-  assert.equal(calls[0].url, 'https://www.runninghub.ai/runninghub-api-doc-en/llms.txt');
-  assert.equal(calls[0].request.headers, undefined);
+  assert.equal(calls[0].url.split('?')[0], 'https://www.runninghub.ai/runninghub-api-doc-en/llms.txt');
+  assert.ok(new URL(calls[0].url).searchParams.get('_canvasFresh'));
+  assert.equal(calls[0].request.headers.authorization, undefined);
   assert.equal(calls[0].request.cache, 'no-store');
   assert.equal(calls[0].request.credentials, 'omit');
   assert.equal(calls[1].url, 'https://www.runninghub.ai/uc/openapi/accountStatus');
@@ -105,7 +143,7 @@ test('RunningHub 目录可独立展示，读取失败不会返回内置目录或
   const channel = { id: 'rh', name: 'RunningHub', protocol, baseUrl: 'https://www.runninghub.ai', models: [model] };
   let fail = false;
   const store = new ConfigStore('', null, null, async url => {
-    if (!url.endsWith('/llms.txt')) return new Response(null, { status: 401 });
+    if (!new URL(url).pathname.endsWith('/llms.txt')) return new Response(null, { status: 401 });
     return new Response(fail ? '维护中' : officialIndex);
   });
   store.value = validateConfig({ channels: [channel], imageChannelId: channel.id, imageModel: model });
@@ -167,10 +205,11 @@ test('同一 RunningHub 渠道按官方参数添加多个模型，生成走各�
   };
   const calls = [];
   const store = new ConfigStore('', null, null, async (url, request) => {
-    if (url.endsWith('/llms.txt')) return new Response(officialIndex);
-    const doc = docs[url.split('/').at(-1)];
+    if (new URL(url).pathname.endsWith('/llms.txt')) return new Response(officialIndex);
+    const doc = docs[new URL(url).pathname.split('/').at(-1)];
     if (doc) {
-      assert.equal(request.headers, undefined);
+      assert.equal(request.headers.authorization, undefined);
+      assert.match(request.headers['Cache-Control'], /no-cache/);
       const [endpoint, required, properties] = doc;
       const definition = { paths: { ['/openapi/v2/' + endpoint]: { post: { requestBody: { content: { 'application/json': { schema: { required, properties } } } } } } } };
       return new Response(['# 测试模型', '', '\x60\x60\x60yaml', JSON.stringify(definition), '\x60\x60\x60'].join('\n'));
@@ -180,8 +219,8 @@ test('同一 RunningHub 渠道按官方参数添加多个模型，生成走各�
   const input = { id: 'rh', name: 'RunningHub', protocol, baseUrl: 'https://www.runninghub.ai', apiKey: 'fixture-key' };
   store.value = validateConfig({ channels: [] });
   await store.testChannel(input);
-  await assert.rejects(() => store.readRunningHubModel('456'), /请选择|请先检测/);
-  const specs = await Promise.all(['448184504', '123'].map(id => store.readRunningHubModel(id)));
+  await assert.rejects(() => store.readRunningHubModel('456', 'https://www.runninghub.ai'), /请选择|请先检测/);
+  const specs = await Promise.all(['448184504', '123'].map(id => store.readRunningHubModel(id, 'https://www.runninghub.ai')));
   const channel = validateConfig({
     channels: [{ ...input, models: [model, textModel, videoModel], runningHubModels: Object.fromEntries(specs.map(({ endpoint, ...spec }) => [endpoint, spec])) }],
     imageChannelId: 'rh', imageModel: model, videoChannelId: 'rh', videoModel,

@@ -24,12 +24,16 @@ async function bodyJson(req, limit = 1024 * 1024) {
 function jsonEqual(a, b) { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); }
 
 class Gateway {
-  constructor({ store, root, apiPort, webPort, cozyPort, livePort, serviceToken, providerToken, log, chooseFolder, chooseMedia, chooseOutput }) {
-    Object.assign(this, { store, root, apiPort, webPort, cozyPort, livePort, serviceToken, providerToken, log });
+  constructor({ store, root, apiPort, webPort, cozyPort, livePort, serviceToken, providerToken, log, chooseFolder, chooseMedia, chooseOutput, cancelPicker }) {
+    Object.assign(this, { store, root, apiPort, webPort, cozyPort, livePort, serviceToken, providerToken, log, cancelPicker });
     this.bootstrap = crypto.randomBytes(32).toString('hex');
     this.cookie = crypto.randomBytes(32).toString('hex');
     this.proxy = proxyFactory.createProxyServer({ ws: true, proxyTimeout: 0, timeout: 0 });
-    this.proxy.on('error', (e, req, res) => { log(`本机连接失败：${e.message}`); if (res.writeHead && !res.headersSent) json(res, 502, { code: 1, msg: '本地服务未就绪，请查看启动器日志' }); else res.destroy(); });
+    this.proxy.on('error', (e, req, res) => {
+      const message = req.canvasModelChannel ? `模型渠道「${req.canvasModelChannel}」连接失败，请核对接口地址、网络和系统代理` : '本地服务未就绪，请查看启动器日志';
+      log(`${message}：${e.message}`);
+      if (res.writeHead && !res.headersSent) json(res, 502, { code: 1, msg: message }); else res.destroy();
+    });
     this.writes = new Map();
     this.sockets = new Set();
     this.bridge = new CanvasBridge();
@@ -162,6 +166,7 @@ class Gateway {
       else return json(res, 405, { msg: '不支持的操作' });
       return json(res, 200, { ok: true });
     }
+    if (url.pathname === '/local/picker/cancel' && req.method === 'POST') { await this.cancelPicker?.(); return json(res, 200, { canceled: true }); }
     if (url.pathname === '/local/folders/select' && req.method === 'POST') return json(res, 200, await this.folders.select());
     const folderRoute = url.pathname.match(/^\/local\/folders\/([a-f0-9-]+)(\/(?:import|preview))?$/);
     if (folderRoute) {
@@ -337,11 +342,12 @@ class Gateway {
     }
     if (!/^\/(chat\/completions|responses|images\/(generations|edits)|videos(?:\/[^/?]+(?:\/content)?)?|audio\/(speech|transcriptions)|models)(?:\?|$)/.test(route)) return json(res, 404, { error: { message: '不支持的模型接口' } });
     req.url = '/v1' + route + url.search;
+    req.canvasModelChannel = channel.name;
     delete req.headers.cookie; delete req.headers.origin; delete req.headers.referer;
     if (channel.apiKey) req.headers.authorization = `Bearer ${channel.apiKey}`; else delete req.headers.authorization;
     return this.proxy.web(req, res, { target: channel.baseUrl, changeOrigin: true, secure: true, ...(buffer ? { buffer } : {}) });
   }
-  async close({ force = false } = {}) { this.bridge.close(); await this.model3D.close(); if (!force) await Promise.race([Promise.allSettled([...this.writes.values()]), require('node:timers/promises').setTimeout(2000, undefined, { ref: false })]); this.proxy.close(); for (const socket of this.sockets) socket.destroy(); this.server?.closeAllConnections(); await new Promise(resolve => this.server ? this.server.close(resolve) : resolve()); }
+  async close({ force = false } = {}) { this.bridge.close(); await this.cancelPicker?.(); await this.model3D.close(); if (!force) await Promise.race([Promise.allSettled([...this.writes.values()]), require('node:timers/promises').setTimeout(2000, undefined, { ref: false })]); this.proxy.close(); for (const socket of this.sockets) socket.destroy(); this.server?.closeAllConnections(); await new Promise(resolve => this.server ? this.server.close(resolve) : resolve()); }
 }
 
 module.exports = { Gateway, bodyJson };

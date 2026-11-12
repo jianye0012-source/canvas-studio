@@ -29,7 +29,7 @@ import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { UserStatusActions } from "@/components/layout/user-status-actions";
 import { isKIEKlingV3Config, kieKlingOmniVariant } from "@/components/video-settings-panel";
 import { useAssetStore } from "@/stores/use-asset-store";
-import { autoExportLocalMedia, clearCanvasEditor, desktopAssetId, openCanvasEditor, pickNativeMedia, setCanvasEditor, type LoopProgress } from "@/services/api/local-workspace";
+import { autoExportLocalMedia, cancelNativePicker, clearCanvasEditor, desktopAssetId, openCanvasEditor, pickNativeMedia, setCanvasEditor, type LoopProgress } from "@/services/api/local-workspace";
 import { useUserStore } from "@/stores/use-user-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "../utils/canvas-image-data";
@@ -471,6 +471,12 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     const autoExports = useRef(new Set<string>());
     const [uploadChoice, setUploadChoice] = useState<{ nodeId?: string; position?: Position } | null>(null);
     const [nativePickerBusy, setNativePickerBusy] = useState(false);
+    const nativePickerController = useRef<AbortController | null>(null);
+    useEffect(() => () => {
+        if (!nativePickerController.current) return;
+        nativePickerController.current.abort();
+        void cancelNativePicker().catch(() => {});
+    }, []);
 
     const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null);
     const [nodeImageSettingsOpen, setNodeImageSettingsOpen] = useState(false);
@@ -3128,18 +3134,28 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         void processPickedMedia(files, target);
     };
     const openNativePicker = async () => {
-        if (!uploadChoice || nativePickerBusy) return;
+        if (!uploadChoice || nativePickerController.current) return;
         const target = uploadChoice;
         const node = nodesRef.current.find(item => item.id === target.nodeId);
+        const controller = new AbortController();
+        nativePickerController.current = controller;
         setNativePickerBusy(true);
         try {
-            const files = await pickNativeMedia(isPanoramaNodeType(node?.type) ? "image" : "media", !target.nodeId);
+            const files = await pickNativeMedia(isPanoramaNodeType(node?.type) ? "image" : "media", !target.nodeId, controller.signal);
+            controller.signal.throwIfAborted();
             if (files.length) {
                 setUploadChoice(null);
                 await processPickedMedia(files, target);
             }
-        } catch (error) { message.error((error as Error).message); }
-        finally { setNativePickerBusy(false); }
+        } catch (error) { if (!controller.signal.aborted) message.error((error as Error).message); }
+        finally { if (nativePickerController.current === controller) { nativePickerController.current = null; setNativePickerBusy(false); } }
+    };
+    const cancelMediaPicker = () => {
+        if (!nativePickerController.current) return;
+        nativePickerController.current.abort();
+        nativePickerController.current = null;
+        setNativePickerBusy(false);
+        void cancelNativePicker().catch(error => message.error(error.message));
     };
 
     function insertAssetAt(payload: InsertAssetPayload, position?: Position, nodeId?: string) {
@@ -4787,7 +4803,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                             }
                             renderNodeContent={(contentNode) =>
                                 contentNode.type === CanvasNodeType.FolderLoop ? (
-                                    <CanvasFolderLoopPanel node={contentNode} active={folderLoops.active.includes(contentNode.id)} progress={folderLoops.importing?.id === contentNode.id ? folderLoops.importing.percent : undefined} onSelect={recursive => { void folderLoops.select(contentNode.id, recursive); }} onRun={retry => { void folderLoops.run(contentNode.id, retry); }} onPause={() => folderLoops.pause(contentNode.id)} />
+                                    <CanvasFolderLoopPanel node={contentNode} active={folderLoops.active.includes(contentNode.id)} progress={folderLoops.importing?.id === contentNode.id ? folderLoops.importing.percent : undefined} onSelect={recursive => folderLoops.select(contentNode.id, recursive)} onRun={retry => { void folderLoops.run(contentNode.id, retry); }} onPause={() => folderLoops.pause(contentNode.id)} />
                                 ) : contentNode.type === CanvasNodeType.Director ? (
                                     <CanvasDirectorNodePanel onOpen={() => setOpenDirectorNodeId(contentNode.id)} />
                                 ) : (
@@ -5014,10 +5030,11 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                         </button>
                     </div>
                 ) : null}
-                <Modal title="添加本机文件" open={Boolean(uploadChoice)} onCancel={() => setUploadChoice(null)} footer={null} width={420} closable={!nativePickerBusy} maskClosable={!nativePickerBusy}>
+                <Modal title="添加本机文件" open={Boolean(uploadChoice)} onCancel={() => { cancelMediaPicker(); setUploadChoice(null); }} footer={null} width={420}>
                     <div className="flex flex-wrap gap-2 py-3">
-                        <Button type="primary" disabled={nativePickerBusy} onClick={() => { if (uploadChoice) openBrowserPicker(uploadChoice); setUploadChoice(null); }}>选择文件</Button>
+                        <Button type="primary" onClick={() => { cancelMediaPicker(); if (uploadChoice) openBrowserPicker(uploadChoice); setUploadChoice(null); }}>选择文件</Button>
                         <Button loading={nativePickerBusy} onClick={() => void openNativePicker()}>用本机窗口选择</Button>
+                        {nativePickerBusy && <Button onClick={cancelMediaPicker}>取消本机选择</Button>}
                     </div>
                 </Modal>
                 <input ref={imageInputRef} type="file" accept="image/*,video/*,audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav" className="hidden" onChange={handleImageInputChange} />

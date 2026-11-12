@@ -36,7 +36,17 @@ export function LocalModelSettings() {
     const runningHub = active?.protocol === 'runninghub-standard';
     const runningHubCatalogue = runningHub ? runningHubCatalogues[activeId] : undefined;
     const replaceChannels = (channels: LocalChannel[]) => setConfig(current => current && validSelections({ ...current, channels }));
-    const updateChannel = (patch: Partial<LocalChannel>) => { if (config) replaceChannels(config.channels.map(channel => channel.id === activeId ? { ...channel, ...patch } : channel)); };
+    const updateChannel = (patch: Partial<LocalChannel>) => {
+        if (!config) return;
+        if (['baseUrl', 'apiKey', 'protocol'].some(key => Object.hasOwn(patch, key))) {
+            setCatalogues(current => { const next = { ...current }; delete next[activeId]; return next; });
+            setRunningHubCatalogues(current => ({ ...current, [activeId]: undefined }));
+        }
+        replaceChannels(config.channels.map(channel => channel.id === activeId ? { ...channel, ...patch } : channel));
+    };
+    const missingFromLatest = (model: string) => runningHub
+        ? Boolean(runningHubCatalogue && !runningHubCatalogue.models.some(entry => entry.importable && entry.id === active?.runningHubModels?.[model]?.docId))
+        : Object.hasOwn(catalogues, activeId) && !catalogues[activeId].includes(model);
     const addChannel = () => {
         if (!config) return;
         const id = crypto.randomUUID();
@@ -53,6 +63,7 @@ export function LocalModelSettings() {
         if (!active) return;
         setTesting(true);
         setMessage('');
+        setCatalogues(current => { const next = { ...current }; delete next[active.id]; return next; });
         if (runningHub) setRunningHubCatalogues(current => ({ ...current, [active.id]: undefined }));
         try {
             const catalogue = await testLocalChannel(active);
@@ -66,9 +77,9 @@ export function LocalModelSettings() {
             }
             const pending = catalogue.models.filter(model => !models.includes(model));
             updateChannel({ models, modelCapabilities, modelToolSupport });
-            setCatalogues(current => ({ ...current, [active.id]: pending }));
+            setCatalogues(current => ({ ...current, [active.id]: catalogue.models }));
             if (catalogue.runningHub) setRunningHubCatalogues(current => ({ ...current, [active.id]: catalogue.runningHub }));
-            setMessage(catalogue.runningHub ? (added.length ? '已加入适配模型，请保存配置。' : '已读取 RunningHub 官方模型目录。') : `读取到 ${catalogue.models.length} 个模型，自动加入 ${added.length} 个，${pending.length} 个可手动添加。原有选择已保留，请保存配置。`);
+            setMessage(catalogue.runningHub ? '已联网读取 RunningHub 官方目录。已添加的模型可更新参数。' : `本次联网读取 ${catalogue.models.length} 个模型 · ${new Date(catalogue.fetchedAt).toLocaleTimeString()}。新增 ${added.length} 个，${pending.length} 个可手动分类。已配置模型另行保留，请保存配置。`);
         } catch (error) { setMessage(error instanceof Error ? error.message : '连接失败'); }
         finally { setTesting(false); }
     };
@@ -101,7 +112,7 @@ export function LocalModelSettings() {
                     <label className="block text-sm">渠道名称<input className={fieldClass} value={active.name} onChange={event => updateChannel({ name: event.target.value })} /></label>
                     <label className="block text-sm">渠道类型<select className={fieldClass} value={active.protocol || 'openai'} onChange={event => {
                         const standard = event.target.value === 'runninghub-standard';
-                        updateChannel({ protocol: standard ? 'runninghub-standard' : 'openai', baseUrl: standard ? 'https://www.runninghub.ai' : '', models: [], modelCapabilities: {}, modelToolSupport: {}, runningHubModels: {} });
+                        updateChannel({ protocol: standard ? 'runninghub-standard' : 'openai', baseUrl: standard ? 'https://www.runninghub.cn' : '', models: [], modelCapabilities: {}, modelToolSupport: {}, runningHubModels: {} });
                         setCatalogues(current => ({ ...current, [active.id]: [] }));
                         setRunningHubCatalogues(current => ({ ...current, [active.id]: undefined }));
                         setModelName('');
@@ -111,13 +122,14 @@ export function LocalModelSettings() {
                     {active.keyUnavailable && <p role="alert" className="text-sm">此渠道密钥无法解密，请重新填写或清除。</p>}
                     <div className="flex flex-wrap gap-2"><button type="button" disabled={testing} className={buttonClass} onClick={readModels}>{testing ? '正在连接…' : runningHub ? '检测渠道并读取模型' : '测试此渠道 / 读取模型'}</button><button type="button" className={buttonClass} onClick={() => { updateChannel({ apiKey: '', clearApiKey: true, hasApiKey: false }); setMessage('该渠道密钥将于保存时清除。'); }}>清除此渠道密钥</button></div>
                     {runningHub ? <p className="text-sm opacity-60">展开图片、视频或 3D 目录，点击「添加」读取该模型的官方参数。每个渠道可保存多个模型。文字和白模导演使用 OpenAI 兼容渠道。</p> : <div className="border-t border-current/10 pt-4"><p className="mb-2 text-sm opacity-60">无法识别类型的模型可从列表选取并手动分类。</p><div className="flex flex-wrap items-end gap-2"><label className="min-w-36 flex-1 text-sm">模型名称<input className={fieldClass} list={listId} value={modelName} onChange={event => setModelName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addModel(); } }} /></label><label className="text-sm">类型<select aria-label="类型" className={fieldClass} value={capability} onChange={event => setCapability(event.target.value as keyof typeof capabilityLabels)}>{Object.entries(capabilityLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><button type="button" className={buttonClass} onClick={addModel}>加入模型</button></div><datalist id={listId}>{(catalogues[active.id] || []).map(model => <option key={model} value={model} />)}</datalist></div>}
-                    <ul className="space-y-2" aria-label="此渠道的模型">{active.models.map(model => <li key={model} className="flex items-center gap-3 text-sm"><span className="min-w-0 flex-1 break-all">{model}</span><span className="opacity-60">{active.modelToolSupport?.[model] === false ? '文字' : active.modelCapabilities[model] === '3d' ? '3D 模型' : capabilityLabels[active.modelCapabilities[model] as keyof typeof capabilityLabels]}</span><button type="button" aria-label={`移除模型 ${model}`} className={buttonClass} onClick={() => {
+                    <h4 className="text-sm font-medium">已配置模型</h4>
+                    <ul className="space-y-2" aria-label="此渠道的模型">{active.models.map(model => <li key={model} className="flex items-center gap-3 text-sm"><span className="min-w-0 flex-1 break-all">{model}{missingFromLatest(model) && <small className="block opacity-60">本次目录未返回可用条目</small>}</span><span className="opacity-60">{active.modelToolSupport?.[model] === false ? '文字' : active.modelCapabilities[model] === '3d' ? '3D 模型' : capabilityLabels[active.modelCapabilities[model] as keyof typeof capabilityLabels]}</span><button type="button" aria-label={`移除模型 ${model}`} className={buttonClass} onClick={() => {
                         const runningHubModels = { ...active.runningHubModels };
                         delete runningHubModels[model];
                         updateChannel({ models: active.models.filter(entry => entry !== model), runningHubModels });
                     }}>移除</button></li>)}</ul>
                     {runningHubCatalogue && <section aria-label="RunningHub 官方模型目录" className="space-y-2 rounded-md border border-current/15 p-3 text-sm">
-                        <h4 className="font-medium">从 RunningHub 官方目录读取 {runningHubCatalogue.models.length} 个模型条目</h4>
+                        <h4 className="font-medium">本次联网读取 RunningHub 官方目录 {runningHubCatalogue.models.length} 个模型条目 · {new Date(runningHubCatalogue.fetchedAt).toLocaleTimeString()}</h4>
                         <p className="opacity-70">{runningHubCatalogue.accountError || '密钥已通过账户检查。具体模型权限以 RunningHub 提交结果为准。'}</p>
                         {Object.entries(runningHubTypes).map(([type, label]) => {
                             const models = runningHubCatalogue.models.filter(model => model.type === type);
@@ -127,7 +139,7 @@ export function LocalModelSettings() {
                                     const added = Object.values(active.runningHubModels || {}).some(spec => spec.docId === model.id);
                                     return <li key={model.id} className="flex items-center justify-between gap-3 border-b border-current/10 py-1.5">
                                         <span className="min-w-0 break-all">{model.name}</span>
-                                        {model.importable && !added ? <button type="button" aria-label={`添加 ${model.name}`} className={buttonClass} onClick={() => void addRunningHubModel(model.id)}>添加</button> : <span className="shrink-0 text-xs opacity-70">{added ? '已添加' : '目录预览'}</span>}
+                                        {model.importable ? <button type="button" aria-label={`${added ? '更新参数' : '添加'} ${model.name}`} className={buttonClass} onClick={() => void addRunningHubModel(model.id)}>{added ? '更新参数' : '添加'}</button> : <span className="shrink-0 text-xs opacity-70">目录预览</span>}
                                     </li>;
                                 })}
                             </ul></details>;

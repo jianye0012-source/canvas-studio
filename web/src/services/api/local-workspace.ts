@@ -20,14 +20,15 @@ async function localRequest<T>(url: string, options?: RequestInit): Promise<T> {
     if (!response.ok) throw new Error(value.msg || '本机服务请求失败'); return value;
 }
 export const selectLoopFolder = () => localRequest<FolderSelection | null>('/local/folders/select', { method: 'POST' });
+export const cancelNativePicker = () => localRequest('/local/picker/cancel', { method: 'POST' });
 export const scanLoopFolder = (id: string, recursive: boolean) => localRequest<FolderSelection & { files: FolderFile[] }>(`/local/folders/${encodeURIComponent(id)}?recursive=${recursive ? '1' : '0'}`);
 export const loopPreviewUrl = (folderId: string, file: FolderFile) => `/local/folders/${encodeURIComponent(folderId)}/preview?${new URLSearchParams({ file: file.id, size: String(file.size), mtime: String(file.mtime) })}`;
 const postLocal = <T,>(url: string, data: unknown) => localRequest<T>(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data) });
-export async function pickNativeMedia(kind: 'image' | 'video' | 'audio' | 'media', multiple = false) {
-    const picks = await postLocal<{ id: string; name: string; type: string }[]>('/local/media/select', { kind, multiple });
+export async function pickNativeMedia(kind: 'image' | 'video' | 'audio' | 'media', multiple = false, signal?: AbortSignal) {
+    const picks = await localRequest<{ id: string; name: string; type: string }[]>('/local/media/select', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind, multiple }), signal });
     const files: File[] = [];
     for (const pick of picks) {
-        const response = await fetch(`/local/media/picked/${encodeURIComponent(pick.id)}`);
+        const response = await fetch(`/local/media/picked/${encodeURIComponent(pick.id)}`, { signal });
         if (!response.ok) throw new Error(`无法读取本机文件「${pick.name}」，请重新选择`);
         files.push(new File([await response.blob()], pick.name, { type: pick.type }));
     }

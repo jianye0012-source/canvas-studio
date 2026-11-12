@@ -1,3 +1,7 @@
+if (process.env.CANVAS_NATIVE_PICKER === '1') {
+  require('./lib/native-picker-host.cjs');
+  return;
+}
 const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, net } = require('electron');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
@@ -8,6 +12,7 @@ const { Runtime } = require('./lib/runtime.cjs');
 const { ReleaseUpdater } = require('./lib/release-update.cjs');
 const { createUpdateFetch } = require('./lib/update-network.cjs');
 const { MediaExports } = require('./lib/media-files.cjs');
+const { NativePicker } = require('./lib/native-picker.cjs');
 const { prepareSelfUpdate, startSelfUpdate, markUpdateReady } = require('./lib/self-update.cjs');
 const { installationPaths, executableName, versionDirectory, stageUpdate, applyUpdate, clearInactiveVersions } = require('./lib/update.cjs');
 const updateSource = require('./update-source.json');
@@ -55,7 +60,7 @@ app.setAppLogsPath(path.join(dataDir, 'logs'));
 app.commandLine.appendSwitch('disk-cache-dir', path.join(dataDir, 'cache', 'launcher'));
 app.disableHardwareAcceleration();
 
-let window, runtime, store, updater, quitting = false, installing = false, queuedVersion = '', checking, updateTimer;
+let window, runtime, store, updater, picker, quitting = false, installing = false, queuedVersion = '', checking, updateTimer;
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => { window?.show(); window?.focus(); });
@@ -66,20 +71,10 @@ else {
     };
     const decrypt = async bytes => (await safeStorage.decryptStringAsync(bytes)).result;
     const systemFetch = createUpdateFetch(net);
-    store = await new ConfigStore(portableRoot, encrypt, decrypt, fetch, systemFetch).initialize();
+    store = await new ConfigStore(portableRoot, encrypt, decrypt, systemFetch, systemFetch).initialize();
     const bundleRoot = process.env.CANVAS_BUNDLE_ROOT || (app.isPackaged ? path.join(programRoot, 'resources', 'bundle') : path.resolve(__dirname, '..', 'work', 'bundle-linux'));
-    let choosing = false;
-    const choose = async options => {
-      if (choosing) throw new Error('文件选择窗口已打开，请先完成选择');
-      choosing = true;
-      if (window.isMinimized()) window.restore();
-      window.show();
-      window.focus();
-      try {
-        const result = await dialog.showOpenDialog(window, options);
-        return result.canceled ? [] : result.filePaths;
-      } finally { choosing = false; }
-    };
+    picker = new NativePicker({ executable: process.execPath, entry: __filename, dataDir: store.dataDir });
+    const choose = options => picker.select(options);
     const chooseOutput = async () => (await choose({ title: '选择机械盘上的输出目录', properties: ['openDirectory', 'createDirectory'] }))[0];
     const exports = new MediaExports(store.dataDir);
     const images = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif'];
@@ -87,7 +82,7 @@ else {
     const audios = ['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'];
     const mediaExtensions = { image: images, video: videos, audio: audios, director: ['png', 'jpg', 'jpeg', 'webp', ...videos], media: [...images, ...videos, ...audios] };
     runtime = new Runtime({
-      store, root: bundleRoot, development: !app.isPackaged, chooseOutput,
+      store, root: bundleRoot, development: !app.isPackaged, chooseOutput, cancelPicker: () => picker.cancel(),
       chooseFolder: async () => (await choose({ title: '选择 FOR 循环的输入文件夹', properties: ['openDirectory'] }))[0],
       chooseMedia: (kind, multiple) => choose({ title: '选择本机素材', properties: ['openFile', ...(multiple ? ['multiSelections'] : [])], filters: [{ name: '支持的媒体文件', extensions: mediaExtensions[kind] }] }),
     });
@@ -255,7 +250,7 @@ else {
     updateTimer = setInterval(autoUpdate, 30 * 60 * 1000);
   }).catch(error => { dialog.showErrorBox('启动器无法启动', error.message); app.quit(); });
   app.on('before-quit', event => {
-    if (!quitting && runtime) { event.preventDefault(); quitting = true; clearInterval(updateTimer); Promise.allSettled([runtime.stop(), updater?.close()]).finally(() => app.quit()); }
+    if (!quitting && runtime) { event.preventDefault(); quitting = true; clearInterval(updateTimer); Promise.allSettled([picker?.cancel(), runtime.stop(), updater?.close()]).finally(() => app.quit()); }
   });
   app.on('window-all-closed', () => app.quit());
 }
