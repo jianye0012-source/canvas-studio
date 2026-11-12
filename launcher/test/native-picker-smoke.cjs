@@ -25,7 +25,12 @@ const http = require('node:http');
   try {
     app = await electron.launch({ executablePath: executable, args: ['--no-sandbox', entry], env: { ...process.env, TMPDIR: path.join(root, 'work/tmp'), CANVAS_NATIVE_PICKER: '1', CANVAS_PICKER_DATA: directory, CANVAS_PICKER_OPTIONS: JSON.stringify({ title: '文件选择回归验证', properties: ['openFile'] }) } });
     await app.firstWindow();
-    const state = await app.evaluate(({ BrowserWindow }) => { const owner = BrowserWindow.getAllWindows()[0]; return { title: owner.getTitle(), visible: owner.isVisible(), top: owner.isAlwaysOnTop() }; });
+    let state;
+    for (let i = 0; i < 100; i++) {
+      state = await app.evaluate(({ BrowserWindow }) => { const owner = BrowserWindow.getAllWindows()[0]; return { title: owner.getTitle(), visible: owner.isVisible(), top: owner.isAlwaysOnTop() }; });
+      if (state.visible) break;
+      await delay(50);
+    }
     assert.deepEqual(state, { title: '文件选择回归验证', visible: true, top: true });
     const result = await app.evaluate(async ({ net }, url) => {
       const form = new FormData(); form.set('file', new Blob(['reference-pixels'], { type: 'image/png' }), '衣服.png');
