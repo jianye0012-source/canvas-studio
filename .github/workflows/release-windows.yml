@@ -88,3 +88,10 @@ jobs:
           $upgradeZip = "outputs/CanvasStudio-Launcher-Upgrade-$releaseVersion.zip"
           gh release upload $releaseTag $releaseZip "$releaseZip.sha256" $upgradeZip "$upgradeZip.sha256" --clobber
           exit $LASTEXITCODE
+      - name: Upload browser diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-browser-diagnostics
+          path: work/*failure*
+          if-no-files-found: ignore
