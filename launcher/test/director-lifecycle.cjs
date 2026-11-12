@@ -26,11 +26,12 @@ const { browserExecutable } = require('../lib/browser.cjs');
   } }], imageChannelId: 'mesh', imageModel });
   const output = path.join(directory, '另存 模型'); await fs.mkdir(output);
   const runtime = new Runtime({ store, root: path.join(root, 'work', process.platform === 'win32' ? 'bundle-windows' : 'bundle-linux'), development: true, chooseOutput: async () => output });
-  let browser;
+  let browser, page;
   try {
     await runtime.start({ open: false });
     browser = await chromium.launch({ executablePath: await browserExecutable({ browser: 'chrome' }), headless: true, args: ['--no-sandbox', '--enable-unsafe-swiftshader'], env: { ...process.env, TMPDIR: path.join(root, 'work/tmp') } });
-    const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+    page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+    page.on('pageerror', error => console.error('DIRECTOR_BROWSER', error.message));
     page.on('dialog', dialog => dialog.accept());
     await page.goto(runtime.gateway.launchUrl()); await page.waitForURL('**/canvas');
     await page.getByRole('button', { name: '新建画布', exact: true }).first().click(); await page.waitForURL('**/canvas/*');
@@ -43,7 +44,7 @@ const { browserExecutable } = require('../lib/browser.cjs');
     assert.ok(created.ok);
     await panel.getByRole('button', { name: '保存场景', exact: true }).click();
     await panel.locator('.canvas-return-bar').getByText('已保存到本机', { exact: true }).waitFor();
-    await frame.evaluate(() => { location.reload(); });
+    await Promise.all([frame.waitForNavigation({ waitUntil: 'load' }), frame.evaluate(() => { location.reload(); })]);
     await panel.locator('.canvas-return-bar').getByText('已保存到本机', { exact: true }).waitFor({ timeout: 20000 });
     frame = page.frames().find(entry => entry.url().includes('/cozy/app'));
     assert.ok((await frame.evaluate(() => window.__cozyclayProject.export())).includes('重载后保留的白模'));
@@ -96,7 +97,7 @@ const { browserExecutable } = require('../lib/browser.cjs');
     }
     await panel.getByRole('button', { name: '保存场景', exact: true }).click();
     await panel.locator('.canvas-return-bar').getByText('已保存到本机', { exact: true }).waitFor();
-    await frame.evaluate(() => location.reload());
+    await Promise.all([frame.waitForNavigation({ waitUntil: 'load' }), frame.evaluate(() => { location.reload(); })]);
     await panel.locator('.canvas-return-bar').getByText('已保存到本机', { exact: true }).waitFor();
     frame = page.frames().find(entry => entry.url().includes('/cozy/app'));
     scene = JSON.parse(await frame.evaluate(() => window.__cozyclayProject.export()));
@@ -117,6 +118,13 @@ const { browserExecutable } = require('../lib/browser.cjs');
     const saved = await Promise.all((await fs.readdir(path.join(store.dataDir, 'projects/director'))).filter(name => name.endsWith('.json')).map(name => fs.readFile(path.join(store.dataDir, 'projects/director', name), 'utf8')));
     assert.equal(saved.length, 2); assert.equal(saved.filter(value => value.includes('复制场景独立道具')).length, 1);
     console.log('PASS cloned director forks saved scene and writes its own project without changing the original');
+  } catch (error) {
+    if (page) {
+      console.error('DIRECTOR_PAGE', page.url());
+      await page.screenshot({ path: path.join(root, 'work/director-lifecycle-failure.png') }).catch(() => {});
+      await fs.writeFile(path.join(root, 'work/director-lifecycle-failure.txt'), await page.locator('body').innerText()).catch(() => {});
+    }
+    throw error;
   } finally {
     await browser?.close(); await runtime.stop(); await fs.rm(directory, { recursive: true, force: true });
   }
