@@ -21,8 +21,15 @@ class Model3DTasks {
     this.timer = setInterval(() => { void this.tick().catch(error => log('3D 任务：' + error.message)); }, 5000);
     this.timer.unref();
   }
-  file(id, extension = 'json') { if (!idPattern.test(id)) throw new Error('3D 任务编号无效'); return path.join(this.root, id + '.' + extension); }
-  async read(id) { this.file(id); const task = this.unwritten.get(id) || JSON.parse(await fs.readFile(this.file(id), 'utf8')); if (task.id !== id || task.format !== 1) throw new Error('3D 任务记录损坏'); return task; }
+  file(id, extension = 'json') { if (!idPattern.test(id)) throw Object.assign(new Error('3D 任务编号无效'), { status: 400 }); return path.join(this.root, id + '.' + extension); }
+  async read(id) {
+    this.file(id);
+    let task;
+    try { task = this.unwritten.get(id) || JSON.parse(await fs.readFile(this.file(id), 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT') throw Object.assign(new Error('3D 任务不存在'), { status: 404, code: 'ENOENT' }); throw error; }
+    if (task.id !== id || task.format !== 1) throw new Error('3D 任务记录损坏');
+    return task;
+  }
   async write(task) { if (task.taskId) this.unwritten.set(task.id, task); await writableDirectory(this.store.dataDir); await atomicJson(this.file(task.id), task); this.unwritten.delete(task.id); return task; }
   async restore() {
     const files = await fs.readdir(this.root).catch(error => { if (error.code !== 'ENOENT') throw error; return []; });
@@ -43,7 +50,7 @@ class Model3DTasks {
   }
   public(task) { const { requestHash, resultUrl, ...value } = task; return value; }
   async list(sceneId) {
-    if (!scenePattern.test(sceneId)) throw new Error('导演台编号无效');
+    if (!scenePattern.test(sceneId)) throw Object.assign(new Error('导演台编号无效'), { status: 400 });
     await this.ready;
     const files = await fs.readdir(this.root).catch(error => { if (error.code !== 'ENOENT') throw error; return []; });
     const tasks = [];
@@ -62,7 +69,7 @@ class Model3DTasks {
   async createInner(input) {
     await this.ready;
     this.controller.signal.throwIfAborted();
-    if (!scenePattern.test(input.sceneId)) throw new Error('导演台编号无效');
+    if (!scenePattern.test(input.sceneId)) throw Object.assign(new Error('导演台编号无效'), { status: 400 });
     const channel = this.store.value.channels.find(channel => channel.id === input.channelId && channel.enabled);
     const spec = channel?.runningHubModels?.[input.model];
     if (channel?.protocol !== runningHub.protocol || spec?.type !== '3d' || !channel.models.includes(input.model)) throw new Error('请先检测渠道并添加可用的 3D 模型');

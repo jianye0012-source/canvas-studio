@@ -147,20 +147,24 @@ class Gateway {
     if (provider) return this.provider(req, res, url);
     if (url.pathname === '/local/3d/models' && req.method === 'GET') return json(res, 200, { models: this.model3D.models() });
     if (url.pathname === '/local/3d/tasks') {
-      if (req.method === 'GET') return json(res, 200, { tasks: await this.model3D.list(url.searchParams.get('sceneId')) });
-      if (req.method === 'POST') return json(res, 200, await this.model3D.create(await bodyJson(req, 128 * 1024 ** 2)));
+      try {
+        if (req.method === 'GET') return json(res, 200, { tasks: await this.model3D.list(url.searchParams.get('sceneId')) });
+        if (req.method === 'POST') return json(res, 200, await this.model3D.create(await bodyJson(req, 128 * 1024 ** 2)));
+      } catch (error) { if ([400, 404].includes(error.status)) return json(res, error.status, { msg: error.message }); throw error; }
     }
     const model3DRoute = url.pathname.match(/^\/local\/3d\/tasks\/([a-f0-9-]{36})(?:\/(file|export))?$/);
     if (model3DRoute) {
       const [, id, action] = model3DRoute;
-      if (action === 'export' && req.method === 'POST') return json(res, 200, await this.model3D.export(id));
-      if (action === 'file' && req.method === 'GET') {
-        const { file, bytes } = await this.model3D.open(id);
-        res.writeHead(200, { 'Content-Type': 'model/gltf-binary', 'Content-Length': bytes, 'Cache-Control': 'no-store' });
-        try { await pipeline(require('node:fs').createReadStream(file), res); } catch (error) { if (!res.destroyed) throw error; }
-        return;
-      }
-      if (!action && req.method === 'GET') return json(res, 200, await this.model3D.refresh(id, { manual: true }));
+      try {
+        if (action === 'export' && req.method === 'POST') return json(res, 200, await this.model3D.export(id));
+        if (action === 'file' && req.method === 'GET') {
+          const { file, bytes } = await this.model3D.open(id);
+          res.writeHead(200, { 'Content-Type': 'model/gltf-binary', 'Content-Length': bytes, 'Cache-Control': 'no-store' });
+          try { await pipeline(require('node:fs').createReadStream(file), res); } catch (error) { if (!res.destroyed) throw error; }
+          return;
+        }
+        if (!action && req.method === 'GET') return json(res, 200, await this.model3D.refresh(id, { manual: true }));
+      } catch (error) { if ([400, 404].includes(error.status)) return json(res, error.status, { msg: error.message }); throw error; }
     }
     const editorRoute = url.pathname.match(/^\/local\/editor\/([a-zA-Z0-9_-]{1,160})(?:\/(step|progress))?$/);
     if (editorRoute) {

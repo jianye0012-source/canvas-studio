@@ -72,6 +72,28 @@ test('本机会话保护数据，拒绝外站来源，项目串行落盘并重�
   assert.equal((await fetch(url + '/api/auth/register', { method: 'POST', headers, body: '{}' })).status, 404);
 });
 
+test('3D 任务编号与导演台编号错误返回 400，缺失任务返回 404 且不泄露路径', async t => {
+  const { root, store } = await fixture(t);
+  const gateway = new Gateway({ root, store, log() {} }); await gateway.listen(0); t.after(() => gateway.close());
+  const headers = { cookie: `canvas_session=${gateway.cookie}`, 'content-type': 'application/json' };
+  const missing = '/local/3d/tasks/00000000-0000-0000-0000-000000000000';
+  for (const [route, options, status] of [
+    [missing, {}, 404], [missing + '/file', {}, 404],
+    ['/local/3d/tasks?sceneId=../x', {}, 400],
+    ['/local/3d/tasks', { method: 'POST', body: JSON.stringify({ id: 'bad', sceneId: 'director-test' }) }, 400],
+  ]) {
+    const response = await fetch(gateway.origin + route, { ...options, headers });
+    const result = await response.json();
+    assert.equal(response.status, status);
+    assert.match(result.msg, /[\u4e00-\u9fff]/);
+    assert.ok(!result.msg.includes('ENOENT') && !result.msg.includes(store.dataDir));
+  }
+  gateway.model3D.list = async () => { throw new Error('磁盘写入失败'); };
+  const failure = await fetch(gateway.origin + '/local/3d/tasks?sceneId=director-test', { headers });
+  assert.equal(failure.status, 500);
+  assert.equal((await failure.json()).msg, '磁盘写入失败');
+});
+
 test('同名模型按渠道转发正确密钥，默认选择改变不影响任务查询，导演模型别名还原', async t => {
   const { root, store } = await fixture(t); const seen = [];
   const upstream = http.createServer(async (req, res) => { let body = ''; for await (const chunk of req) body += chunk; seen.push({ headers: req.headers, url: req.url, body }); res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ ok: true })); });
