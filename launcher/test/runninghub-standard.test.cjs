@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { ConfigStore, validateConfig } = require('../lib/config.cjs');
-const { model, protocol, normalizeRunningHubURL, callStandardImage, callStandardVideo } = require('../lib/runninghub-standard.cjs');
+const { model, protocol, normalizeRunningHubURL, callStandardImage, callStandardVideo, detect, readCatalogue, loadModel, query } = require('../lib/runninghub-standard.cjs');
 
 const officialIndex = [
   '- Standard Model API > Image Generation & Processing > image-to-image > gpt [GPT Image 2](https://www.runninghub.ai/runninghub-api-doc-en/api-448184504.md):',
@@ -10,6 +10,47 @@ const officialIndex = [
   '- 标准模型API > 其他 [hitem3d-v3/multi-image-to-3d](https://www.runninghub.ai/runninghub-api-doc-en/api-789.md):',
   '- Task Query & webhook [Query](https://www.runninghub.ai/runninghub-api-doc-en/api-1234.md):',
 ].join('\n');
+
+test('RunningHub 账户和查询保留网络异常原因，并脱敏密钥及限制长度', async () => {
+  const channel = { baseUrl: 'https://www.runninghub.cn', apiKey: 'private-fixture-key' };
+  const failures = [
+    [new Error('net::ERR_PROXY_CONNECTION_FAILED'), /net::ERR_PROXY_CONNECTION_FAILED/],
+    [new TypeError('fetch failed', { cause: { code: 'ECONNREFUSED', message: 'proxy refused ' + channel.apiKey } }), /ECONNREFUSED proxy refused \*\*\*/],
+    [new DOMException('The operation was aborted due to timeout', 'TimeoutError'), /TimeoutError.*timeout/],
+    [new DOMException('This operation was aborted', 'AbortError'), /AbortError.*aborted/],
+    [new Error(channel.apiKey + 'x'.repeat(500)), /\*\*\*x+/],
+  ];
+  for (const [failure, reason] of failures) {
+    const fetchImpl = async url => {
+      if (new URL(url).pathname.endsWith('/llms.txt')) return new Response(officialIndex.replaceAll('runninghub.ai/runninghub-api-doc-en', 'runninghub.cn/runninghub-api-doc-cn'));
+      throw failure;
+    };
+    const result = await detect(channel, { fetchImpl });
+    assert.equal(result.runningHub.models.length, 4);
+    assert.match(result.runningHub.accountError, reason);
+    assert.ok(!result.runningHub.accountError.includes(channel.apiKey));
+    await assert.rejects(query(channel, '1', { fetchImpl }), error => {
+      assert.match(error.message, /无法连接 RunningHub/);
+      assert.match(error.message, reason);
+      assert.ok(!error.message.includes(channel.apiKey));
+      assert.ok(error.message.split('：')[1].length <= 300);
+      return true;
+    });
+  }
+});
+
+test('RunningHub 目录和参数读取保留网络异常及 HTTP 状态', async () => {
+  const baseUrl = 'https://www.runninghub.cn';
+  const entry = { id: '123', importable: true, type: 'image', docUrl: baseUrl + '/runninghub-api-doc-cn/api-123.md' };
+  for (const [fetchImpl, reason] of [
+    [async () => { throw new Error('net::ERR_NAME_NOT_RESOLVED'); }, /net::ERR_NAME_NOT_RESOLVED/],
+    [async () => { throw new DOMException('The operation was aborted due to timeout', 'TimeoutError'); }, /TimeoutError.*timeout/],
+    [async () => new Response(null, { status: 503 }), /HTTP 503/],
+  ]) {
+    await assert.rejects(readCatalogue(baseUrl, fetchImpl), reason);
+    await assert.rejects(loadModel('123', [entry], fetchImpl), reason);
+  }
+});
 
 test('读取已添加的 RunningHub 模型前重新拉取目录，失效模型不使用缓存', async () => {
   const baseUrl = 'https://www.runninghub.cn';

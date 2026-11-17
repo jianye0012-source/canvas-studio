@@ -28,6 +28,11 @@ function normalizeRunningHubURL(value) {
 
 const docsURL = baseUrl => baseUrl + (baseUrl.endsWith('.cn') ? '/runninghub-api-doc-cn' : '/runninghub-api-doc-en');
 
+function networkError(message, error, apiKey) {
+  const detail = [error?.name, error?.message || String(error), error?.code, error?.cause?.code, error?.cause?.message].filter(Boolean).join(' ');
+  return new Error(message + '：' + (apiKey ? detail.replaceAll(apiKey, '***') : detail).slice(0, 300));
+}
+
 async function request(channel, route, body, { fetchImpl = fetch, signal } = {}) {
   if (!channel.apiKey) throw new Error('请填写 RunningHub 企业级共享 API Key');
   let response;
@@ -38,7 +43,7 @@ async function request(channel, route, body, { fetchImpl = fetch, signal } = {})
       body: multipart ? body : JSON.stringify(body),
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(multipart ? 120000 : 30000)]) : AbortSignal.timeout(15000),
     });
-  } catch { throw new Error('无法连接 RunningHub，请检查网络后重试'); }
+  } catch (error) { throw networkError('无法连接 RunningHub，请检查网络与系统代理后重试', error, channel.apiKey); }
   if (response.status === 401 || response.status === 403) throw new Error('RunningHub 拒绝访问，请核对企业级共享 API Key');
   const result = await response.json().catch(() => null);
   if (!response.ok || (result?.code !== undefined && Number(result.code) !== 0)) {
@@ -70,8 +75,7 @@ async function readPublic(url, fetchImpl, label) {
     if (!response.ok) throw new Error('HTTP ' + response.status);
     return await response.text();
   } catch (error) {
-    const status = /^HTTP \d{3}$/.test(error.message) ? `（${error.message}）` : '';
-    throw new Error(`无法读取 RunningHub 官方${label}${status}，请检查网络后重试`);
+    throw networkError(`无法读取 RunningHub 官方${label}，请检查网络与系统代理后重试`, error);
   }
 }
 
