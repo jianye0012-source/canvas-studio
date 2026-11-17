@@ -339,6 +339,12 @@ func runVideoTaskPoller() {
 						return
 					}
 					defer cleanup()
+					if videoTaskExpired(task, time.Now()) {
+						if err := UpdateVideoTaskFromPoll(task, VideoTaskPollUpdate{Status: "failed", Error: "任务超时"}); err != nil {
+							log.Printf("mark expired video task failed id=%s err=%v", task.ID, err)
+						}
+						return
+					}
 					update, err := poll(ctx, task)
 					if ctx.Err() != nil {
 						return
@@ -463,6 +469,14 @@ func videoTaskStoredStatus(status string) string {
 	default:
 		return "unknown"
 	}
+}
+
+func videoTaskExpired(task model.VideoTask, now time.Time) bool {
+	created, err := time.Parse(time.RFC3339, task.CreatedAt)
+	if err != nil || created.IsZero() {
+		return false
+	}
+	return now.Sub(created) > 24*time.Hour
 }
 
 func IsCompletedVideoTaskStatus(status string) bool {
