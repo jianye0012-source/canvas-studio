@@ -35,6 +35,11 @@ export function createDirectorOutputDedupe(options: { now?: () => number; ttlMs?
         if (existing) return existing.promise;
         const promise = handler().catch((error): DirectorOutputResult => ({ ok: false, error: directorErrorText(error, 300) }));
         entries.set(requestId, { promise, at });
+        void promise.then((result) => {
+            if (!result.ok && entries.get(requestId)?.promise === promise) {
+                entries.delete(requestId);
+            }
+        });
         return promise;
     }
 

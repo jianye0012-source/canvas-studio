@@ -76,6 +76,20 @@ describe("createDirectorOutputDedupe", () => {
         assert.deepEqual(rb, { ok: false, error: "上传失败" });
     });
 
+    it("失败后同一编号再次到达会重新处理", async () => {
+        let calls = 0;
+        const dedupe = createDirectorOutputDedupe();
+        const handler = async () => {
+            calls++;
+            throw new Error("上传失败");
+        };
+        const first = await dedupe.run(uuid, handler);
+        assert.deepEqual(first, { ok: false, error: "上传失败" });
+        const second = await dedupe.run(uuid, handler);
+        assert.equal(calls, 2);
+        assert.deepEqual(second, { ok: false, error: "上传失败" });
+    });
+
     it("超过 10 分钟的条目被清理", async () => {
         let now = 0;
         let calls = 0;
