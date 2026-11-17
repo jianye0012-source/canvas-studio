@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { importHdrFile } from './stage-hdr-library.js';
 import { openModelGenerator } from './canvas-model-generator.js';
+import { createSaveQueue } from './canvas-save-queue.js';
 import './canvas-bridge.css';
 
 // The .cclayproject envelope includes meshes, HDRs, images, motion specs and
@@ -9,7 +10,7 @@ export function useCanvasBridge(api) {
   const latest = useRef(api); latest.current = api;
   useEffect(() => {
     if (!new URLSearchParams(location.search).has('canvas')) return;
-    let session, initialized = false, canceled = false, lastSnapshot = '', savePromise = Promise.resolve(), panoramas = [], activePanorama = null;
+    let session, initialized = false, canceled = false, lastSnapshot = '', panoramas = [], activePanorama = null;
     const post = (type, payload) => parent.postMessage({ type, payload }, location.origin);
     const pendingOutputs = new Map();
     const sendOutput = (type, payload) => new Promise((resolve, reject) => {
@@ -28,23 +29,20 @@ export function useCanvasBridge(api) {
       bar.append(node); return node;
     };
     const snapshot = () => latest.current.scenesDomain.collectProjectSnapshot(latest.current.scenesDomain.projectName || '白模导演台');
-    const save = (force = false) => {
-      const pending = savePromise.catch(() => {}).then(async () => {
-        if (!initialized || canceled) return;
-        const before = snapshot();
-        if (!force && before === lastSnapshot) return;
-        label.textContent = '正在保存到本机…'; label.classList.remove('error');
-        const serialized = await latest.current.scenesDomain.collectProjectSerialized(latest.current.scenesDomain.projectName || '白模导演台');
-        const project = JSON.parse(serialized);
-        const envelope = { engine: 'cozyclay', schemaVersion: 1, project, panoramas, activePanorama };
-        const response = await fetch(`/local/director/${encodeURIComponent(session.instanceId)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(envelope) });
-        if (!response.ok) throw new Error((await response.json()).msg || '磁盘保存失败，请检查数据目录');
-        lastSnapshot = before;
-        post('storyai:director-project-changed', { project: { engine: 'cozyclay', schemaVersion: 1, projectId: session.instanceId, name: project.name, savedAt: project.savedAt } });
-        label.textContent = '已保存到本机';
-      });
-      savePromise = pending; return pending;
-    };
+    const save = createSaveQueue(async force => {
+      if (!initialized || canceled) return;
+      const before = snapshot();
+      if (!force && before === lastSnapshot) return;
+      label.textContent = '正在保存到本机…'; label.classList.remove('error');
+      const serialized = await latest.current.scenesDomain.collectProjectSerialized(latest.current.scenesDomain.projectName || '白模导演台');
+      const project = JSON.parse(serialized);
+      const envelope = { engine: 'cozyclay', schemaVersion: 1, project, panoramas, activePanorama };
+      const response = await fetch(`/local/director/${encodeURIComponent(session.instanceId)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(envelope) });
+      if (!response.ok) throw new Error((await response.json()).msg || '磁盘保存失败，请检查数据目录');
+      lastSnapshot = before;
+      post('storyai:director-project-changed', { project: { engine: 'cozyclay', schemaVersion: 1, projectId: session.instanceId, name: project.name, savedAt: project.savedAt } });
+      label.textContent = '已保存到本机';
+    });
     const capture = async () => {
       await save(true);
       const result = await latest.current.appContext.ports.capture();
