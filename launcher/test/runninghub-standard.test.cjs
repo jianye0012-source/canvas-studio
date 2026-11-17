@@ -54,6 +54,21 @@ test('结果下载先查询任务、跳转即拒绝、失败原因不含密钥',
   });
 });
 
+test('查询返回空状态和错误码时判定失败', async () => {
+  const channel = { baseUrl: 'https://www.runninghub.cn', apiKey: 'invalid-key' };
+  for (const [response, expected] of [
+    [{ status: '', errorCode: '806', errorMessage: 'APIKEY_USER_NOT_FOUND' }, 'FAILED'],
+    [{ status: '', errorCode: '' }, ''],
+    [{ status: '', errorCode: '0' }, ''],
+    [{ status: 'RUNNING', errorCode: '806' }, 'RUNNING'],
+  ]) {
+    const result = await query(channel, '1', { fetchImpl: async () => Response.json({ taskId: '1', ...response }) });
+    assert.equal(result.status, expected);
+    assert.equal(result.errorCode, response.errorCode);
+    assert.equal(result.errorMessage, response.errorMessage);
+  }
+});
+
 test('RunningHub 账户和查询保留网络异常原因，并脱敏密钥及限制长度', async () => {
   const channel = { baseUrl: 'https://www.runninghub.cn', apiKey: 'private-fixture-key' };
   const failures = [

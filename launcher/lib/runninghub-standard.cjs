@@ -203,7 +203,10 @@ async function callStandardImage(channel, route, input, options) {
 
 async function query(channel, taskId, options) {
   if (typeof taskId !== 'string' || !/^\d{1,32}$/.test(taskId)) throw new Error('RunningHub 任务编号无效');
-  return request(channel, '/openapi/v2/query', { taskId }, options);
+  const result = await request(channel, '/openapi/v2/query', { taskId }, options);
+  const code = String(result.errorCode ?? '').trim();
+  if (!String(result.status ?? '').trim() && code && code !== '0') result.status = 'FAILED';
+  return result;
 }
 
 async function downloadResult(channel, taskId, { fetchImpl = fetch, signal, lookup } = {}) {
