@@ -30,7 +30,7 @@ class Model3DTasks {
       try {
         const task = await this.read(name.slice(0, -5));
         if (!task.taskId && task.status === 'submitting') await this.write({ ...task, status: 'uncertain', error: '上次提交未能确认任务编号，请先核对平台记录，勿重复提交' });
-        if (task.taskId && !['completed', 'failed'].includes(task.status)) this.active.add(task.id);
+        if (task.taskId && !['completed', 'failed'].includes(task.status) && !task.downloadStopped) this.active.add(task.id);
       }
       catch (error) { this.log('3D 任务记录无法读取：' + error.message); }
     }
@@ -91,20 +91,27 @@ class Model3DTasks {
     }
     return this.public(task);
   }
-  refresh(id) {
+  refresh(id, options = {}) {
     this.file(id);
     if (this.operations.has(id)) return this.operations.get(id);
-    const pending = this.refreshInner(id).finally(() => this.operations.delete(id));
+    const pending = this.refreshInner(id, options).finally(() => this.operations.delete(id));
     this.operations.set(id, pending); return pending;
   }
-  async refreshInner(id) {
+  async refreshInner(id, { manual = false } = {}) {
     const task = await this.read(id);
     if (task.status === 'completed' && (await fs.stat(this.file(id, 'glb')).catch(() => null))?.size === task.bytes) return this.public(task);
     if (!task.taskId || task.status === 'failed') return this.public(task);
-    if (task.nextPollAt > Date.now()) return this.public(task);
+    if (task.status === 'processing' && Date.now() - task.createdAt > 24 * 3600_000) {
+      task.status = 'failed'; task.error = '3D 任务超过 24 小时仍未完成，已停止查询；请在 RunningHub 平台核对，不会自动重新提交';
+      this.active.delete(id); await this.write(task); return this.public(task);
+    }
+    if (task.downloadStopped && !manual) return this.public(task);
+    if (manual && task.downloadStopped) { task.downloadAttempts = 0; delete task.downloadStopped; this.active.add(id); }
+    if (!manual && task.nextPollAt > Date.now()) return this.public(task);
     const channel = this.store.value.channels.find(channel => channel.id === task.channelId);
     if (!channel?.apiKey || channel.protocol !== runningHub.protocol) { task.status = 'blocked'; task.error = '原 3D 渠道或密钥不可用，请恢复原渠道配置后重新查询'; this.active.delete(id); await this.write(task); return this.public(task); }
     this.active.add(id);
+    let downloadFailed = false;
     try {
       const result = await runningHub.query({ ...channel, baseUrl: task.baseUrl }, task.taskId, { fetchImpl: this.store.fetchImpl, signal: this.controller.signal });
       const status = String(result.status || '').toUpperCase();
@@ -112,17 +119,28 @@ class Model3DTasks {
         const output = result.results?.find(item => /^(?:glb)$/i.test(item.outputType || '') || /\.glb(?:\?|$)/i.test(item.url || ''));
         if (!output?.url) { task.status = 'failed'; this.active.delete(id); throw new Error('3D 任务没有返回可导入的 GLB 文件，请在平台核对输出格式；不会自动重新提交'); }
         task.resultUrl = output.url;
-        await this.download(task);
-        task.status = 'completed'; task.error = ''; task.completedAt = Date.now(); this.active.delete(id);
+        try { await this.download(task); } catch (error) { downloadFailed = true; throw error; }
+        task.status = 'completed'; task.error = ''; task.completedAt = Date.now(); task.downloadAttempts = 0; delete task.downloadStopped; this.active.delete(id);
       } else if (['FAILED', 'CANCELLED', 'CANCELED', 'CANCEL'].includes(status)) {
         task.status = 'failed'; task.error = result.errorMessage || result.errorCode || '3D 生成失败'; this.active.delete(id);
       } else if (!['QUEUED', 'RUNNING'].includes(status)) throw new Error(result.errorMessage || '平台未返回有效的 3D 任务状态');
       else { task.status = 'processing'; task.error = ''; }
     } catch (error) {
-      task.error = error.message;
+      task.error = downloadFailed && error.code !== 'MODEL_TOO_LARGE'
+        ? runningHub.networkError('GLB 下载失败', error, channel.apiKey).message.replaceAll(this.store.dataDir, '[数据目录]').replace(/https?:\/\/\S+/g, '[下载地址]')
+        : error.message;
       if (error.code === 'MODEL_TOO_LARGE') { task.status = 'failed'; this.active.delete(id); }
-      else if (task.status !== 'failed' && task.resultUrl) task.status = 'download_failed';
-      task.nextPollAt = Date.now() + 30000;
+      else if (task.status !== 'failed' && task.resultUrl) {
+        task.status = 'download_failed';
+        if (downloadFailed) {
+          task.downloadAttempts = (task.downloadAttempts || 0) + 1;
+          if (task.downloadAttempts >= 10) {
+            task.downloadStopped = true; this.active.delete(id);
+            task.error = 'GLB 下载已连续失败 10 次，已停止自动重试，可点「重新下载」手动重试：' + task.error;
+          }
+        }
+      }
+      task.nextPollAt = Date.now() + (downloadFailed && error.code !== 'MODEL_TOO_LARGE' ? Math.min(30000 * 2 ** (task.downloadAttempts - 1), 30 * 60_000) : 30000);
     }
     await this.write(task);
     return this.public(task);

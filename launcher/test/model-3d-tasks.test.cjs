@@ -140,3 +140,85 @@ test('3D 查询返回错误码时任务立即失败且不再轮询', async t => 
   await jobs.refresh(input.id);
   assert.equal(state.queries, queries);
 });
+
+test('处理中超过 24 小时失败，已完成与下载待重试不受此时限影响', async t => {
+  const { open, input, state } = await fixture(t); const jobs = open();
+  await jobs.create(input);
+  let task = await jobs.read(input.id); task.createdAt = Date.now() - 25 * 3600_000; await jobs.write(task);
+  const expired = await jobs.refresh(input.id);
+  assert.equal(expired.status, 'failed'); assert.match(expired.error, /超过 24 小时/);
+  assert.equal(state.queries, 0); assert.equal(jobs.active.has(input.id), false);
+
+  const completedInput = { ...input, id: crypto.randomUUID() };
+  await jobs.create(completedInput); await jobs.refresh(completedInput.id);
+  task = await jobs.read(completedInput.id); task.createdAt = Date.now() - 25 * 3600_000; await jobs.write(task);
+  assert.equal((await jobs.refresh(completedInput.id)).status, 'completed');
+  assert.ok((await fs.stat(jobs.file(completedInput.id, 'glb'))).size > 0);
+
+  const retryInput = { ...input, id: crypto.randomUUID() };
+  await jobs.create(retryInput); state.corrupt = true; await jobs.refresh(retryInput.id);
+  task = await jobs.read(retryInput.id); task.createdAt = Date.now() - 25 * 3600_000; task.nextPollAt = 0; await jobs.write(task);
+  state.corrupt = false; const before = state.urls.filter(url => url.endsWith('.glb')).length;
+  assert.equal((await jobs.refresh(retryInput.id)).status, 'completed');
+  assert.equal(state.urls.filter(url => url.endsWith('.glb')).length, before + 1);
+
+  const inactiveInput = { ...input, id: crypto.randomUUID() };
+  await jobs.create(inactiveInput);
+  for (const status of ['uncertain', 'blocked', 'submitting']) {
+    task = await jobs.read(inactiveInput.id);
+    task.status = status; task.createdAt = Date.now() - 25 * 3600_000; task.nextPollAt = Date.now() + 60000;
+    await jobs.write(task);
+    assert.equal((await jobs.refresh(inactiveInput.id)).status, status);
+  }
+});
+
+test('下载连续失败十次停止自动重试，重启不恢复，手动重试可继续', async t => {
+  const { open, input, state } = await fixture(t); const jobs = open(); await jobs.create(input);
+  state.corrupt = true;
+  for (let attempt = 1; attempt <= 10; attempt++) {
+    const task = await jobs.read(input.id); task.nextPollAt = 0; await jobs.write(task);
+    const before = Date.now(); const result = await jobs.refresh(input.id);
+    assert.equal(result.status, 'download_failed');
+    assert.equal(result.downloadAttempts, attempt);
+    if (attempt < 10) {
+      assert.equal(Boolean(result.downloadStopped), false);
+      const expected = Math.min(30000 * 2 ** (attempt - 1), 30 * 60_000);
+      assert.ok(result.nextPollAt - before >= expected - 1000 && result.nextPollAt - before <= expected + 1000);
+    } else {
+      assert.equal(result.downloadStopped, true); assert.match(result.error, /连续失败 10 次/);
+      assert.equal(jobs.active.has(input.id), false);
+    }
+  }
+  const downloads = state.urls.filter(url => url.endsWith('.glb')).length;
+  await jobs.tick(); assert.equal(state.urls.filter(url => url.endsWith('.glb')).length, downloads);
+  const restored = open(); await restored.ready; assert.equal(restored.active.has(input.id), false);
+  state.corrupt = false;
+  const complete = await restored.refresh(input.id, { manual: true });
+  assert.equal(complete.status, 'completed'); assert.equal(complete.downloadAttempts, 0);
+  assert.equal(complete.downloadStopped, undefined); assert.ok((await fs.stat(restored.file(input.id, 'glb'))).size > 0);
+  assert.equal(state.submits, 1);
+});
+
+test('手动查询不受冷却阻挡，平台失败与模型超限保持原有终态', async t => {
+  const { open, input, state } = await fixture(t); const jobs = open(); await jobs.create(input);
+  let task = await jobs.read(input.id); task.nextPollAt = Date.now() + 10 * 60_000; await jobs.write(task);
+  await jobs.refresh(input.id); assert.equal(state.queries, 0);
+  state.finished = false; await jobs.refresh(input.id, { manual: true }); assert.equal(state.queries, 1);
+  state.queryError = true; task = await jobs.read(input.id); task.nextPollAt = 0; await jobs.write(task);
+  assert.equal((await jobs.refresh(input.id)).status, 'failed'); assert.equal(state.queries, 2);
+  const tooLarge = { ...input, id: crypto.randomUUID() }; state.queryError = false; state.finished = true;
+  await jobs.create(tooLarge);
+  jobs.download = async () => { throw Object.assign(new Error('模型过大'), { code: 'MODEL_TOO_LARGE' }); };
+  const failure = await jobs.refresh(tooLarge.id);
+  assert.equal(failure.status, 'failed'); assert.equal(failure.downloadAttempts, undefined);
+  assert.equal(state.submits, 2);
+});
+
+test('下载错误不暴露密钥、签名地址和本机路径', async t => {
+  const { open, input, store } = await fixture(t); const jobs = open(); await jobs.create(input);
+  jobs.download = async () => { throw new Error(`下载失败 ${store.value.channels[0].apiKey} https://files.example/model.glb?signature=private ${store.dataDir}`); };
+  const task = await jobs.refresh(input.id);
+  assert.equal(task.status, 'download_failed');
+  assert.match(task.error, /下载失败/);
+  for (const secret of ['test-only-key', 'signature=private', store.dataDir]) assert.ok(!task.error.includes(secret));
+});

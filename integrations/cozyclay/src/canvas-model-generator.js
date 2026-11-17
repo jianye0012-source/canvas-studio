@@ -76,7 +76,7 @@ export function openModelGenerator({ sceneId, run, save }) {
         list.replaceChildren(...result.tasks.map(task => {
           const row = document.createElement('article'); row.className = 'canvas-3d-task';
           const name = document.createElement('strong'); name.textContent = `${task.channelName} · ${task.name}`;
-          const status = document.createElement('p'); status.textContent = (statuses[task.status] || '待查询') + (task.taskId ? ' · 任务 ' + task.taskId : '');
+          const status = document.createElement('p'); status.textContent = (task.downloadStopped ? '模型下载已停止自动重试' : statuses[task.status] || '待查询') + (task.taskId ? ' · 任务 ' + task.taskId : '');
           row.append(name, status);
           if (task.error) { const error = document.createElement('p'); error.className = 'error'; error.textContent = task.error; row.append(error); }
           if (task.status === 'completed') row.append(action('加入场景', async () => {
@@ -90,7 +90,7 @@ export function openModelGenerator({ sceneId, run, save }) {
             await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
             await save(true); feedback.textContent = '模型已加入场景并保存到本机';
           }), action('另存 GLB', async () => { feedback.textContent = '请在系统窗口选择保存文件夹…'; const saved = await api(`/local/3d/tasks/${task.id}/export`, {}); feedback.textContent = saved ? '已保存：' + saved.name : '已取消保存'; }));
-          else if (task.taskId) row.append(action('重新查询原任务', async () => { await api(`/local/3d/tasks/${task.id}`); await refresh(); }));
+          else if (task.taskId) row.append(action(task.status === 'download_failed' ? '重新下载' : '重新查询原任务', async () => { await api(`/local/3d/tasks/${task.id}`); await refresh(); }));
           return row;
         }));
       } catch (error) { if (!ended) feedback.textContent = error.message; }

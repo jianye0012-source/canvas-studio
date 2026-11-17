@@ -160,7 +160,7 @@ class Gateway {
         try { await pipeline(require('node:fs').createReadStream(file), res); } catch (error) { if (!res.destroyed) throw error; }
         return;
       }
-      if (!action && req.method === 'GET') return json(res, 200, await this.model3D.refresh(id));
+      if (!action && req.method === 'GET') return json(res, 200, await this.model3D.refresh(id, { manual: true }));
     }
     const editorRoute = url.pathname.match(/^\/local\/editor\/([a-zA-Z0-9_-]{1,160})(?:\/(step|progress))?$/);
     if (editorRoute) {
