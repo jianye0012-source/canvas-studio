@@ -36,7 +36,7 @@ func selectAIRequestChannel(user model.AuthUser, modelName string, channelID str
 func failAIChannelSelect(w http.ResponseWriter, err error, fallback string) {
 	message := strings.TrimSpace(err.Error())
 	switch message {
-	case "当前账号未开放云端渠道", "请先登录", "缺少模型名称", "缺少模型渠道", "本地渠道不存在", "本地渠道配置不完整", "本地渠道不支持该模型", "指定模型渠道不可用", "模型未开放":
+	case "当前账号未开放云端渠道", "请先登录", "缺少模型名称", "缺少模型渠道", "本地渠道不存在", "本地渠道配置不完整", "本地渠道不支持该模型", "指定模型渠道不可用", "模型未开放", "没有可用模型渠道":
 		Fail(w, message)
 	default:
 		Fail(w, fallback)
@@ -240,7 +240,7 @@ func copyAIResponse(w http.ResponseWriter, request *http.Request, channel model.
 			onFailure()
 		}
 		saveAIProxyLog(logContext, 0, "", err.Error())
-		Fail(w, "AI 接口请求失败")
+		Fail(w, "AI 接口请求失败："+service.TransportErrorCause(err).Error())
 		return
 	}
 	defer response.Body.Close()
