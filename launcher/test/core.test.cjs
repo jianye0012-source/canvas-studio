@@ -199,6 +199,27 @@ test('模型渠道超过 200 MB 的请求体返回 413', async t => {
   assert.equal(received, 0);
 });
 
+test('RunningHub 结果下载需要本机令牌并流式返回', async t => {
+  const { root, store } = await fixture(t);
+  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const calls = [];
+  store.fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    if (url.endsWith('/openapi/v2/query')) return Response.json({ taskId: '123', status: 'SUCCESS', results: [{ url: 'https://1.1.1.1/output.png' }] });
+    return new Response(png, { headers: { 'content-type': 'image/png' } });
+  };
+  await store.save({ channels: [{ id: 'rh', name: '国内渠道', protocol: 'runninghub-standard', baseUrl: 'https://www.runninghub.cn', apiKey: 'secret-key-x', models: [] }] });
+  const gateway = new Gateway({ root, store, providerToken: 'private', log() {} }); await gateway.listen(0); t.after(() => gateway.close());
+  const target = gateway.origin + '/local-ai/channels/rh/v1/runninghub/result';
+  const body = JSON.stringify({ taskId: '123' });
+  assert.equal((await fetch(target, { method: 'POST', headers: { cookie: `canvas_session=${gateway.cookie}`, 'content-type': 'application/json' }, body })).status, 403);
+  const response = await fetch(target, { method: 'POST', headers: { authorization: 'Bearer private', 'content-type': 'application/json' }, body });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'image/png');
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+  assert.deepEqual(calls.map(entry => entry.url), ['https://www.runninghub.cn/openapi/v2/query', 'https://1.1.1.1/output.png']);
+});
+
 test('文件清单识别损坏，路径越界被拒绝，端口冲突可选择空闲端口', async t => {
   const { root } = await fixture(t);
   assert.throws(() => contained(root, '../outside')); assert.throws(() => contained(root, '..\\outside'));

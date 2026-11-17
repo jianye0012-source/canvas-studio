@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { ConfigStore, validateConfig } = require('../lib/config.cjs');
-const { model, protocol, normalizeRunningHubURL, networkError, callStandardImage, callStandardVideo, detect, readCatalogue, loadModel, query } = require('../lib/runninghub-standard.cjs');
+const { model, protocol, normalizeRunningHubURL, networkError, validateResultURL, downloadResult, callStandardImage, callStandardVideo, detect, readCatalogue, loadModel, query } = require('../lib/runninghub-standard.cjs');
 
 const officialIndex = [
   '- Standard Model API > Image Generation & Processing > image-to-image > gpt [GPT Image 2](https://www.runninghub.ai/runninghub-api-doc-en/api-448184504.md):',
@@ -18,6 +18,40 @@ test('网络错误原因隐藏密钥和 URL 凭据、签名参数', () => {
   assert.ok(!message.includes('private-key'));
   assert.ok(!message.includes('signature='));
   assert.ok(!message.includes('@'));
+});
+
+test('结果下载只接受 HTTPS 公网地址', async () => {
+  const invalid = [
+    'http://a.com/x.png', 'https://user:pw@a.com/x', 'https://a.com:8443/x',
+    'https://127.0.0.1/x', 'https://10.0.0.1/x', 'https://169.254.169.254/x', 'https://100.64.0.1/x',
+    'https://[::1]/x', 'https://[fc00::1]/x', 'https://[::ffff:127.0.0.1]/x',
+    'https://localhost/x', 'https://a.localhost/x',
+  ];
+  const lookup = async () => [{ address: '1.1.1.1', family: 4 }];
+  for (const url of invalid) await assert.rejects(validateResultURL(url, lookup), error => error.status === 422 && /结果地址/.test(error.message));
+  await assert.rejects(validateResultURL('https://cdn.example/x', async () => [{ address: '1.1.1.1' }, { address: '192.168.1.2' }]), /内网/);
+  assert.equal(await validateResultURL('https://rh-images.xiaoyaoyou.com/a/output/x.png', lookup), 'https://rh-images.xiaoyaoyou.com/a/output/x.png');
+  assert.equal(await validateResultURL('https://remote-only.example/x', async () => { throw new Error('ENOTFOUND'); }), 'https://remote-only.example/x');
+});
+
+test('结果下载先查询任务、跳转即拒绝、失败原因不含密钥', async () => {
+  const channel = { baseUrl: 'https://www.runninghub.cn', apiKey: 'secret-key-x' };
+  const lookup = async () => [{ address: '1.1.1.1', family: 4 }];
+  const queryReply = value => async url => url.endsWith('/query') ? Response.json(value) : new Response('image');
+  await assert.rejects(downloadResult(channel, '1', { fetchImpl: queryReply({ status: 'RUNNING' }), lookup }), error => error.status === 409 && /尚未完成/.test(error.message));
+  await assert.rejects(downloadResult(channel, '1', { fetchImpl: queryReply({ status: 'SUCCESS', results: [{ url: 'http://a.com/x.png' }] }), lookup }), error => error.status === 422);
+  const success = { status: 'SUCCESS', results: [{ url: 'https://rh-images.xiaoyaoyou.com/a/output/x.png' }] };
+  const redirect = async url => { if (url.endsWith('/query')) return Response.json(success); throw new TypeError("Attempted to redirect, but redirect policy was 'error'"); };
+  await assert.rejects(downloadResult(channel, '1', { fetchImpl: redirect, lookup }), error => error.status === 422 && /发生跳转/.test(error.message));
+  const network = async url => { if (url.endsWith('/query')) return Response.json(success); throw new Error('fetch failed secret-key-x https://user:pw@cdn.example/x?signature=private'); };
+  await assert.rejects(downloadResult(channel, '1', { fetchImpl: network, lookup }), error => {
+    assert.equal(error.status, 502);
+    assert.match(error.message, /fetch failed/);
+    assert.ok(!error.message.includes('secret-key-x'));
+    assert.ok(!error.message.includes('signature='));
+    assert.ok(!error.message.includes('@'));
+    return true;
+  });
 });
 
 test('RunningHub 账户和查询保留网络异常原因，并脱敏密钥及限制长度', async () => {

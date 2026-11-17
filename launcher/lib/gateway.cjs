@@ -335,18 +335,30 @@ class Gateway {
     if (channel.protocol === runningHub.protocol) {
       const videoSubmit = req.method === 'POST' && route === '/videos';
       const image = req.method === 'POST' && ['/runninghub/submit', '/runninghub/query'].includes(route);
-      if (!jsonEqual(req.headers.authorization, `Bearer ${this.providerToken}`) || !(image || videoSubmit)) {
+      const resultDownload = req.method === 'POST' && route === '/runninghub/result';
+      if (!jsonEqual(req.headers.authorization, `Bearer ${this.providerToken}`) || !(image || videoSubmit || resultDownload)) {
         return json(res, 403, { error: { message: '请选择工作台中该 RunningHub 渠道对应的生成模型' } });
       }
       const controller = new AbortController();
       res.once('close', () => controller.abort());
       try {
+        if (resultDownload) {
+          const { taskId } = await bodyJson(req, 4096);
+          const response = await runningHub.downloadResult(channel, taskId, { fetchImpl: this.store.fetchImpl, signal: controller.signal });
+          if (response.status !== 200) return json(res, 502, { error: { message: `RunningHub 结果下载失败（HTTP ${response.status}）` } });
+          const headers = { 'content-type': response.headers.get('content-type') || 'application/octet-stream', 'cache-control': 'no-store' };
+          if (!response.headers.has('content-encoding') && response.headers.has('content-length')) headers['content-length'] = response.headers.get('content-length');
+          res.writeHead(200, headers);
+          if (response.body) await pipeline(Readable.fromWeb(response.body), res); else res.end();
+          return;
+        }
         const input = await bodyJson(req, 96 * 1024 * 1024);
         const options = { fetchImpl: this.store.fetchImpl, signal: controller.signal };
         const result = image ? await runningHub.callStandardImage(channel, route, input, options) : await runningHub.callStandardVideo(channel, input, options);
         return json(res, 200, result);
       } catch (error) {
-        if (!res.destroyed) return json(res, 502, { error: { message: error.message } });
+        if (!res.destroyed && !res.headersSent) return json(res, error.status || 502, { error: { message: error.message } });
+        if (!res.destroyed) res.destroy();
         return;
       }
     }
