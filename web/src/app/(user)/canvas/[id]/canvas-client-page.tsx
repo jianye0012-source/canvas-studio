@@ -5605,13 +5605,16 @@ function CanvasTopBar({
             <Modal title="快捷键" open={shortcutsOpen} onCancel={() => setShortcutsOpen(false)} footer={null} centered>
                 <div className="space-y-2 border-t pt-4 text-sm" style={{ borderColor: theme.node.stroke }}>
                     <Shortcut keys={["Space", "拖动"]} value="临时反转选择/移动工具" />
+                    <Shortcut keys={["中键", "拖动"]} value="平移画布" />
                     <Shortcut keys={["滚轮"]} value="缩放画布" />
                     <Shortcut keys={["拖动"]} value="使用当前工具操作画布" />
                     <Shortcut keys={["Shift / Ctrl / Cmd", "点击"]} value="追加选择节点" />
+                    <Shortcut keys={["Ctrl / Cmd", "A"]} value="全选画布节点" />
                     <Shortcut keys={["Ctrl / Cmd", "G"]} value="创建组" />
                     <Shortcut keys={["Ctrl / Cmd", "C / V"]} value="复制 / 粘贴节点，或粘贴剪切板文本/图片" />
                     <Shortcut keys={["Ctrl / Cmd", "Z"]} value="撤销" />
                     <Shortcut keys={["Ctrl / Cmd", "Shift", "Z"]} value="重做" />
+                    <Shortcut keys={["Ctrl / Cmd", "Y"]} value="重做" />
                     <Shortcut keys={["Delete / Backspace"]} value="删除选中" />
                     <Shortcut keys={["Esc"]} value="取消选择并关闭浮层" />
                     <Shortcut keys={["拖入图片/视频/音频"]} value="上传到画布" />
