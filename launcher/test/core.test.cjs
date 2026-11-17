@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
+const zlib = require('node:zlib');
 const { ConfigStore, directorModelId } = require('../lib/config.cjs');
 const { Gateway } = require('../lib/gateway.cjs');
 const { contained, verifyManifest } = require('../lib/files.cjs');
@@ -94,6 +95,108 @@ test('同名模型按渠道转发正确密钥，默认选择改变不影响任�
   assert.equal((await fetch(gateway.origin + '/local-ai/channels/a/v1/videos/submitted-task', { headers })).status, 400);
   assert.equal(seen.length, count, '停用渠道不会把已有任务转到另一个渠道');
   assert.equal((await fetch(gateway.origin + '/local-ai/director/v1/chat/completions', { method: 'POST', headers, body: JSON.stringify({ model: 'a::same-model' }) })).status, 400);
+});
+
+test('模型生成复用检测渠道的 fetchImpl', async t => {
+  const { root, store } = await fixture(t);
+  const calls = [];
+  store.fetchImpl = async (url, options) => { calls.push({ url, options }); return Response.json({ ok: true }); };
+  await store.save({ channels: [channel('a', 'https://only-via-proxy.test', 'key-a')] });
+  const gateway = new Gateway({ root, store, providerToken: 'private', log() {} });
+  await gateway.listen(0); t.after(() => gateway.close());
+  const response = await fetch(gateway.origin + '/local-ai/channels/a/v1/chat/completions', { method: 'POST', headers: { authorization: 'Bearer private', 'content-type': 'application/json', 'openai-beta': 'assistants=v2', 'x-test-option': 'preserved', cookie: 'local=secret', dnt: '1', via: '1.1 local' }, body: '{}' });
+  assert.equal(response.status, 200);
+  assert.equal(calls[0].url, 'https://only-via-proxy.test/v1/chat/completions');
+  assert.equal(calls[0].options.headers.get('authorization'), 'Bearer key-a');
+  assert.equal(calls[0].options.headers.get('content-length'), null, 'Electron net.fetch 会按 Buffer 自动设置准确长度');
+  assert.equal(calls[0].options.headers.get('sec-fetch-mode'), null, 'Electron net.fetch 不允许重放浏览器保留头');
+  for (const name of ['cookie', 'dnt', 'via']) assert.equal(calls[0].options.headers.get(name), null);
+  assert.equal(calls[0].options.headers.get('openai-beta'), 'assistants=v2');
+  assert.equal(calls[0].options.headers.get('x-test-option'), 'preserved');
+});
+
+test('模型渠道转发保留流式输出、原始请求体与解压后的响应', async t => {
+  const { root, store } = await fixture(t);
+  let endedAt = 0, upload, upstreamClosed;
+  const upstream = http.createServer(async (req, res) => {
+    if (req.url === '/v1/chat/completions') {
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'set-cookie': 'upstream=secret' });
+      res.write('data: 1\n\n');
+      setTimeout(() => { endedAt = Date.now(); res.end('data: 2\n\n'); }, 500);
+    } else if (req.url === '/v1/images/edits') {
+      const chunks = []; for await (const chunk of req) chunks.push(chunk);
+      const body = Buffer.concat(chunks);
+      upload = { hash: crypto.createHash('sha256').update(body).digest('hex'), length: req.headers['content-length'], transfer: req.headers['transfer-encoding'] };
+      res.end('uploaded');
+    } else if (req.url === '/v1/videos/task/content') {
+      const body = zlib.gzipSync(JSON.stringify({ ok: true }));
+      res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'gzip', 'content-length': body.length }); res.end(body);
+    } else {
+      upstreamClosed = new Promise(resolve => res.once('close', resolve));
+    }
+  });
+  await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise(resolve => upstream.close(resolve)));
+  await store.save({ channels: [channel('a', `http://127.0.0.1:${upstream.address().port}`, 'key-a')] });
+  const gateway = new Gateway({ root, store, providerToken: 'private', log() {} }); await gateway.listen(0); t.after(() => gateway.close());
+  const target = gateway.origin + '/local-ai/channels/a/v1';
+  const headers = { authorization: 'Bearer private' };
+
+  const stream = await fetch(target + '/chat/completions', { method: 'POST', headers, body: '{}' });
+  const reader = stream.body.getReader();
+  assert.match(new TextDecoder().decode((await reader.read()).value), /data: 1/);
+  assert.equal(endedAt, 0, '首块须在上游结束前到达');
+  assert.match(new TextDecoder().decode((await reader.read()).value), /data: 2/);
+  assert.equal(stream.headers.get('set-cookie'), null);
+
+  const bytes = crypto.randomBytes(5 * 1024 * 1024);
+  const sent = await fetch(target + '/images/edits', { method: 'POST', headers: { ...headers, 'content-type': 'multipart/form-data; boundary=test' }, body: bytes });
+  assert.equal(sent.status, 200);
+  assert.deepEqual(upload, { hash: crypto.createHash('sha256').update(bytes).digest('hex'), length: String(bytes.length), transfer: undefined });
+
+  const compressed = await fetch(target + '/videos/task/content', { headers });
+  assert.deepEqual(await compressed.json(), { ok: true });
+  assert.equal(compressed.headers.get('content-encoding'), null);
+  assert.equal(compressed.headers.get('content-length'), null);
+
+  const controller = new AbortController();
+  const pending = fetch(target + '/videos/abort/content', { headers, signal: controller.signal });
+  while (!upstreamClosed) await new Promise(resolve => setTimeout(resolve, 10));
+  controller.abort();
+  await assert.rejects(pending, { name: 'AbortError' });
+  assert.equal(await Promise.race([upstreamClosed.then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 2000))]), true);
+});
+
+test('模型渠道连接失败返回中文原因且不含密钥', async t => {
+  const { root, store } = await fixture(t);
+  const closed = http.createServer(); await new Promise(resolve => closed.listen(0, '127.0.0.1', resolve));
+  const port = closed.address().port; await new Promise(resolve => closed.close(resolve));
+  await store.save({ channels: [channel('a', `http://127.0.0.1:${port}`, 'secret-key-x')] });
+  const gateway = new Gateway({ root, store, providerToken: 'private', log() {} }); await gateway.listen(0); t.after(() => gateway.close());
+  const response = await fetch(gateway.origin + '/local-ai/channels/a/v1/chat/completions', { method: 'POST', headers: { authorization: 'Bearer private' }, body: '{}' });
+  assert.equal(response.status, 502);
+  const result = await response.json();
+  assert.match(result.msg, /^模型渠道「渠道 a」连接失败/);
+  assert.match(result.msg, /ECONNREFUSED|fetch failed/);
+  assert.ok(!result.msg.includes('secret-key-x'));
+});
+
+test('模型渠道超过 200 MB 的请求体返回 413', async t => {
+  const { root, store } = await fixture(t);
+  let received = 0;
+  store.fetchImpl = async () => { received++; return Response.json({ ok: true }); };
+  await store.save({ channels: [channel('a', 'https://only-via-proxy.test', 'key-a')] });
+  const gateway = new Gateway({ root, store, providerToken: 'private', log() {} }); await gateway.listen(0); t.after(() => gateway.close());
+  const result = await new Promise((resolve, reject) => {
+    const request = http.request(gateway.origin + '/local-ai/channels/a/v1/images/edits', { method: 'POST', headers: { authorization: 'Bearer private', 'content-length': String(200 * 1024 * 1024 + 1) } }, response => {
+      let body = ''; response.on('data', chunk => { body += chunk; }); response.on('end', () => resolve({ status: response.statusCode, body: JSON.parse(body) }));
+    });
+    request.on('error', reject);
+    const chunk = Buffer.alloc(1024 * 1024);
+    (async () => { for (let i = 0; i < 200; i++) { if (!request.write(chunk)) await new Promise(done => request.once('drain', done)); } request.end(Buffer.alloc(1)); })().catch(reject);
+  });
+  assert.equal(result.status, 413);
+  assert.match(result.body.msg, /请求内容超过 200 MB/);
+  assert.equal(received, 0);
 });
 
 test('文件清单识别损坏，路径越界被拒绝，端口冲突可选择空闲端口', async t => {

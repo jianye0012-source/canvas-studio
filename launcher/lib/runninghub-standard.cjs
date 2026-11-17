@@ -30,7 +30,10 @@ const docsURL = baseUrl => baseUrl + (baseUrl.endsWith('.cn') ? '/runninghub-api
 
 function networkError(message, error, apiKey) {
   const detail = [error?.name, error?.message || String(error), error?.code, error?.cause?.code, error?.cause?.message].filter(Boolean).join(' ');
-  return new Error(message + '：' + (apiKey ? detail.replaceAll(apiKey, '***') : detail).slice(0, 300));
+  const redacted = (apiKey ? detail.replaceAll(apiKey, '***') : detail).replace(/https?:\/\/[^\s"'<>]+/gi, value => {
+    try { const url = new URL(value); return url.origin + url.pathname; } catch { return '[URL]'; }
+  });
+  return new Error(message + '：' + redacted.slice(0, 300));
 }
 
 async function request(channel, route, body, { fetchImpl = fetch, signal } = {}) {
@@ -180,4 +183,4 @@ async function callStandardVideo(channel, input, options) {
   return { id, task_id: id, status: state === 'RUNNING' ? 'running' : 'queued' };
 }
 
-module.exports = { protocol, model, baseURL, normalizeRunningHubURL, detect, readCatalogue, loadModel, configuredModels, callStandardImage, callStandardVideo, submit3D: (channel, input, options) => submit(channel, input, '3d', options), query };
+module.exports = { protocol, model, baseURL, normalizeRunningHubURL, networkError, detect, readCatalogue, loadModel, configuredModels, callStandardImage, callStandardVideo, submit3D: (channel, input, options) => submit(channel, input, '3d', options), query };

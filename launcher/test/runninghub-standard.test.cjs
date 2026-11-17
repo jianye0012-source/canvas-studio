@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { ConfigStore, validateConfig } = require('../lib/config.cjs');
-const { model, protocol, normalizeRunningHubURL, callStandardImage, callStandardVideo, detect, readCatalogue, loadModel, query } = require('../lib/runninghub-standard.cjs');
+const { model, protocol, normalizeRunningHubURL, networkError, callStandardImage, callStandardVideo, detect, readCatalogue, loadModel, query } = require('../lib/runninghub-standard.cjs');
 
 const officialIndex = [
   '- Standard Model API > Image Generation & Processing > image-to-image > gpt [GPT Image 2](https://www.runninghub.ai/runninghub-api-doc-en/api-448184504.md):',
@@ -10,6 +10,15 @@ const officialIndex = [
   '- 标准模型API > 其他 [hitem3d-v3/multi-image-to-3d](https://www.runninghub.ai/runninghub-api-doc-en/api-789.md):',
   '- Task Query & webhook [Query](https://www.runninghub.ai/runninghub-api-doc-en/api-1234.md):',
 ].join('\n');
+
+test('网络错误原因隐藏密钥和 URL 凭据、签名参数', () => {
+  const error = new Error('fetch failed https://user:private-key@cdn.example/path/file.png?signature=secret&key=private-key');
+  const message = networkError('下载失败', error, 'private-key').message;
+  assert.match(message, /https:\/\/cdn\.example\/path\/file\.png/);
+  assert.ok(!message.includes('private-key'));
+  assert.ok(!message.includes('signature='));
+  assert.ok(!message.includes('@'));
+});
 
 test('RunningHub 账户和查询保留网络异常原因，并脱敏密钥及限制长度', async () => {
   const channel = { baseUrl: 'https://www.runninghub.cn', apiKey: 'private-fixture-key' };

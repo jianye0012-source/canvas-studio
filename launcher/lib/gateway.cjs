@@ -22,6 +22,17 @@ async function bodyJson(req, limit = 1024 * 1024) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 function jsonEqual(a, b) { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); }
+const hopHeaders = new Set(['host', 'connection', 'keep-alive', 'te', 'trailer', 'transfer-encoding', 'upgrade']);
+const reservedRequestHeaders = new Set([...hopHeaders, 'accept-charset', 'accept-encoding', 'content-length', 'cookie', 'cookie2', 'date', 'dnt', 'expect', 'origin', 'permissions-policy', 'referer', 'set-cookie', 'via', 'authorization']);
+async function proxyBody(req, limit = 200 * 1024 * 1024) {
+  let length = 0; const chunks = [];
+  for await (const chunk of req) {
+    length += chunk.length;
+    if (length > limit) throw new Error('请求内容超过 200 MB');
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, length);
+}
 
 class Gateway {
   constructor({ store, root, apiPort, webPort, cozyPort, livePort, serviceToken, providerToken, log, chooseFolder, chooseMedia, chooseOutput, cancelPicker }) {
@@ -305,7 +316,7 @@ class Gateway {
     const match = url.pathname.match(/^\/local-ai\/channels\/([a-zA-Z0-9_-]+)(?=\/)/);
     if (!director && !match) return json(res, 404, { error: { message: '模型渠道路径无效，请刷新工作台' } });
     const route = url.pathname.slice(director ? '/local-ai/director'.length : match[0].length).replace(/^\/v1(?=\/|$)/, '');
-    let channel, buffer;
+    let channel, bytes;
     if (director) {
       const channels = config.channels.filter(entry => entry.enabled);
       if (req.method === 'GET' && route === '/models') return json(res, 200, { object: 'list', data: channels.flatMap(entry => entry.models.filter(model => supportsRole(entry, model, 'director')).map(model => ({ id: directorModelId(entry.id, model), name: `${entry.name} · ${model}`, object: 'model', owned_by: entry.name }))) });
@@ -314,8 +325,7 @@ class Gateway {
       channel = channels.find(entry => entry.models.some(model => supportsRole(entry, model, 'director') && directorModelId(entry.id, model) === body.model));
       if (!channel) return json(res, 400, { error: { message: '该渠道或模型已停用，请重新选择白模导演模型' } });
       body.model = body.model.slice(channel.id.length + 2);
-      const bytes = Buffer.from(JSON.stringify(body)); buffer = Readable.from([bytes]);
-      req.headers['content-length'] = String(bytes.length); delete req.headers['transfer-encoding'];
+      bytes = Buffer.from(JSON.stringify(body));
     } else channel = config.channels.find(entry => entry.id === match[1] && entry.enabled);
     if (!channel) return json(res, 400, { error: { message: '该渠道已停用或删除，请重新选择；已提交任务不会转到其他渠道' } });
     if (!channel.baseUrl) return json(res, 503, { error: { message: `请先配置渠道「${channel.name}」的接口地址` } });
@@ -341,11 +351,36 @@ class Gateway {
       }
     }
     if (!/^\/(chat\/completions|responses|images\/(generations|edits)|videos(?:\/[^/?]+(?:\/content)?)?|audio\/(speech|transcriptions)|models)(?:\?|$)/.test(route)) return json(res, 404, { error: { message: '不支持的模型接口' } });
-    req.url = '/v1' + route + url.search;
-    req.canvasModelChannel = channel.name;
-    delete req.headers.cookie; delete req.headers.origin; delete req.headers.referer;
-    if (channel.apiKey) req.headers.authorization = `Bearer ${channel.apiKey}`; else delete req.headers.authorization;
-    return this.proxy.web(req, res, { target: channel.baseUrl, changeOrigin: true, secure: true, ...(buffer ? { buffer } : {}) });
+    return this.forwardModel(req, res, channel, route, url.search, bytes);
+  }
+  async forwardModel(req, res, channel, route, search, bytes) {
+    const controller = new AbortController();
+    res.once('close', () => { if (!res.writableFinished) controller.abort(); });
+    try {
+      if (req.method !== 'GET' && req.method !== 'HEAD' && !bytes) bytes = await proxyBody(req);
+      const headers = new Headers();
+      const connectionHeaders = new Set(String(req.headers.connection || '').toLowerCase().split(',').map(value => value.trim()));
+      for (const [name, value] of Object.entries(req.headers)) {
+        if (value == null || reservedRequestHeaders.has(name) || connectionHeaders.has(name) || ['proxy-', 'sec-', 'access-control-request-'].some(prefix => name.startsWith(prefix))) continue;
+        headers.set(name, Array.isArray(value) ? value.join(', ') : value);
+      }
+      if (channel.apiKey) headers.set('authorization', `Bearer ${channel.apiKey}`);
+      const upstream = await this.store.fetchImpl(channel.baseUrl + '/v1' + route + search, { method: req.method, headers, ...(bytes ? { body: bytes } : {}), signal: controller.signal });
+      const responseHeaders = {};
+      const upstreamConnectionHeaders = new Set((upstream.headers.get('connection') || '').toLowerCase().split(',').map(value => value.trim()));
+      for (const [name, value] of upstream.headers) {
+        if (hopHeaders.has(name) || upstreamConnectionHeaders.has(name) || name.startsWith('proxy-') || ['set-cookie', 'content-encoding', 'content-length'].includes(name)) continue;
+        responseHeaders[name] = value;
+      }
+      res.writeHead(upstream.status, responseHeaders);
+      if (upstream.body) await pipeline(Readable.fromWeb(upstream.body), res); else res.end();
+    } catch (error) {
+      if (res.destroyed) return;
+      if (error.message === '请求内容超过 200 MB') return json(res, 413, { code: 1, msg: error.message });
+      const message = runningHub.networkError(`模型渠道「${channel.name}」连接失败，请核对接口地址、网络和系统代理`, error, channel.apiKey).message;
+      this.log(message);
+      if (!res.headersSent) json(res, 502, { code: 1, msg: message }); else res.destroy();
+    }
   }
   async close({ force = false } = {}) { this.bridge.close(); await this.cancelPicker?.(); await this.model3D.close(); if (!force) await Promise.race([Promise.allSettled([...this.writes.values()]), require('node:timers/promises').setTimeout(2000, undefined, { ref: false })]); this.proxy.close(); for (const socket of this.sockets) socket.destroy(); this.server?.closeAllConnections(); await new Promise(resolve => this.server ? this.server.close(resolve) : resolve()); }
 }
