@@ -7,6 +7,7 @@ const mime = require('mime-types');
 const runningHub = require('./runninghub-standard.cjs');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
+const { once } = require('node:events');
 const { pathToFileURL } = require('node:url');
 const { ProjectEditors, editorIdPattern } = require('./project-editor.cjs');
 const { CanvasBridge } = require('./canvas-bridge.cjs');
@@ -311,8 +312,12 @@ class Gateway {
       html = html.replace('<head>', `<head><script>window.__CANVAS_LOCAL__=${boot};window.__COZYCLAY_LIVE__=true;window.__COZYCLAY_LIVE_URL__='ws://'+location.host+'/cozy/live';try{localStorage.setItem('cozyclay.locale','zh')}catch{}</script>`);
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); return res.end(html);
     }
+    const stream = require('node:fs').createReadStream(file);
+    try { await once(stream, 'open'); }
+    catch (error) { this.log('白模资源读取失败：' + error.code); return json(res, 500, { msg: '白模资源读取失败' }); }
     res.writeHead(200, { 'content-type': mime.lookup(file) || 'application/octet-stream', 'content-length': stat.size, 'cache-control': 'no-cache' });
-    require('node:fs').createReadStream(file).pipe(res);
+    try { await pipeline(stream, res); }
+    catch (error) { this.log('白模资源读取失败：' + error.code); if (!res.destroyed) res.destroy(); }
   }
   async provider(req, res, url) {
     const config = this.store.value;

@@ -94,6 +94,38 @@ test('3D 任务编号与导演台编号错误返回 400，缺失任务返回 404
   assert.equal((await failure.json()).msg, '磁盘写入失败');
 });
 
+test('白模静态文件正常返回原字节与响应头', async t => {
+  const { root, store } = await fixture(t);
+  const file = path.join(root, 'integrations/cozyclay/dist/models/a.glb');
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const bytes = Buffer.from([0x67, 0x6c, 0x54, 0x46, 0, 1, 2]); await fs.writeFile(file, bytes);
+  const gateway = new Gateway({ root, store, log() {} }); await gateway.listen(0); t.after(() => gateway.close());
+  const response = await fetch(gateway.origin + '/models/a.glb', { headers: { cookie: `canvas_session=${gateway.cookie}` } });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'model/gltf-binary');
+  assert.equal(response.headers.get('content-length'), String(bytes.length));
+  assert.equal(response.headers.get('cache-control'), 'no-cache');
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
+});
+
+test('白模静态文件读取失败返回 500 而不触发未捕获异常', async t => {
+  if (process.getuid?.() === 0) return t.skip('root 可读取权限为 000 的文件');
+  const { root, store } = await fixture(t), logs = [];
+  const file = path.join(root, 'integrations/cozyclay/dist/models/unreadable.glb');
+  await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, 'data'); await fs.chmod(file, 0);
+  const gateway = new Gateway({ root, store, log: message => logs.push(message) }); await gateway.listen(0); t.after(() => gateway.close());
+  let uncaught;
+  const onUncaught = error => { uncaught = error; };
+  process.on('uncaughtException', onUncaught);
+  try {
+    const response = await fetch(gateway.origin + '/models/unreadable.glb', { headers: { cookie: `canvas_session=${gateway.cookie}` } });
+    assert.equal(response.status, 500);
+    const result = await response.json();
+    assert.equal(result.msg, '白模资源读取失败'); assert.ok(!result.msg.includes(store.dataDir));
+    assert.equal(uncaught, undefined); assert.ok(logs.some(message => message.includes('EACCES')));
+  } finally { process.off('uncaughtException', onUncaught); await fs.chmod(file, 0o644); }
+});
+
 test('同名模型按渠道转发正确密钥，默认选择改变不影响任务查询，导演模型别名还原', async t => {
   const { root, store } = await fixture(t); const seen = [];
   const upstream = http.createServer(async (req, res) => { let body = ''; for await (const chunk of req) body += chunk; seen.push({ headers: req.headers, url: req.url, body }); res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ ok: true })); });
