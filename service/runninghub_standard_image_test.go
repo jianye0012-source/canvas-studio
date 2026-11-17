@@ -217,3 +217,73 @@ func TestRunningHubResultDownloadPermanentAndTransientErrors(t *testing.T) {
 		t.Fatalf("expected transient video download error, got %v", err)
 	}
 }
+
+func TestRunningHubQueryErrorCodeFailsImmediately(t *testing.T) {
+	root := t.TempDir()
+	originalConfig := config.Cfg
+	t.Cleanup(func() { config.Cfg = originalConfig })
+	config.Cfg.LocalToken, config.Cfg.LocalDataDir = "local-test", root
+	config.Cfg.StorageDriver, config.Cfg.DatabaseDSN = "sqlite", filepath.Join(root, "workspace.db")
+	channel := model.ModelChannel{ID: "rh", Enabled: true, Protocol: RunningHubStandardProtocol, BaseURL: "http://127.0.0.1:1/local-ai/channels/rh", APIKey: "previous-token", Models: []string{runningHubStandardImageModel}}
+	settings := model.Settings{}
+	settings.Private.Channels = []model.ModelChannel{channel}
+	if _, err := repository.SaveSettings(settings, now()); err != nil {
+		t.Fatal(err)
+	}
+	const taskID = "2013508786110730241"
+	queryResponse := map[string]any{"taskId": taskID, "status": "", "errorCode": "806", "errorMessage": "APIKEY_USER_NOT_FOUND"}
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer mock-token" {
+			t.Error("unexpected authorization")
+		}
+		if r.URL.Path != "/local-ai/channels/rh/v1/runninghub/query" {
+			t.Errorf("unexpected request path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(queryResponse)
+	}))
+	defer gateway.Close()
+	config.Cfg.LocalProviderBase, config.Cfg.LocalProviderToken = gateway.URL+"/local-ai/director", "mock-token"
+
+	input := CanvasImageTaskCreateInput{UserID: "local-test", ClientTaskID: "image-query-error", Endpoint: RunningHubStandardImageEndpoint, Model: runningHubStandardImageModel, ChannelID: "rh", ContentType: "application/json"}
+	task, created, err := CreateCanvasImageTaskOnce(input)
+	if err != nil || !created {
+		t.Fatalf("could not create image task: %v", err)
+	}
+	checkpoint, _ := json.Marshal(map[string]string{"taskId": taskID})
+
+	saveProcessing := func() {
+		t.Helper()
+		task.Status, task.ResponseBody = "processing", string(checkpoint)
+		if _, err := SaveCanvasImageTask(task); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	saveProcessing()
+	if err := pollRunningHubStandardImage(context.Background(), task); err != nil {
+		t.Fatalf("query errorCode should mark image failed without error: %v", err)
+	}
+	failedImage, _, _ := GetUserCanvasImageTask(task.UserID, task.ID)
+	if failedImage.Status != "failed" || failedImage.Error != "APIKEY_USER_NOT_FOUND" {
+		t.Fatalf("unexpected image query failure %+v", failedImage)
+	}
+	video, err := PollRunningHubStandardVideo(context.Background(), model.VideoTask{UserID: task.UserID, UpstreamTaskID: taskID}, channel)
+	if err != nil || video.Status != "failed" || video.Error != "APIKEY_USER_NOT_FOUND" {
+		t.Fatalf("unexpected video query failure %+v err %v", video, err)
+	}
+
+	for _, code := range []string{"", "0"} {
+		queryResponse = map[string]any{"taskId": taskID, "status": "", "errorCode": code, "errorMessage": ""}
+		saveProcessing()
+		if err := pollRunningHubStandardImage(context.Background(), task); err == nil || !strings.Contains(err.Error(), "未知任务状态") {
+			t.Fatalf("errorCode %q should keep unknown status error, got %v", code, err)
+		}
+		stillProcessing, _, _ := GetUserCanvasImageTask(task.UserID, task.ID)
+		if stillProcessing.Status != "processing" {
+			t.Fatalf("errorCode %q should keep task processing, got %s", code, stillProcessing.Status)
+		}
+	}
+}

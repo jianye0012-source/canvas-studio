@@ -147,6 +147,17 @@ func runningHubStandardResultURL(raw string, message string) error {
 	return nil
 }
 
+func runningHubStandardQueryFailed(result runningHubStandardResult) (string, bool) {
+	if strings.TrimSpace(result.Status) != "" {
+		return "", false
+	}
+	code := strings.TrimSpace(result.ErrorCode)
+	if code == "" || code == "0" {
+		return "", false
+	}
+	return firstVideoTaskValue(result.ErrorMessage, code), true
+}
+
 func SubmitRunningHubStandardImage(ctx context.Context, task model.CanvasImageTask, channel model.ModelChannel, body []byte) error {
 	if task.ContentType != "application/json" {
 		return errors.New("RunningHub 图片任务格式无效")
@@ -182,6 +193,9 @@ func pollRunningHubStandardImage(ctx context.Context, task model.CanvasImageTask
 	}
 	if result.TaskID != id {
 		return errors.New("RunningHub 返回了不匹配的任务编号")
+	}
+	if message, failed := runningHubStandardQueryFailed(result); failed {
+		return failRunningHubStandardImage(task, message)
 	}
 	switch strings.ToUpper(result.Status) {
 	case "CREATE", "QUEUED", "RUNNING":
@@ -249,6 +263,9 @@ func PollRunningHubStandardVideo(ctx context.Context, task model.VideoTask, chan
 	}
 	if result.TaskID != id {
 		return VideoTaskPollUpdate{}, errors.New("RunningHub 返回了不匹配的任务编号")
+	}
+	if message, failed := runningHubStandardQueryFailed(result); failed {
+		return VideoTaskPollUpdate{Status: "failed", Error: message}, nil
 	}
 	switch strings.ToUpper(result.Status) {
 	case "CREATE", "QUEUED":
