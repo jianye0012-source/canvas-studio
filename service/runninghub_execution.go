@@ -70,13 +70,17 @@ func SubmitRunningHubTask(ctx context.Context, channel model.ModelChannel, entry
 	}
 	endpoint := "/task/openapi/create"
 	body := map[string]any{"apiKey": channel.APIKey, "workflowId": entry.WorkflowID}
-	if len(nodeInfo) > 0 {
-		body["nodeInfoList"] = nodeInfo
-	}
 	if entry.Kind == "app" {
 		endpoint = "/task/openapi/ai-app/run"
 		delete(body, "workflowId")
 		body["webappId"] = entry.WorkflowID
+		if len(nodeInfo) > 0 {
+			body["nodeInfoList"] = nodeInfo
+		} else {
+			body["nodeInfoList"] = []map[string]string{}
+		}
+	} else if len(nodeInfo) > 0 {
+		body["nodeInfoList"] = nodeInfo
 	}
 	var response map[string]any
 	if err := runningHubRequest(ctx, root+endpoint, body, &response, capture); err != nil {
@@ -333,7 +337,7 @@ func uploadRunningHubReference(ctx context.Context, root, apiKey, raw string, ca
 	request.Header.Set("Content-Type", writer.FormDataContentType())
 	response, err := SafeProxyHTTPClient().Do(request)
 	if err != nil {
-		return "", errors.New("RunningHub 素材上传接口不可达")
+		return "", fmt.Errorf("RunningHub 素材上传接口不可达：%w", err)
 	}
 	defer response.Body.Close()
 	encoded, err := io.ReadAll(io.LimitReader(response.Body, (2<<20)+1))
@@ -386,7 +390,7 @@ func readWorkflowMedia(ctx context.Context, raw string, dataURLLimit int) ([]byt
 	}
 	response, err := SafeProxyHTTPClient().Do(request)
 	if err != nil {
-		return nil, "", errors.New("参考素材下载失败")
+		return nil, "", fmt.Errorf("参考素材下载失败：%w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
