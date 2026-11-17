@@ -45,7 +45,7 @@ import {
     type CanvasAlignmentGuides,
 } from "../utils/canvas-alignment";
 import { taskPollFailure } from "./canvas-task-poll";
-import { directorOutputError } from "./canvas-director-output";
+import { directorErrorText, directorOutputError } from "./canvas-director-output";
 import { App, Button, Dropdown, Modal, Slider } from "antd";
 import { isCogVideoX3Model, modelKey, supportsVideoAudioGeneration, supportsVideoFrameReferences } from "@/lib/video-model-capabilities";
 import { isMimoVoiceCloneModel } from "@/lib/mimo-tts";
@@ -2032,7 +2032,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             appendImportedImageNode(image, file.name, position, CanvasNodeType.Image);
         } catch (error) {
             console.error("Upload image node failed:", error);
-            message.error("图片上传失败");
+            message.error(`图片上传失败：${directorErrorText(error, 200)}`);
         } finally {
             hideLoading();
         }
@@ -2054,7 +2054,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             setDialogNodeId(node.id);
         } catch (error) {
             console.error("Upload video node failed:", error);
-            message.error("视频上传失败");
+            message.error(`视频上传失败：${directorErrorText(error, 200)}`);
         } finally {
             hideLoading();
         }
@@ -2083,7 +2083,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             return id;
         } catch (error) {
             console.error("Upload audio node failed:", error);
-            message.error("音频上传失败");
+            message.error(`音频上传失败：${directorErrorText(error, 200)}`);
         } finally {
             hideLoading();
         }
@@ -3120,7 +3120,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     }
                 } catch (error) {
                     console.error("Upload node file failed:", error);
-                    message.error("上传失败");
+                    message.error(`上传失败：${directorErrorText(error, 200)}`);
                 } finally {
                     hideLoading();
                 }
