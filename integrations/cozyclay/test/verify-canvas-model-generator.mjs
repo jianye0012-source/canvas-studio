@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { generatedGlbProblem } from '../src/canvas-model-generator.js';
+import { generatedGlbProblem, hasActiveModelTask } from '../src/canvas-model-generator.js';
 
 function glb(json) {
   const source = Buffer.from(JSON.stringify(json));
@@ -31,3 +31,9 @@ console.log('PASS 必需及仅使用 KTX2 时显示中文提示');
 
 assert.equal(generatedGlbProblem(glb({ asset: { version: '2.0' } })), '生成文件不包含可显示的网格，请核对平台结果');
 console.log('PASS 无可显示网格时保留原有提示');
+
+assert.equal(hasActiveModelTask([]), false);
+assert.equal(hasActiveModelTask([{ status: 'completed' }, { status: 'failed' }]), false);
+for (const status of ['submitting', 'processing', 'download_failed']) assert.equal(hasActiveModelTask([{ status }]), true);
+assert.equal(hasActiveModelTask([{ status: 'download_failed', downloadStopped: true }]), false);
+console.log('PASS 只有活动任务继续轮询');

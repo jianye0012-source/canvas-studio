@@ -6,6 +6,9 @@ const readImage = file => new Promise((resolve, reject) => { const reader = new 
 export function generatedGlbProblem(bytes) {
   return compressedGlbReason(bytes) || (!parseGlbBounds(bytes) ? '生成文件不包含可显示的网格，请核对平台结果' : null);
 }
+export function hasActiveModelTask(tasks) {
+  return tasks.some(task => ['submitting', 'processing'].includes(task.status) || (task.status === 'download_failed' && !task.downloadStopped));
+}
 async function api(url, body) {
   const response = await fetch(url, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
   const result = await response.json(); if (!response.ok) throw new Error(result.msg || result.error || '3D 请求失败'); return result;
@@ -24,7 +27,7 @@ export function openModelGenerator({ sceneId, run, save }) {
     const list = document.createElement('div'); list.className = 'canvas-3d-tasks';
     const close = document.createElement('button'); close.type = 'button'; close.textContent = '关闭'; close.onclick = () => dialog.close();
     form.append(select, fields, submit); dialog.append(heading, note, form, feedback, title, list, close); document.body.append(dialog); dialog.showModal();
-    let models = [], selected, controls = [], loading = false, ended = false, actionBusy = false;
+    let models = [], selected, controls = [], loading = false, ended = false, actionBusy = false, timer;
     const previews = new Set();
     const fieldControls = () => {
       for (const url of previews) URL.revokeObjectURL(url); previews.clear(); controls = []; fields.replaceChildren();
@@ -78,6 +81,8 @@ export function openModelGenerator({ sceneId, run, save }) {
       if (loading || ended || actionBusy) return; loading = true;
       try {
         const result = await api('/local/3d/tasks?sceneId=' + encodeURIComponent(sceneId)); if (ended) return;
+        if (hasActiveModelTask(result.tasks)) timer ||= setInterval(() => { void refresh(); }, 3000);
+        else { clearInterval(timer); timer = undefined; }
         list.replaceChildren(...result.tasks.map(task => {
           const row = document.createElement('article'); row.className = 'canvas-3d-task';
           const name = document.createElement('strong'); name.textContent = `${task.channelName} · ${task.name}`;
@@ -100,7 +105,6 @@ export function openModelGenerator({ sceneId, run, save }) {
       } catch (error) { if (!ended) feedback.textContent = error.message; }
       finally { loading = false; }
     }
-    const timer = setInterval(() => { void refresh(); }, 3000);
     dialog.addEventListener('close', () => { ended = true; clearInterval(timer); for (const url of previews) URL.revokeObjectURL(url); dialog.remove(); resolve(); }, { once: true });
     void api('/local/3d/models').then(result => {
       if (ended) return; models = result.models;
