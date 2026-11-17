@@ -44,20 +44,20 @@ export function useCanvasBridge(api) {
       label.textContent = '已保存到本机';
     });
     const capture = async () => {
-      await save(true);
+      await save();
       const result = await latest.current.appContext.ports.capture();
       if (!result?.dataUrl) throw new Error('镜头画面尚未准备好，请稍后重试');
       await sendOutput('storyai:director-captures-sent', { captures: [{ dataUrl: result.dataUrl, fileName: '白模导演台截图.png' }] });
       label.textContent = '截图已发送到画布';
     };
     const video = async () => {
-      await save(true); label.textContent = '正在导出动画…';
+      await save(); label.textContent = '正在导出动画…';
       const result = await latest.current.runShotExport({ download: false });
       if (!result?.blob || !result.blob.type.startsWith('video/mp4')) throw new Error('视频导出失败，请查看导演台导出面板');
       await sendOutput('storyai:director-video-sent', { blob: result.blob, fileName: '白模预演.mp4', width: result.width || 1280, height: result.height || 720, durationSeconds: result.frameCount / 24 });
       label.textContent = '动画已发送到画布';
     };
-    button('← 返回画布', async () => { await save(true); post('storyai:director-close'); });
+    button('← 返回画布', async () => { await save(); post('storyai:director-close'); });
     button('AI 生成 3D 模型', async () => { if (!initialized) throw new Error('请等待导演台连接完成'); await openModelGenerator({ sceneId: session.instanceId, run, save }); });
     button('保存场景', () => save(true)); button('截图到画布', capture); button('动画到画布', video);
     button('导演台 MCP', async () => {

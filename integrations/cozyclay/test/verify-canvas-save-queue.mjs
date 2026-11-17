@@ -54,3 +54,30 @@ const deferred = () => {
   assert.equal(writes, 1);
   console.log('PASS 取消后不再开始保存');
 }
+
+{
+  let current = 'scene-1', last = 'scene-1', puts = 0;
+  const save = createSaveQueue(async force => {
+    const before = current;
+    if (!force && before === last) return;
+    puts++; last = before;
+  });
+  await save(); assert.equal(puts, 0);
+  current = 'scene-2'; await save(); assert.equal(puts, 1);
+  await save(); assert.equal(puts, 1);
+  console.log('PASS 快照未变时跳过保存，场景变化时先写入');
+}
+
+{
+  let last = '', puts = 0;
+  const save = createSaveQueue(async () => {
+    const before = 'scene';
+    if (before === last) return;
+    puts++;
+    if (puts === 1) throw new Error('磁盘保存失败');
+    last = before;
+  });
+  await assert.rejects(save(), /磁盘保存失败/);
+  await save(); assert.equal(puts, 2); assert.equal(last, 'scene');
+  console.log('PASS 首次 PUT 失败后快照未更新，下次调用仍会保存');
+}
