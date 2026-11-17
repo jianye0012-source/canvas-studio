@@ -99,3 +99,50 @@ func TestExpiredVideoTaskMarkedFailed(t *testing.T) {
 		t.Fatalf("unexpected expired task result %+v", updated)
 	}
 }
+
+func TestMarkInterruptedCanvasTasks(t *testing.T) {
+	root := t.TempDir()
+	originalConfig := config.Cfg
+	t.Cleanup(func() { config.Cfg = originalConfig })
+	config.Cfg.LocalToken, config.Cfg.LocalDataDir = "local-test", root
+	config.Cfg.StorageDriver, config.Cfg.DatabaseDSN = "sqlite", filepath.Join(root, "workspace.db")
+
+	const message = "服务重启，任务已中断，请重新生成"
+	normalImage := model.CanvasImageTask{ID: "img-normal", UserID: "local-test", Status: "processing", Endpoint: "/images/generations", CreatedAt: now(), UpdatedAt: now()}
+	runningHubImage := model.CanvasImageTask{ID: "img-runninghub", UserID: "local-test", Status: "processing", Endpoint: RunningHubStandardImageEndpoint, ResponseBody: `{"taskId":"1"}`, CreatedAt: now(), UpdatedAt: now()}
+	normalAudio := model.CanvasAudioTask{ID: "audio-normal", UserID: "local-test", Status: "queued", Endpoint: "/audio/speech", CreatedAt: now(), UpdatedAt: now()}
+	doneImage := model.CanvasImageTask{ID: "img-done", UserID: "local-test", Status: "completed", Endpoint: "/images/generations", CompletedAt: now(), CreatedAt: now(), UpdatedAt: now()}
+	for _, task := range []any{normalImage, runningHubImage, normalAudio, doneImage} {
+		var err error
+		switch item := task.(type) {
+		case model.CanvasImageTask:
+			_, err = repository.SaveCanvasImageTask(item)
+		case model.CanvasAudioTask:
+			_, err = repository.SaveCanvasAudioTask(item)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := repository.MarkInterruptedCanvasTasks(RunningHubStandardImageEndpoint, now(), message); err != nil {
+		t.Fatal(err)
+	}
+
+	img, _, _ := repository.GetUserCanvasImageTask("local-test", "img-normal")
+	if img.Status != "failed" || img.Error != message {
+		t.Fatalf("normal image not interrupted: %+v", img)
+	}
+	rh, _, _ := repository.GetUserCanvasImageTask("local-test", "img-runninghub")
+	if rh.Status != "processing" {
+		t.Fatalf("runninghub image should keep processing: %+v", rh)
+	}
+	audio, _, _ := repository.GetUserCanvasAudioTask("local-test", "audio-normal")
+	if audio.Status != "failed" || audio.Error != message {
+		t.Fatalf("normal audio not interrupted: %+v", audio)
+	}
+	done, _, _ := repository.GetUserCanvasImageTask("local-test", "img-done")
+	if done.Status != "completed" {
+		t.Fatalf("completed image should stay completed: %+v", done)
+	}
+}

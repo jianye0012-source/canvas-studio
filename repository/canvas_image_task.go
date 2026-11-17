@@ -44,6 +44,21 @@ func MarkUnconfirmedImageSubmissions(endpoint string, at string) error {
 		Updates(map[string]any{"status": "failed", "completed_at": at, "updated_at": at, "error": "RunningHub 提交状态未确认，请核对任务记录后再重试"}).Error
 }
 
+func MarkInterruptedCanvasTasks(runningHubEndpoint string, at string, message string) error {
+	db, err := DB()
+	if err != nil {
+		return err
+	}
+	if err := db.Model(&model.CanvasImageTask{}).
+		Where("endpoint <> ? AND status IN ?", runningHubEndpoint, []string{"queued", "processing", "running", "in_progress"}).
+		Updates(map[string]any{"status": "failed", "completed_at": at, "updated_at": at, "error": message}).Error; err != nil {
+		return err
+	}
+	return db.Model(&model.CanvasAudioTask{}).
+		Where("status IN ?", []string{"queued", "processing", "running", "in_progress"}).
+		Updates(map[string]any{"status": "failed", "completed_at": at, "updated_at": at, "error": message}).Error
+}
+
 func SaveCanvasImageTask(task model.CanvasImageTask) (model.CanvasImageTask, error) {
 	db, err := DB()
 	if err != nil {

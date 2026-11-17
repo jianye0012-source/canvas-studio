@@ -207,6 +207,9 @@ func StartVideoTaskPoller(poll VideoTaskPollFunc) {
 		if err := resumeRunningHubStandardImageTasks(); err != nil {
 			log.Printf("resume RunningHub image tasks failed err=%v", err)
 		}
+		if err := repository.MarkInterruptedCanvasTasks(RunningHubStandardImageEndpoint, now(), "服务重启，任务已中断，请重新生成"); err != nil {
+			log.Printf("mark interrupted canvas tasks failed err=%v", err)
+		}
 		go runVideoTaskPoller()
 	})
 	WakeVideoTaskPoller()
