@@ -45,8 +45,10 @@ function validateConfig(value) {
       return { id, name, protocol, baseUrl: runningHub.normalizeRunningHubURL(baseUrl), apiKey: text(channel.apiKey || '', 'API Key'), enabled: channel.enabled !== false, models: Object.keys(modelCapabilities), modelCapabilities, modelToolSupport: {}, runningHubModels };
     }
     if (baseUrl) {
-      const url = new URL(baseUrl);
-      if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error(`渠道「${name}」接口地址无效`);
+      const invalid = () => new Error(`渠道「${name}」接口地址格式不正确，请填写以 http:// 或 https:// 开头的完整地址`);
+      let url;
+      try { url = new URL(baseUrl); } catch { throw invalid(); }
+      if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw invalid();
       baseUrl = url.href.replace(/\/+$/, '').replace(/\/v1$/, '');
     }
     if (!Array.isArray(channel.models) || channel.models.length > 2000) throw new Error(`渠道「${name}」模型列表无效`);

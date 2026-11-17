@@ -17,12 +17,13 @@ async function fixture(t) {
   const properties = { prompt: { type: 'string', maxLength: 20000 }, enablePbr: { type: 'boolean', default: false }, generateType: { type: 'string', enum: ['Normal', 'Geometry'], default: 'Normal' }, faceCount: { type: 'integer', minimum: 10000, maximum: 1500000, default: 500000 } };
   const spec = normalizeModel(model, { type: '3d', name: '测试文生3D', required: ['prompt', 'enablePbr', 'generateType'], properties });
   const imageSpec = normalizeModel(imageModel, { type: '3d', name: '测试图生3D', required: ['imageUrl'], properties: { imageUrl: { type: 'string' }, leftImageUrl: { type: 'string' } } });
-  const state = { urls: [], submits: 0, queries: 0, uploads: 0, finished: true, corrupt: false, uncertain: false };
+  const state = { urls: [], submits: 0, queries: 0, uploads: 0, finished: true, corrupt: false, uncertain: false, queryError: false };
   const fetchImpl = async (url, options) => {
     state.urls.push(url);
     if (url.endsWith('/media/upload/binary')) { state.uploads++; assert.ok(options.body instanceof FormData); return Response.json({ code: 0, data: { download_url: `https://files.example/${state.uploads}.png` } }); }
     if (url.endsWith('/query')) {
       state.queries++; assert.equal(JSON.parse(options.body).taskId, '9000000000001');
+      if (state.queryError) return Response.json({ taskId: '9000000000001', status: '', errorCode: '806', errorMessage: 'APIKEY_USER_NOT_FOUND' });
       return Response.json({ taskId: '9000000000001', status: state.finished ? 'SUCCESS' : 'RUNNING', results: state.finished ? [{ outputType: 'glb', url: 'https://files.example/model.glb' }] : null });
     }
     if (url.endsWith('.glb')) return new Response(state.corrupt ? Buffer.from('not a model') : bytes);
@@ -98,4 +99,16 @@ test('中断的提交记录显示未确认，不冒充仍在运行', async t => 
   const saved = await jobs.read(input.id); delete saved.taskId; saved.status = 'submitting'; await jobs.write(saved);
   const restored = open(); await restored.ready;
   assert.equal((await restored.read(input.id)).status, 'uncertain'); assert.equal(state.submits, 1);
+});
+
+test('3D 查询返回错误码时任务立即失败且不再轮询', async t => {
+  const { open, input, state } = await fixture(t); const jobs = open();
+  await jobs.create(input);
+  state.queryError = true;
+  const failed = await jobs.refresh(input.id);
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.error, /APIKEY_USER_NOT_FOUND/);
+  const queries = state.queries;
+  await jobs.refresh(input.id);
+  assert.equal(state.queries, queries);
 });

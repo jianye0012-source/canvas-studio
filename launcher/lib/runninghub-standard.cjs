@@ -1,5 +1,7 @@
 const { endpointPattern, imageFields, normalizeModel, parseModel, parameters } = require('./runninghub-schema.cjs');
 const { randomUUID } = require('node:crypto');
+const dns = require('node:dns/promises');
+const net = require('node:net');
 
 const protocol = 'runninghub-standard';
 const model = 'rhart-image-g-2/image-to-image';
@@ -15,13 +17,45 @@ const catalogueTypes = new Map([
   ['音频生成与处理', 'audio'],
 ]);
 const ratios = new Set(['1:1', '2:3', '3:2', '4:5', '5:4', '4:3', '16:9', '9:16', '21:9', '9:21', '2:1', '1:2', '3:1', '1:3']);
+const blockedIPs = new net.BlockList();
+for (const [address, prefix] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.168.0.0', 16], ['224.0.0.0', 4], ['240.0.0.0', 4]]) blockedIPs.addSubnet(address, prefix, 'ipv4');
+for (const [address, prefix] of [['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8]]) blockedIPs.addSubnet(address, prefix, 'ipv6');
+
+function blockedIP(address) {
+  const dotted = address.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  if (dotted) return blockedIP(dotted[1]);
+  const mapped = address.match(/^::ffff:([\da-f]{1,4}):([\da-f]{1,4})$/i);
+  if (mapped) {
+    const high = parseInt(mapped[1], 16), low = parseInt(mapped[2], 16);
+    return blockedIPs.check([high >> 8, high & 255, low >> 8, low & 255].join('.'), 'ipv4');
+  }
+  const family = net.isIP(address);
+  return !family || blockedIPs.check(address, family === 4 ? 'ipv4' : 'ipv6');
+}
+
+async function validateResultURL(value, lookup = dns.lookup) {
+  const invalid = () => Object.assign(new Error('RunningHub 结果地址无效或指向本地、内网'), { status: 422 });
+  let url;
+  try { url = new URL(value); } catch { throw invalid(); }
+  const host = url.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (url.protocol !== 'https:' || url.username || url.password || url.port || !host || host === 'localhost' || host.endsWith('.localhost')) throw invalid();
+  if (net.isIP(host)) { if (blockedIP(host)) throw invalid(); }
+  else {
+    let addresses;
+    try { addresses = await lookup(host, { all: true }); } catch { return url.href; }
+    if (!addresses?.length || addresses.some(item => blockedIP(item.address))) throw invalid();
+  }
+  return url.href;
+}
 
 function normalizeRunningHubURL(value) {
-  const url = new URL(value || baseURL);
+  const invalid = () => new Error('RunningHub 标准模型请使用 https://www.runninghub.cn 或 https://www.runninghub.ai，也可填写对应官方文档首页或模型提交地址');
+  let url;
+  try { url = new URL(value || baseURL); } catch { throw invalid(); }
   const pathname = url.pathname.replace(/\/+$/, '');
   if (url.protocol !== 'https:' || !['www.runninghub.ai', 'runninghub.ai', 'www.runninghub.cn', 'runninghub.cn'].includes(url.host) || url.username || url.password || url.search || url.hash ||
       (!['', '/runninghub-api-doc-en', '/runninghub-api-doc-cn', '/openapi/v2'].includes(pathname) && !(pathname.startsWith('/openapi/v2/') && endpointPattern.test(pathname.slice('/openapi/v2/'.length))))) {
-    throw new Error('RunningHub 标准模型请使用 https://www.runninghub.cn 或 https://www.runninghub.ai，也可填写对应官方文档首页或模型提交地址');
+    throw invalid();
   }
   return url.hostname.endsWith('.cn') ? 'https://www.runninghub.cn' : baseURL;
 }
@@ -30,7 +64,10 @@ const docsURL = baseUrl => baseUrl + (baseUrl.endsWith('.cn') ? '/runninghub-api
 
 function networkError(message, error, apiKey) {
   const detail = [error?.name, error?.message || String(error), error?.code, error?.cause?.code, error?.cause?.message].filter(Boolean).join(' ');
-  return new Error(message + '：' + (apiKey ? detail.replaceAll(apiKey, '***') : detail).slice(0, 300));
+  const redacted = (apiKey ? detail.replaceAll(apiKey, '***') : detail).replace(/https?:\/\/[^\s"'<>]+/gi, value => {
+    try { const url = new URL(value); return url.origin + url.pathname; } catch { return '[URL]'; }
+  });
+  return new Error(message + '：' + redacted.slice(0, 300));
 }
 
 async function request(channel, route, body, { fetchImpl = fetch, signal } = {}) {
@@ -168,7 +205,23 @@ async function callStandardImage(channel, route, input, options) {
 
 async function query(channel, taskId, options) {
   if (typeof taskId !== 'string' || !/^\d{1,32}$/.test(taskId)) throw new Error('RunningHub 任务编号无效');
-  return request(channel, '/openapi/v2/query', { taskId }, options);
+  const result = await request(channel, '/openapi/v2/query', { taskId }, options);
+  const code = String(result.errorCode ?? '').trim();
+  if (!String(result.status ?? '').trim() && code && code !== '0') result.status = 'FAILED';
+  return result;
+}
+
+async function downloadResult(channel, taskId, { fetchImpl = fetch, signal, lookup } = {}) {
+  const result = await query(channel, taskId, { fetchImpl, signal });
+  if (String(result.status || '').trim().toUpperCase() !== 'SUCCESS' || !result.results?.[0]?.url) {
+    throw Object.assign(new Error('RunningHub 任务尚未完成'), { status: 409 });
+  }
+  const url = await validateResultURL(result.results[0].url, lookup);
+  try { return await fetchImpl(url, { redirect: 'error', credentials: 'omit', signal }); }
+  catch (error) {
+    if (/redirect/i.test(String(error?.message || ''))) throw Object.assign(new Error('RunningHub 结果地址发生跳转，已拒绝下载'), { status: 422 });
+    throw Object.assign(networkError('无法下载 RunningHub 结果，请检查网络与系统代理后重试', error, channel.apiKey), { status: 502 });
+  }
 }
 
 async function callStandardVideo(channel, input, options) {
@@ -180,4 +233,4 @@ async function callStandardVideo(channel, input, options) {
   return { id, task_id: id, status: state === 'RUNNING' ? 'running' : 'queued' };
 }
 
-module.exports = { protocol, model, baseURL, normalizeRunningHubURL, detect, readCatalogue, loadModel, configuredModels, callStandardImage, callStandardVideo, submit3D: (channel, input, options) => submit(channel, input, '3d', options), query };
+module.exports = { protocol, model, baseURL, normalizeRunningHubURL, networkError, validateResultURL, detect, readCatalogue, loadModel, configuredModels, callStandardImage, callStandardVideo, submit3D: (channel, input, options) => submit(channel, input, '3d', options), query, downloadResult };

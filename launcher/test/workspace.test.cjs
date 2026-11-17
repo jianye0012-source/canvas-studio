@@ -10,7 +10,7 @@ const { ConfigStore } = require('../lib/config.cjs');
 const { Gateway } = require('../lib/gateway.cjs');
 const { MediaExports } = require('../lib/media-files.cjs');
 
-test('选择窗口可通过本机会话取消，渠道 TLS 错误显示渠道连接失败', async t => {
+test('选择窗口可通过本机会话取消，本地转发失败显示服务未就绪', async t => {
   const root = await fs.mkdtemp(path.resolve(__dirname, '../../work/tmp/picker-cancel-'));
   const store = await new ConfigStore(root).initialize();
   let cancelled = 0;
@@ -21,8 +21,8 @@ test('选择窗口可通过本机会话取消，渠道 TLS 错误显示渠道连
   const response = await fetch(origin + '/local/picker/cancel', { method: 'POST', headers: { cookie: `canvas_session=${gateway.cookie}` } });
   assert.deepEqual(await response.json(), { canceled: true }); assert.equal(cancelled, 1);
   let body;
-  gateway.proxy.emit('error', new Error('Client network socket disconnected before secure TLS connection was established'), { canvasModelChannel: '国内渠道' }, { writeHead() {}, end(value) { body = JSON.parse(value); } });
-  assert.equal(body.code, 1); assert.match(body.msg, /国内渠道.*连接失败/); assert.ok(!body.msg.includes('本地服务未就绪'));
+  gateway.proxy.emit('error', new Error('本地连接中断'), {}, { writeHead() {}, end(value) { body = JSON.parse(value); } });
+  assert.equal(body.code, 1); assert.equal(body.msg, '本地服务未就绪，请查看启动器日志');
 });
 
 test('专属 MCP 凭据与原项目分离；拒绝无凭据、错误来源，端口变化后配置仍使用同一凭据', async t => {
