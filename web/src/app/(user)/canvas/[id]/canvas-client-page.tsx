@@ -44,6 +44,7 @@ import {
     type CanvasAlignmentContext,
     type CanvasAlignmentGuides,
 } from "../utils/canvas-alignment";
+import { taskPollFailure } from "./canvas-task-poll";
 import { App, Button, Dropdown, Modal, Slider } from "antd";
 import { isCogVideoX3Model, modelKey, supportsVideoAudioGeneration, supportsVideoFrameReferences } from "@/lib/video-model-capabilities";
 import { isMimoVoiceCloneModel } from "@/lib/mimo-tts";
@@ -545,6 +546,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     const pollingVideoNodeIdsRef = useRef(new Map<string, AbortController>());
     const pollingImageNodeIdsRef = useRef(new Map<string, AbortController>());
     const pollingAudioNodeIdsRef = useRef(new Map<string, AbortController>());
+    const taskPollFailureCountsRef = useRef(new Map<string, number>());
     const hasLoadingTimedNodes = nodes.some((node) => node.metadata?.status === NODE_STATUS_LOADING && !node.metadata.content && (node.type === CanvasNodeType.Video || isCanvasImageNodeType(node.type) || node.type === CanvasNodeType.Audio));
 
     const rememberNodeTask = useCallback(<T extends CanvasImageTask | CanvasAudioTask | VideoResponse,>(nodeId: string, id: string | undefined, task: T) => {
@@ -818,6 +820,18 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     useEffect(() => {
         if (!projectLoaded) return;
         const pollCanvasTasks = () => {
+            const applyTaskPollFailure = (nodeId: string, error: unknown) => {
+                const previous = taskPollFailureCountsRef.current.get(nodeId) || 0;
+                const result = taskPollFailure(previous, error);
+                if (result.count === previous) return;
+                taskPollFailureCountsRef.current.set(nodeId, result.count);
+                if (result.failMessage) {
+                    taskPollFailureCountsRef.current.delete(nodeId);
+                    setNodes((prev) => prev.map((node) => node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, errorDetails: result.failMessage } } : node));
+                    return;
+                }
+                if (result.warnMessage) message.warning(result.warnMessage);
+            };
             nodesRef.current.filter((node) => node.metadata?.status === "stopping" && !node.metadata.errorDetails).forEach((node) => { void handleStopNode(node.id); });
             const videoTargets = nodesRef.current.filter((node) => node.type === CanvasNodeType.Video && node.metadata?.status === NODE_STATUS_LOADING && !node.metadata.content && canvasVideoTaskId(node.metadata));
             videoTargets.forEach((node) => {
@@ -833,11 +847,12 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     : pollVideoGenerationTaskStatus(generationConfig, canvasVideoTaskFromMetadata(node.metadata), controller.signal))
                     .then((result) => {
                         if (controller.signal.aborted) return;
+                        taskPollFailureCountsRef.current.delete(node.id);
                         const task = rememberNodeTask(node.id, node.metadata?.clientTaskId, result);
                         if (!isNodeTaskActive(node.id, node.metadata?.clientTaskId)) return;
                         setNodes((prev) => applyCanvasVideoTaskUpdate(prev, node.id, task, generationConfig, node.metadata?.startedAt || Date.now(), { width: node.width, height: node.height }, node.metadata?.clientTaskId));
                     })
-                    .catch(() => undefined)
+                    .catch((error) => applyTaskPollFailure(node.id, error))
                     .finally(() => {
                         pollingVideoNodeIdsRef.current.delete(node.id);
                     });
@@ -853,12 +868,13 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     : pollCanvasImageTaskStatus(node.metadata.imageTaskId, controller.signal))
                     .then((result) => {
                         if (controller.signal.aborted) return;
+                        taskPollFailureCountsRef.current.delete(node.id);
                         const task = rememberNodeTask(node.metadata?.clientTaskId ? node.id : node.metadata?.primaryImageId || node.id, node.metadata?.clientTaskId || node.metadata?.imageTaskId, result);
                         if (!node.metadata?.isBatchRoot && !isNodeTaskActive(node.id, node.metadata?.clientTaskId)) return;
                         setNodes((prev) => applyCanvasImageTaskUpdate(prev, node.id, task, node.metadata?.startedAt || Date.now(), { width: node.width, height: node.height }, node.metadata?.clientTaskId));
                         setConnections((prev) => node.metadata?.isBatchRoot || isNodeTaskActive(node.id, node.metadata?.clientTaskId) ? applyCanvasImageTaskConnections(prev, node.id, task, node.metadata?.batchRootId) : prev);
                     })
-                    .catch(() => undefined)
+                    .catch((error) => applyTaskPollFailure(node.id, error))
                     .finally(() => {
                         pollingImageNodeIdsRef.current.delete(node.id);
                     });
@@ -874,11 +890,12 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     : pollCanvasAudioTaskStatus(node.metadata.audioTaskId, controller.signal))
                     .then((task) => {
                         if (controller.signal.aborted) return;
+                        taskPollFailureCountsRef.current.delete(node.id);
                         rememberNodeTask(node.id, node.metadata?.clientTaskId, task);
                         if (!isNodeTaskActive(node.id, node.metadata?.clientTaskId)) return;
                         setNodes((prev) => applyCanvasAudioTaskUpdate(prev, node.id, task, node.metadata?.startedAt || Date.now(), node.metadata?.clientTaskId));
                     })
-                    .catch(() => undefined)
+                    .catch((error) => applyTaskPollFailure(node.id, error))
                     .finally(() => {
                         pollingAudioNodeIdsRef.current.delete(node.id);
                     });
