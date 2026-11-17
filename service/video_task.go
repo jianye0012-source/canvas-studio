@@ -73,7 +73,7 @@ type VideoTaskPollFunc func(context.Context, model.VideoTask) (VideoTaskPollUpda
 
 func CreateVideoTask(input VideoTaskCreateInput) (model.VideoTask, error) {
 	current := now()
-	status := NormalizeVideoTaskStatus(input.Status)
+	status := videoTaskStoredStatus(input.Status)
 	if status == "" {
 		status = "queued"
 	}
@@ -389,7 +389,7 @@ func UpdateVideoTaskFromPoll(task model.VideoTask, update VideoTaskPollUpdate) e
 		task.ParameterTranslationSnapshot = update.ParameterTranslationSnapshot
 	}
 	current := now()
-	task.Status = NormalizeVideoTaskStatus(firstVideoTaskValue(update.Status, task.Status))
+	task.Status = videoTaskStoredStatus(firstVideoTaskValue(update.Status, task.Status))
 	if task.Status == "" {
 		task.Status = "processing"
 	}
@@ -449,6 +449,19 @@ func NormalizeVideoTaskStatus(status string) string {
 		return "queued"
 	default:
 		return strings.ToLower(strings.TrimSpace(status))
+	}
+}
+
+func videoTaskStoredStatus(status string) string {
+	if strings.TrimSpace(status) == "" {
+		return ""
+	}
+	normalized := NormalizeVideoTaskStatus(status)
+	switch normalized {
+	case "queued", "processing", "completed", "failed":
+		return normalized
+	default:
+		return "unknown"
 	}
 }
 
