@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"io"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -33,17 +33,20 @@ func TestRunningHubImageTaskReusesProviderIDAndSavesResult(t *testing.T) {
 	config.Cfg.StorageDriver, config.Cfg.DatabaseDSN = "sqlite", filepath.Join(root, "workspace.db")
 	const providerID = "2013508786110730241"
 	const videoID = "2013508786110730242"
+	imageBytes, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aH2sAAAAASUVORK5CYII=")
+	videoBytes := []byte("\x00\x00\x00\x14ftypmp42\x00\x00\x00\x00mp42")
 	var submits, queries int
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
 		if r.Header.Get("Authorization") != "Bearer mock-token" {
 			t.Error("unexpected authorization")
 		}
 		switch r.URL.Path {
 		case "/local-ai/channels/rh/v1/runninghub/submit":
+			w.Header().Set("Content-Type", "application/json")
 			submits++
 			_ = json.NewEncoder(w).Encode(map[string]any{"taskId": providerID, "status": "RUNNING"})
 		case "/local-ai/channels/rh/v1/runninghub/query":
+			w.Header().Set("Content-Type", "application/json")
 			queries++
 			var body map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&body)
@@ -55,6 +58,20 @@ func TestRunningHubImageTaskReusesProviderIDAndSavesResult(t *testing.T) {
 				t.Errorf("wrong query ID %v", body)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"taskId": providerID, "status": "SUCCESS", "results": []map[string]string{{"url": "https://example.com/image.png"}}})
+		case "/local-ai/channels/rh/v1/runninghub/result":
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			switch body["taskId"] {
+			case videoID:
+				w.Header().Set("Content-Type", "video/mp4")
+				_, _ = w.Write(videoBytes)
+			case providerID:
+				w.Header().Set("Content-Type", "image/png")
+				_, _ = w.Write(imageBytes)
+			default:
+				t.Errorf("unexpected result task ID %v", body)
+				w.WriteHeader(http.StatusNotFound)
+			}
 		default:
 			t.Errorf("unexpected request path %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -62,18 +79,9 @@ func TestRunningHubImageTaskReusesProviderIDAndSavesResult(t *testing.T) {
 	}))
 	defer gateway.Close()
 	config.Cfg.LocalProviderBase, config.Cfg.LocalProviderToken = gateway.URL+"/local-ai/director", "mock-token"
-	imageBytes, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aH2sAAAAASUVORK5CYII=")
 	safeProxyHTTPClient = &http.Client{Transport: runningHubTestTransport(func(request *http.Request) (*http.Response, error) {
-		if request.Header.Get("Authorization") != "" {
-			t.Error("download sent the provider token")
-		}
-		if request.URL.String() == "https://example.com/video.mp4" {
-			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("\x00\x00\x00\x14ftypmp42\x00\x00\x00\x00mp42"))}, nil
-		}
-		if request.URL.String() != "https://example.com/image.png" {
-			t.Error("image download used unexpected URL")
-		}
-		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(imageBytes)))}, nil
+		t.Error("result download must use the gateway, not SafeProxyHTTPClient")
+		return nil, errors.New("unexpected SafeProxyHTTPClient call")
 	})}
 	channel := model.ModelChannel{ID: "rh", Enabled: true, Protocol: RunningHubStandardProtocol, BaseURL: "http://127.0.0.1:1/local-ai/channels/rh", APIKey: "previous-token", Models: []string{runningHubStandardImageModel}}
 	settings := model.Settings{}
@@ -131,5 +139,81 @@ func TestRunningHubImageTaskReusesProviderIDAndSavesResult(t *testing.T) {
 	files, _ = os.ReadDir(filepath.Join(root, "assets"))
 	if len(files) != 2 {
 		t.Fatalf("expected one image and one video on disk, got %d files", len(files))
+	}
+}
+
+func TestRunningHubResultDownloadPermanentAndTransientErrors(t *testing.T) {
+	root := t.TempDir()
+	originalConfig := config.Cfg
+	t.Cleanup(func() { config.Cfg = originalConfig })
+	config.Cfg.LocalToken, config.Cfg.LocalDataDir = "local-test", root
+	config.Cfg.StorageDriver, config.Cfg.DatabaseDSN = "sqlite", filepath.Join(root, "workspace.db")
+	channel := model.ModelChannel{ID: "rh", Enabled: true, Protocol: RunningHubStandardProtocol, BaseURL: "http://127.0.0.1:1/local-ai/channels/rh", APIKey: "previous-token", Models: []string{runningHubStandardImageModel}}
+	settings := model.Settings{}
+	settings.Private.Channels = []model.ModelChannel{channel}
+	if _, err := repository.SaveSettings(settings, now()); err != nil {
+		t.Fatal(err)
+	}
+	const taskID = "2013508786110730241"
+	resultStatus := http.StatusUnprocessableEntity
+	resultBody := `{"error":{"message":"RunningHub 结果地址发生跳转，已拒绝下载"}}`
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer mock-token" {
+			t.Error("unexpected authorization")
+		}
+		switch r.URL.Path {
+		case "/local-ai/channels/rh/v1/runninghub/query":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"taskId": taskID, "status": "SUCCESS", "results": []map[string]string{{"url": "https://example.com/image.png"}}})
+		case "/local-ai/channels/rh/v1/runninghub/result":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(resultStatus)
+			_, _ = w.Write([]byte(resultBody))
+		default:
+			t.Errorf("unexpected request path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gateway.Close()
+	config.Cfg.LocalProviderBase, config.Cfg.LocalProviderToken = gateway.URL+"/local-ai/director", "mock-token"
+
+	input := CanvasImageTaskCreateInput{UserID: "local-test", ClientTaskID: "image-result-errors", Endpoint: RunningHubStandardImageEndpoint, Model: runningHubStandardImageModel, ChannelID: "rh", ContentType: "application/json"}
+	task, created, err := CreateCanvasImageTaskOnce(input)
+	if err != nil || !created {
+		t.Fatalf("could not create image task: %v", err)
+	}
+	checkpoint, _ := json.Marshal(map[string]string{"taskId": taskID})
+	task.Status, task.ResponseBody = "processing", string(checkpoint)
+	if _, err := SaveCanvasImageTask(task); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := pollRunningHubStandardImage(context.Background(), task); err != nil {
+		t.Fatalf("permanent image poll should not return error: %v", err)
+	}
+	failedImage, _, _ := GetUserCanvasImageTask(task.UserID, task.ID)
+	if failedImage.Status != "failed" || failedImage.Error != "RunningHub 结果地址发生跳转，已拒绝下载" {
+		t.Fatalf("unexpected permanent image result %+v", failedImage)
+	}
+	video, err := PollRunningHubStandardVideo(context.Background(), model.VideoTask{UserID: task.UserID, UpstreamTaskID: taskID}, channel)
+	if err != nil || video.Status != "failed" || video.Error != "RunningHub 结果地址发生跳转，已拒绝下载" {
+		t.Fatalf("unexpected permanent video result %+v err %v", video, err)
+	}
+
+	resultStatus = http.StatusBadGateway
+	resultBody = `{"error":{"message":"无法下载 RunningHub 结果：net::ERR_PROXY_CONNECTION_FAILED"}}`
+	task.Status, task.ResponseBody = "processing", string(checkpoint)
+	if _, err := SaveCanvasImageTask(task); err != nil {
+		t.Fatal(err)
+	}
+	if err := pollRunningHubStandardImage(context.Background(), task); err == nil || !strings.Contains(err.Error(), "ERR_PROXY_CONNECTION_FAILED") {
+		t.Fatalf("expected transient image download error, got %v", err)
+	}
+	stillProcessing, _, _ := GetUserCanvasImageTask(task.UserID, task.ID)
+	if stillProcessing.Status != "processing" {
+		t.Fatalf("transient image error should keep task processing, got %s", stillProcessing.Status)
+	}
+	if _, err := PollRunningHubStandardVideo(context.Background(), model.VideoTask{UserID: task.UserID, UpstreamTaskID: taskID}, channel); err == nil || !strings.Contains(err.Error(), "ERR_PROXY_CONNECTION_FAILED") {
+		t.Fatalf("expected transient video download error, got %v", err)
 	}
 }
