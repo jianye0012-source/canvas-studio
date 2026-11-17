@@ -125,7 +125,7 @@ func runningHubStandardResultDownload(ctx context.Context, channel model.ModelCh
 		result.permanent = true
 		return result, nil
 	}
-	return result, fmt.Errorf("RunningHub 结果下载失败：%s", result.message)
+	return result, errors.New(result.message)
 }
 
 func runningHubStandardGatewayMessage(response *http.Response) string {

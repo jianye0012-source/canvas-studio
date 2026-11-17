@@ -112,7 +112,10 @@ func TestMarkInterruptedCanvasTasks(t *testing.T) {
 	runningHubImage := model.CanvasImageTask{ID: "img-runninghub", UserID: "local-test", Status: "processing", Endpoint: RunningHubStandardImageEndpoint, ResponseBody: `{"taskId":"1"}`, CreatedAt: now(), UpdatedAt: now()}
 	normalAudio := model.CanvasAudioTask{ID: "audio-normal", UserID: "local-test", Status: "queued", Endpoint: "/audio/speech", CreatedAt: now(), UpdatedAt: now()}
 	doneImage := model.CanvasImageTask{ID: "img-done", UserID: "local-test", Status: "completed", Endpoint: "/images/generations", CompletedAt: now(), CreatedAt: now(), UpdatedAt: now()}
-	for _, task := range []any{normalImage, runningHubImage, normalAudio, doneImage} {
+	workflowRef := `{"scope":"personal","channelId":"rh","kind":"workflow","workflowId":"123"}`
+	workflowImage := model.CanvasImageTask{ID: "wf-image-running", UserID: "local-test", Status: "running", Endpoint: RunningHubStandardImageEndpoint, WorkflowRef: workflowRef, ResponseBody: `{"upstreamTaskId":"2013508786110730241"}`, CreatedAt: now(), UpdatedAt: now()}
+	workflowAudio := model.CanvasAudioTask{ID: "wf-audio-running", UserID: "local-test", Status: "running", WorkflowRef: workflowRef, ResponseBody: `{"upstreamTaskId":"2013508786110730242"}`, CreatedAt: now(), UpdatedAt: now()}
+	for _, task := range []any{normalImage, runningHubImage, normalAudio, doneImage, workflowImage, workflowAudio} {
 		var err error
 		switch item := task.(type) {
 		case model.CanvasImageTask:
@@ -144,5 +147,25 @@ func TestMarkInterruptedCanvasTasks(t *testing.T) {
 	done, _, _ := repository.GetUserCanvasImageTask("local-test", "img-done")
 	if done.Status != "completed" {
 		t.Fatalf("completed image should stay completed: %+v", done)
+	}
+
+	workflowImg, _, _ := repository.GetUserCanvasImageTask("local-test", "wf-image-running")
+	if workflowImg.Status != "running" {
+		t.Fatalf("workflow image should keep running: %+v", workflowImg)
+	}
+	workflowAud, _, _ := repository.GetUserCanvasAudioTask("local-test", "wf-audio-running")
+	if workflowAud.Status != "running" {
+		t.Fatalf("workflow audio should keep running: %+v", workflowAud)
+	}
+	workflowTasks, err := repository.ListDueRunningHubWorkflowTasks("", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, item := range workflowTasks {
+		found[item.ID] = true
+	}
+	if !found["wf-image-running"] || !found["wf-audio-running"] {
+		t.Fatalf("workflow tasks should remain due after restart, got %+v", workflowTasks)
 	}
 }

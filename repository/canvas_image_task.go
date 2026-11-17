@@ -50,12 +50,12 @@ func MarkInterruptedCanvasTasks(runningHubEndpoint string, at string, message st
 		return err
 	}
 	if err := db.Model(&model.CanvasImageTask{}).
-		Where("endpoint <> ? AND status IN ?", runningHubEndpoint, []string{"queued", "processing", "running", "in_progress"}).
+		Where("endpoint <> ? AND status IN ? AND (workflow_ref = '' OR workflow_ref IS NULL)", runningHubEndpoint, []string{"queued", "processing", "running", "in_progress"}).
 		Updates(map[string]any{"status": "failed", "completed_at": at, "updated_at": at, "error": message}).Error; err != nil {
 		return err
 	}
 	return db.Model(&model.CanvasAudioTask{}).
-		Where("status IN ?", []string{"queued", "processing", "running", "in_progress"}).
+		Where("status IN ? AND (workflow_ref = '' OR workflow_ref IS NULL)", []string{"queued", "processing", "running", "in_progress"}).
 		Updates(map[string]any{"status": "failed", "completed_at": at, "updated_at": at, "error": message}).Error
 }
 
