@@ -53,13 +53,17 @@ func InspectRunningHub(ctx context.Context, input RunningHubInspectInput) (model
 	if err != nil {
 		return model.WorkflowEntry{}, err
 	}
-	endpoint, body := "/api/openapi/getJsonApiFormat", map[string]any{"apiKey": input.APIKey, "workflowId": input.WorkflowID}
-	if input.Kind == "app" {
-		endpoint, body = "/api/webapp/apiCallDemo", map[string]any{"apiKey": input.APIKey, "webappId": input.WorkflowID}
-	}
 	var response map[string]any
-	if err := runningHubRequest(ctx, root+endpoint, body, &response, nil); err != nil {
-		return model.WorkflowEntry{}, fmt.Errorf("拉取 RunningHub 参数失败：%w", err)
+	if input.Kind == "app" {
+		query := url.Values{"apiKey": []string{input.APIKey}, "webappId": []string{input.WorkflowID}}
+		if err := runningHubGetRequest(ctx, root+"/api/webapp/apiCallDemo", query, &response); err != nil {
+			return model.WorkflowEntry{}, fmt.Errorf("拉取 RunningHub 参数失败：%w", err)
+		}
+	} else {
+		body := map[string]any{"apiKey": input.APIKey, "workflowId": input.WorkflowID}
+		if err := runningHubRequest(ctx, root+"/api/openapi/getJsonApiFormat", body, &response, nil); err != nil {
+			return model.WorkflowEntry{}, fmt.Errorf("拉取 RunningHub 参数失败：%w", err)
+		}
 	}
 	if code, ok := runningHubResponseCode(response); ok && code != 0 {
 		return model.WorkflowEntry{}, fmt.Errorf("拉取 RunningHub 参数失败：%s", runningHubResponseMessage(response))
@@ -135,7 +139,7 @@ func runningHubRequest(ctx context.Context, endpoint string, payload any, target
 	request.Header.Set("Content-Type", "application/json")
 	response, err := SafeProxyHTTPClient().Do(request)
 	if err != nil {
-		return errors.New("上游接口无响应或不可达")
+		return fmt.Errorf("上游接口无响应或不可达：%w", runningHubTransportCause(err))
 	}
 	defer response.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(response.Body, (8<<20)+1))
@@ -153,6 +157,43 @@ func runningHubRequest(ctx context.Context, endpoint string, payload any, target
 		return errors.New("上游参数响应不是有效 JSON")
 	}
 	return nil
+}
+
+func runningHubGetRequest(ctx context.Context, endpoint string, query url.Values, target *map[string]any) error {
+	ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	request.URL.RawQuery = query.Encode()
+	response, err := SafeProxyHTTPClient().Do(request)
+	if err != nil {
+		return fmt.Errorf("上游接口无响应或不可达：%w", runningHubTransportCause(err))
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Body, (8<<20)+1))
+	if err != nil || len(data) > 8<<20 {
+		return errors.New("上游参数响应过大或读取失败")
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("上游返回 HTTP %d", response.StatusCode)
+	}
+	if err := json.Unmarshal(data, target); err != nil {
+		return errors.New("上游参数响应不是有效 JSON")
+	}
+	return nil
+}
+
+func runningHubTransportCause(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		if urlErr.Err != nil {
+			return urlErr.Err
+		}
+		return errors.New("请求失败")
+	}
+	return err
 }
 
 func runningHubResponseCode(payload map[string]any) (int, bool) {
