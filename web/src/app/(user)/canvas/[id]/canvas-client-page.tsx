@@ -45,6 +45,7 @@ import {
     type CanvasAlignmentGuides,
 } from "../utils/canvas-alignment";
 import { taskPollFailure } from "./canvas-task-poll";
+import { configStoppableChildren } from "./canvas-config-stop";
 import { directorErrorText, directorOutputError } from "./canvas-director-output";
 import { App, Button, Dropdown, Modal, Slider } from "antd";
 import { isCogVideoX3Model, modelKey, supportsVideoAudioGeneration, supportsVideoFrameReferences } from "@/lib/video-model-capabilities";
@@ -4831,6 +4832,10 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                                         videoResourceOptions={videoResourceOptionsByNodeId.get(contentNode.id) || []}
                                         onConfigChange={handleConfigNodeChange}
                                         onComposerToggle={() => setDialogNodeId((current) => (current === contentNode.id ? null : contentNode.id))}
+                                        stoppableChildIds={configStoppableChildren(contentNode.id, nodes, connections)}
+                                        onStop={() => {
+                                            for (const childId of configStoppableChildren(contentNode.id, nodes, connections)) void handleStopNode(childId);
+                                        }}
                                         onGenerate={(nodeId) => {
                                             const target = nodesRef.current.find((item) => item.id === nodeId);
                                             void handleGenerateNode(nodeId, target?.metadata?.generationMode || "image", target?.metadata?.composerContent ?? target?.metadata?.prompt ?? "");
