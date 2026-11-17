@@ -100,7 +100,7 @@ func ListUserVideoTasks(userID string, source string, limit int) ([]model.VideoT
 		}
 	}
 	err = query.
-		Where("status IN ?", []string{"queued", "in_progress", "processing", "running"}).
+		Where("status IN ?", []string{"queued", "in_progress", "processing", "running", "unknown"}).
 		Order("created_at DESC").
 		Limit(limit).
 		Find(&tasks).Error

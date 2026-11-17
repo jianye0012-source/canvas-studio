@@ -73,7 +73,7 @@ type VideoTaskPollFunc func(context.Context, model.VideoTask) (VideoTaskPollUpda
 
 func CreateVideoTask(input VideoTaskCreateInput) (model.VideoTask, error) {
 	current := now()
-	status := NormalizeVideoTaskStatus(input.Status)
+	status := videoTaskStoredStatus(input.Status)
 	if status == "" {
 		status = "queued"
 	}
@@ -207,6 +207,9 @@ func StartVideoTaskPoller(poll VideoTaskPollFunc) {
 		if err := resumeRunningHubStandardImageTasks(); err != nil {
 			log.Printf("resume RunningHub image tasks failed err=%v", err)
 		}
+		if err := repository.MarkInterruptedCanvasTasks(RunningHubStandardImageEndpoint, now(), "服务重启，任务已中断，请重新生成"); err != nil {
+			log.Printf("mark interrupted canvas tasks failed err=%v", err)
+		}
 		go runVideoTaskPoller()
 	})
 	WakeVideoTaskPoller()
@@ -339,6 +342,12 @@ func runVideoTaskPoller() {
 						return
 					}
 					defer cleanup()
+					if videoTaskExpired(task, time.Now()) {
+						if err := UpdateVideoTaskFromPoll(task, VideoTaskPollUpdate{Status: "failed", Error: "任务超时"}); err != nil {
+							log.Printf("mark expired video task failed id=%s err=%v", task.ID, err)
+						}
+						return
+					}
 					update, err := poll(ctx, task)
 					if ctx.Err() != nil {
 						return
@@ -389,7 +398,7 @@ func UpdateVideoTaskFromPoll(task model.VideoTask, update VideoTaskPollUpdate) e
 		task.ParameterTranslationSnapshot = update.ParameterTranslationSnapshot
 	}
 	current := now()
-	task.Status = NormalizeVideoTaskStatus(firstVideoTaskValue(update.Status, task.Status))
+	task.Status = videoTaskStoredStatus(firstVideoTaskValue(update.Status, task.Status))
 	if task.Status == "" {
 		task.Status = "processing"
 	}
@@ -450,6 +459,27 @@ func NormalizeVideoTaskStatus(status string) string {
 	default:
 		return strings.ToLower(strings.TrimSpace(status))
 	}
+}
+
+func videoTaskStoredStatus(status string) string {
+	if strings.TrimSpace(status) == "" {
+		return ""
+	}
+	normalized := NormalizeVideoTaskStatus(status)
+	switch normalized {
+	case "queued", "processing", "completed", "failed":
+		return normalized
+	default:
+		return "unknown"
+	}
+}
+
+func videoTaskExpired(task model.VideoTask, now time.Time) bool {
+	created, err := time.Parse(time.RFC3339, task.CreatedAt)
+	if err != nil || created.IsZero() {
+		return false
+	}
+	return now.Sub(created) > 24*time.Hour
 }
 
 func IsCompletedVideoTaskStatus(status string) bool {
