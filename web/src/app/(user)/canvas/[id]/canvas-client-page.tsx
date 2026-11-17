@@ -45,6 +45,7 @@ import {
     type CanvasAlignmentGuides,
 } from "../utils/canvas-alignment";
 import { taskPollFailure } from "./canvas-task-poll";
+import { directorOutputError } from "./canvas-director-output";
 import { App, Button, Dropdown, Modal, Slider } from "antd";
 import { isCogVideoX3Model, modelKey, supportsVideoAudioGeneration, supportsVideoFrameReferences } from "@/lib/video-model-capabilities";
 import { isMimoVoiceCloneModel } from "@/lib/mimo-tts";
@@ -2485,8 +2486,8 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                 return true;
             } catch (error) {
                 console.error("Send director captures to canvas failed:", error);
-                message.error("截图发送到画布失败");
-                return false;
+                message.error(directorOutputError("截图", error));
+                throw error;
             } finally {
                 hideLoading();
             }
@@ -2525,8 +2526,8 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                 return true;
             } catch (error) {
                 console.error("Send director video to canvas failed:", error);
-                message.error("视频发送到画布失败");
-                return false;
+                message.error(directorOutputError("视频", error));
+                throw error;
             } finally {
                 hideLoading();
             }
