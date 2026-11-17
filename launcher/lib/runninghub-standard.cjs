@@ -49,11 +49,13 @@ async function validateResultURL(value, lookup = dns.lookup) {
 }
 
 function normalizeRunningHubURL(value) {
-  const url = new URL(value || baseURL);
+  const invalid = () => new Error('RunningHub 标准模型请使用 https://www.runninghub.cn 或 https://www.runninghub.ai，也可填写对应官方文档首页或模型提交地址');
+  let url;
+  try { url = new URL(value || baseURL); } catch { throw invalid(); }
   const pathname = url.pathname.replace(/\/+$/, '');
   if (url.protocol !== 'https:' || !['www.runninghub.ai', 'runninghub.ai', 'www.runninghub.cn', 'runninghub.cn'].includes(url.host) || url.username || url.password || url.search || url.hash ||
       (!['', '/runninghub-api-doc-en', '/runninghub-api-doc-cn', '/openapi/v2'].includes(pathname) && !(pathname.startsWith('/openapi/v2/') && endpointPattern.test(pathname.slice('/openapi/v2/'.length))))) {
-    throw new Error('RunningHub 标准模型请使用 https://www.runninghub.cn 或 https://www.runninghub.ai，也可填写对应官方文档首页或模型提交地址');
+    throw invalid();
   }
   return url.hostname.endsWith('.cn') ? 'https://www.runninghub.cn' : baseURL;
 }

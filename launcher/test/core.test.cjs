@@ -5,7 +5,7 @@ const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const zlib = require('node:zlib');
-const { ConfigStore, directorModelId } = require('../lib/config.cjs');
+const { ConfigStore, validateConfig, directorModelId } = require('../lib/config.cjs');
 const { Gateway } = require('../lib/gateway.cjs');
 const { contained, verifyManifest } = require('../lib/files.cjs');
 const { freePort } = require('../lib/runtime.cjs');
@@ -178,6 +178,18 @@ test('模型渠道连接失败返回中文原因且不含密钥', async t => {
   assert.match(result.msg, /^模型渠道「渠道 a」连接失败/);
   assert.match(result.msg, /ECONNREFUSED|fetch failed/);
   assert.ok(!result.msg.includes('secret-key-x'));
+  assert.ok(!result.msg.includes('本地服务未就绪'));
+  store.fetchImpl = async () => { throw new Error('net::ERR_CERT_AUTHORITY_INVALID'); };
+  const tls = await fetch(gateway.origin + '/local-ai/channels/a/v1/chat/completions', { method: 'POST', headers: { authorization: 'Bearer private' }, body: '{}' });
+  assert.equal(tls.status, 502);
+  const detail = (await tls.json()).msg;
+  assert.match(detail, /模型渠道「渠道 a」连接失败.*ERR_CERT_AUTHORITY_INVALID/);
+  assert.ok(!detail.includes('本地服务未就绪'));
+});
+
+test('接口地址格式错误时提示中文', () => {
+  assert.throws(() => validateConfig({ channels: [channel('a', 'api.openai.com')] }), error => /接口地址格式不正确/.test(error.message) && !/Invalid URL/.test(error.message));
+  assert.throws(() => validateConfig({ channels: [{ id: 'rh', name: '国内', protocol: 'runninghub-standard', baseUrl: 'runninghub', models: [] }] }), /RunningHub 标准模型请使用/);
 });
 
 test('模型渠道超过 200 MB 的请求体返回 413', async t => {

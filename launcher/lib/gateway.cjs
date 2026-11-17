@@ -41,7 +41,7 @@ class Gateway {
     this.cookie = crypto.randomBytes(32).toString('hex');
     this.proxy = proxyFactory.createProxyServer({ ws: true, proxyTimeout: 0, timeout: 0 });
     this.proxy.on('error', (e, req, res) => {
-      const message = req.canvasModelChannel ? `模型渠道「${req.canvasModelChannel}」连接失败，请核对接口地址、网络和系统代理` : '本地服务未就绪，请查看启动器日志';
+      const message = '本地服务未就绪，请查看启动器日志';
       log(`${message}：${e.message}`);
       if (res.writeHead && !res.headersSent) json(res, 502, { code: 1, msg: message }); else res.destroy();
     });
