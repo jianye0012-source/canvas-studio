@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useEffectiveConfig } from "@/stores/use-config-store";
 
 import type { CanvasDirectorCapture, CanvasDirectorPanorama, CanvasDirectorVideo } from "../types";
+import { createDirectorOutputDedupe, type DirectorOutputResult } from "../[id]/canvas-director-output";
 
 type PanoramaRemoval = Pick<CanvasDirectorPanorama, "edgeId" | "sourceNodeId">;
 type DirectorCapturePayload = { dataUrl?: unknown; fileName?: unknown } | null | undefined;
@@ -36,6 +37,8 @@ export function CanvasDirector({
     const imageConfigRef = useRef(imageConfig);
     imageConfigRef.current = imageConfig;
     const imageRequestsRef = useRef(new Map<string, AbortController>());
+    const directorOutputsRef = useRef<ReturnType<typeof createDirectorOutputDedupe> | null>(null);
+    if (directorOutputsRef.current === null) directorOutputsRef.current = createDirectorOutputDedupe();
     const [readyEpoch, setReadyEpoch] = useState(0);
 
     useEffect(() => {
@@ -48,6 +51,11 @@ export function CanvasDirector({
 
     const postToDesk = useCallback((type: string, payload: unknown) => {
         iframeRef.current?.contentWindow?.postMessage({ type, payload }, window.location.origin);
+    }, []);
+
+    const runDirectorOutput = useCallback((requestId: unknown, handler: () => Promise<boolean | void>) => {
+        const task = () => handler().then((ok): DirectorOutputResult => ({ ok: ok !== false }));
+        return directorOutputsRef.current!.run(requestId, task);
     }, []);
 
     useEffect(() => () => { for (const controller of imageRequestsRef.current.values()) controller.abort(); imageRequestsRef.current.clear(); }, [nodeId]);
@@ -95,35 +103,36 @@ export function CanvasDirector({
             }
 
             if (type === "storyai:director-captures-sent") {
+                const requestId = event.data?.payload?.requestId;
                 const captures = Array.isArray(event.data?.payload?.captures)
                     ? event.data.payload.captures
                         .filter((capture: DirectorCapturePayload): capture is { dataUrl: string; fileName?: unknown } => typeof capture?.dataUrl === "string" && capture.dataUrl.startsWith("data:image/"))
                         .map((capture: { dataUrl: string; fileName?: unknown }, index: number) => ({ dataUrl: capture.dataUrl, fileName: typeof capture.fileName === "string" && capture.fileName.trim() ? capture.fileName.trim() : "导演台截图-" + (index + 1) + ".png" }))
                     : [];
-                if (!captures.length) { postToDesk("storyai:director-output-result", { requestId: event.data?.payload?.requestId, ok: false, error: "没有收到有效的导演台截图" }); return; }
-                void onCapturesSent(nodeId, captures)
-                    .then((ok) => postToDesk("storyai:director-output-result", { requestId: event.data?.payload?.requestId, ok: ok !== false }))
-                    .catch(error => postToDesk("storyai:director-output-result", { requestId: event.data?.payload?.requestId, ok: false, error: error instanceof Error ? error.message : "截图保存失败" }));
+                if (!captures.length) { postToDesk("storyai:director-output-result", { requestId, ok: false, error: "没有收到有效的导演台截图" }); return; }
+                postToDesk("storyai:director-output-accepted", { requestId });
+                void runDirectorOutput(requestId, () => onCapturesSent(nodeId, captures)).then((result) => postToDesk("storyai:director-output-result", { requestId, ok: result.ok, error: result.error }));
                 return;
             }
 
             if (type === "storyai:director-video-sent") {
+                const requestId = event.data?.payload?.requestId;
                 const blob = event.data?.payload?.blob;
-                if (!(blob instanceof Blob) || !blob.size || !blob.type.startsWith("video/mp4")) { postToDesk("storyai:director-output-result", { requestId: event.data?.payload?.requestId, ok: false, error: "没有收到有效的 MP4 动画" }); return; }
+                if (!(blob instanceof Blob) || !blob.size || !blob.type.startsWith("video/mp4")) { postToDesk("storyai:director-output-result", { requestId, ok: false, error: "没有收到有效的 MP4 动画" }); return; }
                 const fileName = typeof event.data?.payload?.fileName === "string" && event.data.payload.fileName.trim()
                     ? event.data.payload.fileName.trim()
                     : "导演台视频.mp4";
                 const width = Number(event.data?.payload?.width);
                 const height = Number(event.data?.payload?.height);
                 const durationSeconds = Number(event.data?.payload?.durationSeconds);
-                void onVideoSent(nodeId, {
+                postToDesk("storyai:director-output-accepted", { requestId });
+                void runDirectorOutput(requestId, () => onVideoSent(nodeId, {
                     blob,
                     fileName,
                     width: Number.isFinite(width) && width > 0 ? width : 1280,
                     height: Number.isFinite(height) && height > 0 ? height : 720,
                     durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : 0,
-                }).then((ok) => postToDesk("storyai:director-output-result", { requestId: event.data?.payload?.requestId, ok: ok !== false }))
-                    .catch(error => postToDesk("storyai:director-output-result", { requestId: event.data?.payload?.requestId, ok: false, error: error instanceof Error ? error.message : "动画保存失败" }));
+                })).then((result) => postToDesk("storyai:director-output-result", { requestId, ok: result.ok, error: result.error }));
                 return;
             }
         }
