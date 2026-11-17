@@ -46,6 +46,7 @@ import {
 } from "../utils/canvas-alignment";
 import { taskPollFailure } from "./canvas-task-poll";
 import { configStoppableChildren } from "./canvas-config-stop";
+import { hasPendingSubmission } from "./canvas-task-submission";
 import { directorErrorText, directorOutputError } from "./canvas-director-output";
 import { App, Button, Dropdown, Modal, Slider } from "antd";
 import { isCogVideoX3Model, modelKey, supportsVideoAudioGeneration, supportsVideoFrameReferences } from "@/lib/video-model-capabilities";
@@ -839,6 +840,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             const videoTargets = nodesRef.current.filter((node) => node.type === CanvasNodeType.Video && node.metadata?.status === NODE_STATUS_LOADING && !node.metadata.content && canvasVideoTaskId(node.metadata));
             videoTargets.forEach((node) => {
                 if (pollingVideoNodeIdsRef.current.has(node.id)) return;
+                if (hasPendingSubmission(nodeTaskRunsRef.current.get(node.id))) return;
                 const taskId = canvasVideoTaskId(node.metadata);
                 const workflowToken = node.metadata?.workflowRef ? useUserStore.getState().token : "";
                 const generationConfig = buildGenerationConfig(effectiveConfig, node, "video");

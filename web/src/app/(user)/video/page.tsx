@@ -25,6 +25,7 @@ import { deleteStoredImages, resolveImageUrl, uploadImage } from "@/services/ima
 import { deleteVideoGenerationLogs, fetchVideoGenerationLogs, saveVideoGenerationLogs } from "@/services/api/generation-logs";
 import { createVideoGenerationTask, deleteVideoGenerationTask, listVideoGenerationTasks, pollVideoGenerationTaskStatus, VIDEO_POLL_INTERVAL_MS, VideoRequestError, type VideoResponse } from "@/services/api/video";
 import { stopCanvasTask } from "@/services/api/canvas-tasks";
+import { hasPendingSubmission } from "../canvas/[id]/canvas-task-submission";
 import { comfyOutputStorageKey, getWorkflowTask, isRetryableWorkflowError, submitWorkflowTask, workflowMediaSource } from "@/services/api/workflow-generation";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { channelProtocolForConfig, normalizeLocalChannels, useConfigStore, useEffectiveConfig, type AiConfig, type VideoElementItem, type VideoElementReference } from "@/stores/use-config-store";
@@ -197,6 +198,7 @@ export default function VideoPage() {
         if (!pendingLogs.length) return;
         pendingLogs.forEach((log) => {
             if (pollingLogIdsRef.current.has(log.id)) return;
+            if (hasPendingSubmission(videoTaskRunsRef.current.get(log.id))) return;
             const resumeConfig = buildResumeVideoConfig(effectiveConfigRef.current, log);
             const taskId = videoLogTaskId(log);
             if (!taskId || (!log.providerWorkflowRef && !isAiConfigReady(resumeConfig, log.model))) return;
