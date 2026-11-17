@@ -14,27 +14,6 @@ import (
 	"time"
 )
 
-func TestRunningHubBaseURLNormalization(t *testing.T) {
-	cases := map[string]string{
-		"":                                 "https://www.runninghub.cn",
-		"https://www.runninghub.cn":        "https://www.runninghub.cn",
-		"https://www.runninghub.cn/":       "https://www.runninghub.cn",
-		"https://www.runninghub.ai":        "https://www.runninghub.ai",
-		"https://www.runninghub.cn/openapi/v2": "https://www.runninghub.cn",
-		"https://www.runninghub.cn/openapi":    "https://www.runninghub.cn",
-		"https://www.runninghub.ai/openapi/v2": "https://www.runninghub.ai",
-	}
-	for input, want := range cases {
-		got, err := runningHubBaseURL(input)
-		if err != nil {
-			t.Fatalf("runningHubBaseURL(%q) error: %v", input, err)
-		}
-		if got != want {
-			t.Fatalf("runningHubBaseURL(%q) = %q, want %q", input, got, want)
-		}
-	}
-}
-
 func TestRunningHubLiveConnectivity(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -65,17 +44,19 @@ func TestRunningHubLiveConnectivity(t *testing.T) {
 	}
 }
 
-func TestRunningHubRequestLiveSwallowsError(t *testing.T) {
+func TestRunningHubRequestLiveReportsBusinessCode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	var response map[string]any
 	err := runningHubRequest(ctx, "https://www.runninghub.cn/api/openapi/getJsonApiFormat", map[string]any{"apiKey": "invalid-test-key-123", "workflowId": "123"}, &response, nil)
 	if err != nil {
-		t.Logf("runningHubRequest wrapped error: %v", err)
-		return
+		t.Fatalf("runningHubRequest error: %v", err)
 	}
 	code, _ := runningHubResponseCode(response)
+	if code == 0 {
+		t.Fatalf("expected non-zero business code, got response %v", response)
+	}
 	t.Logf("runningHubRequest ok, business code=%d", code)
 }
 

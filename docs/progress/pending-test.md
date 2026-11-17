@@ -5,6 +5,13 @@ description: 当前版本已实现但仍需人工验证的变更项
 
 # 待测试
 
+## Unreleased RunningHub 工作流协议与密钥泄漏修复
+
+- RunningHub AI 应用参数拉取改为 GET + query（apiKey/webappId），修复之前 POST JSON body 被上游拒绝为 PARAMS_INVALID。已用无效 key 实测 GET 返回 USER_DOES_NOT_EXIST（正确进入鉴权）；需真实有效 key 验证能成功拉取 App 参数。
+- RunningHub AI 应用任务提交始终携带 nodeInfoList（无覆盖时传空数组），修复上游报 nodeInfoList cannot be null。已用无效 key 实测进入鉴权；需真实有效 key 验证无参数覆盖的 App 提交能成功。
+- RunningHub 连接失败时透传真实原因，不再统一显示「上游接口无响应或不可达」，且错误文本不包含 apiKey、带签名的素材 URL；已加不带 live tag 的单测断言不含 apiKey。
+- RunningHub Base URL 归一化（.cn/.ai、/openapi/v2、/openapi 尾缀）已移入普通单测，随 CI 运行。
+
 ## v1.3.17 模型实时读取与本机选择窗口修复
 
 - 每次点击检测或更新模型参数，联网读取当前渠道和站点。RunningHub 目录及文档使用独立请求参数和禁用缓存头；OpenAI 兼容目录使用禁用缓存的请求。失败显示原因，已配置的模型与本次联网目录分开展示；目录中未返回可用条目的已配置模型会提示核对。公开目录的更新速度仍由服务商决定，实际权限及可用性由调用结果确认。

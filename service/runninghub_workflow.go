@@ -139,7 +139,7 @@ func runningHubRequest(ctx context.Context, endpoint string, payload any, target
 	request.Header.Set("Content-Type", "application/json")
 	response, err := SafeProxyHTTPClient().Do(request)
 	if err != nil {
-		return fmt.Errorf("上游接口无响应或不可达：%w", err)
+		return fmt.Errorf("上游接口无响应或不可达：%w", runningHubTransportCause(err))
 	}
 	defer response.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(response.Body, (8<<20)+1))
@@ -169,7 +169,7 @@ func runningHubGetRequest(ctx context.Context, endpoint string, query url.Values
 	request.URL.RawQuery = query.Encode()
 	response, err := SafeProxyHTTPClient().Do(request)
 	if err != nil {
-		return fmt.Errorf("上游接口无响应或不可达：%w", err)
+		return fmt.Errorf("上游接口无响应或不可达：%w", runningHubTransportCause(err))
 	}
 	defer response.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(response.Body, (8<<20)+1))
@@ -183,6 +183,17 @@ func runningHubGetRequest(ctx context.Context, endpoint string, query url.Values
 		return errors.New("上游参数响应不是有效 JSON")
 	}
 	return nil
+}
+
+func runningHubTransportCause(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		if urlErr.Err != nil {
+			return urlErr.Err
+		}
+		return errors.New("请求失败")
+	}
+	return err
 }
 
 func runningHubResponseCode(payload map[string]any) (int, bool) {

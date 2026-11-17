@@ -337,7 +337,7 @@ func uploadRunningHubReference(ctx context.Context, root, apiKey, raw string, ca
 	request.Header.Set("Content-Type", writer.FormDataContentType())
 	response, err := SafeProxyHTTPClient().Do(request)
 	if err != nil {
-		return "", fmt.Errorf("RunningHub 素材上传接口不可达：%w", err)
+		return "", fmt.Errorf("RunningHub 素材上传接口不可达：%w", runningHubTransportCause(err))
 	}
 	defer response.Body.Close()
 	encoded, err := io.ReadAll(io.LimitReader(response.Body, (2<<20)+1))
@@ -386,11 +386,11 @@ func readWorkflowMedia(ctx context.Context, raw string, dataURLLimit int) ([]byt
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
-		return nil, "", err
+		return nil, "", runningHubTransportCause(err)
 	}
 	response, err := SafeProxyHTTPClient().Do(request)
 	if err != nil {
-		return nil, "", fmt.Errorf("参考素材下载失败：%w", err)
+		return nil, "", fmt.Errorf("参考素材下载失败：%w", runningHubTransportCause(err))
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
