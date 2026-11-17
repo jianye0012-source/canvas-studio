@@ -1,6 +1,14 @@
+import { compressedGlbReason, parseGlbBounds } from './scene-mesh.js';
+
 const labels = { prompt: '模型描述', imageUrl: '正面参考图', frontImageUrl: '正面参考图', imageUrls: '参考图', leftImageUrl: '左侧参考图', rightImageUrl: '右侧参考图', backImageUrl: '背面参考图', topImageUrl: '顶部参考图', bottomImageUrl: '底部参考图', leftFrontImageUrl: '左前参考图', rightFrontImageUrl: '右前参考图', faceCount: '目标面数', face: '目标面数', requestType: '输出类型', generateType: '生成类型', enablePbr: 'PBR 材质', resolution: '分辨率' };
 const statuses = { submitting: '正在提交', processing: '生成中', completed: '已生成并保存到本机', download_failed: '模型下载待重试', failed: '未完成', uncertain: '提交结果未确认', blocked: '请恢复原渠道配置' };
 const readImage = file => new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error('文件读取失败')); reader.readAsDataURL(file); });
+export function generatedGlbProblem(bytes) {
+  return compressedGlbReason(bytes) || (!parseGlbBounds(bytes) ? '生成文件不包含可显示的网格，请核对平台结果' : null);
+}
+export function hasActiveModelTask(tasks) {
+  return tasks.some(task => ['submitting', 'processing'].includes(task.status) || (task.status === 'download_failed' && !task.downloadStopped));
+}
 async function api(url, body) {
   const response = await fetch(url, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
   const result = await response.json(); if (!response.ok) throw new Error(result.msg || result.error || '3D 请求失败'); return result;
@@ -19,7 +27,7 @@ export function openModelGenerator({ sceneId, run, save }) {
     const list = document.createElement('div'); list.className = 'canvas-3d-tasks';
     const close = document.createElement('button'); close.type = 'button'; close.textContent = '关闭'; close.onclick = () => dialog.close();
     form.append(select, fields, submit); dialog.append(heading, note, form, feedback, title, list, close); document.body.append(dialog); dialog.showModal();
-    let models = [], selected, controls = [], loading = false, ended = false, actionBusy = false;
+    let models = [], selected, controls = [], loading = false, ended = false, actionBusy = false, timer;
     const previews = new Set();
     const fieldControls = () => {
       for (const url of previews) URL.revokeObjectURL(url); previews.clear(); controls = []; fields.replaceChildren();
@@ -73,30 +81,30 @@ export function openModelGenerator({ sceneId, run, save }) {
       if (loading || ended || actionBusy) return; loading = true;
       try {
         const result = await api('/local/3d/tasks?sceneId=' + encodeURIComponent(sceneId)); if (ended) return;
+        if (hasActiveModelTask(result.tasks)) timer ||= setInterval(() => { void refresh(); }, 3000);
+        else { clearInterval(timer); timer = undefined; }
         list.replaceChildren(...result.tasks.map(task => {
           const row = document.createElement('article'); row.className = 'canvas-3d-task';
           const name = document.createElement('strong'); name.textContent = `${task.channelName} · ${task.name}`;
-          const status = document.createElement('p'); status.textContent = (statuses[task.status] || '待查询') + (task.taskId ? ' · 任务 ' + task.taskId : '');
+          const status = document.createElement('p'); status.textContent = (task.downloadStopped ? '模型下载已停止自动重试' : statuses[task.status] || '待查询') + (task.taskId ? ' · 任务 ' + task.taskId : '');
           row.append(name, status);
           if (task.error) { const error = document.createElement('p'); error.className = 'error'; error.textContent = task.error; row.append(error); }
           if (task.status === 'completed') row.append(action('加入场景', async () => {
             const response = await fetch(`/local/3d/tasks/${task.id}/file`); if (!response.ok) throw new Error('GLB 模型读取失败，请重新查询任务');
-            const blob = await response.blob(); const source = await readImage(blob);
-            const { parseMeshGlb } = await import('./scene-mesh-cache.js');
-            const parsed = await parseMeshGlb(await blob.arrayBuffer());
-            let meshes = 0; parsed.scene?.traverse(object => { if (object.isMesh) meshes++; });
-            if (!meshes) throw new Error('生成文件不包含可显示的网格，请核对平台结果');
+            const blob = await response.blob();
+            const problem = generatedGlbProblem(await blob.arrayBuffer());
+            if (problem) throw new Error(problem);
+            const source = await readImage(blob);
             await run('asset.import', { source, name: task.name + '.glb', placeAs: 'mesh' });
             await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
             await save(true); feedback.textContent = '模型已加入场景并保存到本机';
           }), action('另存 GLB', async () => { feedback.textContent = '请在系统窗口选择保存文件夹…'; const saved = await api(`/local/3d/tasks/${task.id}/export`, {}); feedback.textContent = saved ? '已保存：' + saved.name : '已取消保存'; }));
-          else if (task.taskId) row.append(action('重新查询原任务', async () => { await api(`/local/3d/tasks/${task.id}`); await refresh(); }));
+          else if (task.taskId) row.append(action(task.status === 'download_failed' ? '重新下载' : '重新查询原任务', async () => { await api(`/local/3d/tasks/${task.id}`); await refresh(); }));
           return row;
         }));
       } catch (error) { if (!ended) feedback.textContent = error.message; }
       finally { loading = false; }
     }
-    const timer = setInterval(() => { void refresh(); }, 3000);
     dialog.addEventListener('close', () => { ended = true; clearInterval(timer); for (const url of previews) URL.revokeObjectURL(url); dialog.remove(); resolve(); }, { once: true });
     void api('/local/3d/models').then(result => {
       if (ended) return; models = result.models;

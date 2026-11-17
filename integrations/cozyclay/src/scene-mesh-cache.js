@@ -24,7 +24,7 @@ import { arrayBufferOf } from "./scene-fbx.js";
 
 const draco = new DRACOLoader().setDecoderPath(`${import.meta.env?.BASE_URL ?? '/cozy/'}draco/`);
 const gltfLoader = new GLTFLoader().setDRACOLoader(draco).setMeshoptDecoder(MeshoptDecoder);
-export const parseMeshGlb = bytes => gltfLoader.parseAsync(arrayBufferOf(bytes), "");
+const parseMeshGlb = bytes => gltfLoader.parseAsync(arrayBufferOf(bytes), "");
 
 /** Build a cache with injectable seams for deterministic tests. */
 export function createMeshSceneCache({

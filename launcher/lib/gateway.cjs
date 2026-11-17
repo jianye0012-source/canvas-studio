@@ -7,6 +7,7 @@ const mime = require('mime-types');
 const runningHub = require('./runninghub-standard.cjs');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
+const { once } = require('node:events');
 const { pathToFileURL } = require('node:url');
 const { ProjectEditors, editorIdPattern } = require('./project-editor.cjs');
 const { CanvasBridge } = require('./canvas-bridge.cjs');
@@ -147,20 +148,24 @@ class Gateway {
     if (provider) return this.provider(req, res, url);
     if (url.pathname === '/local/3d/models' && req.method === 'GET') return json(res, 200, { models: this.model3D.models() });
     if (url.pathname === '/local/3d/tasks') {
-      if (req.method === 'GET') return json(res, 200, { tasks: await this.model3D.list(url.searchParams.get('sceneId')) });
-      if (req.method === 'POST') return json(res, 200, await this.model3D.create(await bodyJson(req, 128 * 1024 ** 2)));
+      try {
+        if (req.method === 'GET') return json(res, 200, { tasks: await this.model3D.list(url.searchParams.get('sceneId')) });
+        if (req.method === 'POST') return json(res, 200, await this.model3D.create(await bodyJson(req, 128 * 1024 ** 2)));
+      } catch (error) { if ([400, 404].includes(error.status)) return json(res, error.status, { msg: error.message }); throw error; }
     }
     const model3DRoute = url.pathname.match(/^\/local\/3d\/tasks\/([a-f0-9-]{36})(?:\/(file|export))?$/);
     if (model3DRoute) {
       const [, id, action] = model3DRoute;
-      if (action === 'export' && req.method === 'POST') return json(res, 200, await this.model3D.export(id));
-      if (action === 'file' && req.method === 'GET') {
-        const { file, bytes } = await this.model3D.open(id);
-        res.writeHead(200, { 'Content-Type': 'model/gltf-binary', 'Content-Length': bytes, 'Cache-Control': 'no-store' });
-        try { await pipeline(require('node:fs').createReadStream(file), res); } catch (error) { if (!res.destroyed) throw error; }
-        return;
-      }
-      if (!action && req.method === 'GET') return json(res, 200, await this.model3D.refresh(id));
+      try {
+        if (action === 'export' && req.method === 'POST') return json(res, 200, await this.model3D.export(id));
+        if (action === 'file' && req.method === 'GET') {
+          const { file, bytes } = await this.model3D.open(id);
+          res.writeHead(200, { 'Content-Type': 'model/gltf-binary', 'Content-Length': bytes, 'Cache-Control': 'no-store' });
+          try { await pipeline(require('node:fs').createReadStream(file), res); } catch (error) { if (!res.destroyed) throw error; }
+          return;
+        }
+        if (!action && req.method === 'GET') return json(res, 200, await this.model3D.refresh(id, { manual: true }));
+      } catch (error) { if ([400, 404].includes(error.status)) return json(res, error.status, { msg: error.message }); throw error; }
     }
     const editorRoute = url.pathname.match(/^\/local\/editor\/([a-zA-Z0-9_-]{1,160})(?:\/(step|progress))?$/);
     if (editorRoute) {
@@ -307,8 +312,12 @@ class Gateway {
       html = html.replace('<head>', `<head><script>window.__CANVAS_LOCAL__=${boot};window.__COZYCLAY_LIVE__=true;window.__COZYCLAY_LIVE_URL__='ws://'+location.host+'/cozy/live';try{localStorage.setItem('cozyclay.locale','zh')}catch{}</script>`);
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); return res.end(html);
     }
+    const stream = require('node:fs').createReadStream(file);
+    try { await once(stream, 'open'); }
+    catch (error) { this.log('白模资源读取失败：' + error.code); return json(res, 500, { msg: '白模资源读取失败' }); }
     res.writeHead(200, { 'content-type': mime.lookup(file) || 'application/octet-stream', 'content-length': stat.size, 'cache-control': 'no-cache' });
-    require('node:fs').createReadStream(file).pipe(res);
+    try { await pipeline(stream, res); }
+    catch (error) { this.log('白模资源读取失败：' + error.code); if (!res.destroyed) res.destroy(); }
   }
   async provider(req, res, url) {
     const config = this.store.value;

@@ -15,14 +15,21 @@ class Model3DTasks {
   constructor(store, { exporter, choose, log = () => {} } = {}) {
     Object.assign(this, { store, exporter, choose, log });
     this.root = path.join(store.dataDir, 'projects/model-3d');
-    this.active = new Set(); this.operations = new Map(); this.unwritten = new Map(); this.controller = new AbortController();
+    this.active = new Set(); this.operations = new Map(); this.unwritten = new Map(); this.loggedUnreadable = new Set(); this.controller = new AbortController();
     this.ready = this.restore();
     void this.ready.catch(error => log('3D 任务恢复失败：' + error.message));
     this.timer = setInterval(() => { void this.tick().catch(error => log('3D 任务：' + error.message)); }, 5000);
     this.timer.unref();
   }
-  file(id, extension = 'json') { if (!idPattern.test(id)) throw new Error('3D 任务编号无效'); return path.join(this.root, id + '.' + extension); }
-  async read(id) { this.file(id); const task = this.unwritten.get(id) || JSON.parse(await fs.readFile(this.file(id), 'utf8')); if (task.id !== id || task.format !== 1) throw new Error('3D 任务记录损坏'); return task; }
+  file(id, extension = 'json') { if (!idPattern.test(id)) throw Object.assign(new Error('3D 任务编号无效'), { status: 400 }); return path.join(this.root, id + '.' + extension); }
+  async read(id) {
+    this.file(id);
+    let task;
+    try { task = this.unwritten.get(id) || JSON.parse(await fs.readFile(this.file(id), 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT') throw Object.assign(new Error('3D 任务不存在'), { status: 404, code: 'ENOENT' }); throw error; }
+    if (task.id !== id || task.format !== 1) throw new Error('3D 任务记录损坏');
+    return task;
+  }
   async write(task) { if (task.taskId) this.unwritten.set(task.id, task); await writableDirectory(this.store.dataDir); await atomicJson(this.file(task.id), task); this.unwritten.delete(task.id); return task; }
   async restore() {
     const files = await fs.readdir(this.root).catch(error => { if (error.code !== 'ENOENT') throw error; return []; });
@@ -30,7 +37,7 @@ class Model3DTasks {
       try {
         const task = await this.read(name.slice(0, -5));
         if (!task.taskId && task.status === 'submitting') await this.write({ ...task, status: 'uncertain', error: '上次提交未能确认任务编号，请先核对平台记录，勿重复提交' });
-        if (task.taskId && !['completed', 'failed'].includes(task.status)) this.active.add(task.id);
+        if (task.taskId && !['completed', 'failed'].includes(task.status) && !task.downloadStopped) this.active.add(task.id);
       }
       catch (error) { this.log('3D 任务记录无法读取：' + error.message); }
     }
@@ -43,12 +50,13 @@ class Model3DTasks {
   }
   public(task) { const { requestHash, resultUrl, ...value } = task; return value; }
   async list(sceneId) {
-    if (!scenePattern.test(sceneId)) throw new Error('导演台编号无效');
+    if (!scenePattern.test(sceneId)) throw Object.assign(new Error('导演台编号无效'), { status: 400 });
     await this.ready;
     const files = await fs.readdir(this.root).catch(error => { if (error.code !== 'ENOENT') throw error; return []; });
     const tasks = [];
     for (const name of files.filter(name => /^[a-f0-9-]{36}\.json$/.test(name))) {
-      const task = await this.read(name.slice(0, -5)); if (task.sceneId === sceneId) tasks.push(this.public(task));
+      try { const task = await this.read(name.slice(0, -5)); if (task.sceneId === sceneId) tasks.push(this.public(task)); }
+      catch { if (!this.loggedUnreadable.has(name)) { this.loggedUnreadable.add(name); this.log('3D 任务记录无法读取：' + name); } }
     }
     return tasks.sort((a, b) => b.createdAt - a.createdAt);
   }
@@ -61,7 +69,7 @@ class Model3DTasks {
   async createInner(input) {
     await this.ready;
     this.controller.signal.throwIfAborted();
-    if (!scenePattern.test(input.sceneId)) throw new Error('导演台编号无效');
+    if (!scenePattern.test(input.sceneId)) throw Object.assign(new Error('导演台编号无效'), { status: 400 });
     const channel = this.store.value.channels.find(channel => channel.id === input.channelId && channel.enabled);
     const spec = channel?.runningHubModels?.[input.model];
     if (channel?.protocol !== runningHub.protocol || spec?.type !== '3d' || !channel.models.includes(input.model)) throw new Error('请先检测渠道并添加可用的 3D 模型');
@@ -90,20 +98,27 @@ class Model3DTasks {
     }
     return this.public(task);
   }
-  refresh(id) {
+  refresh(id, options = {}) {
     this.file(id);
     if (this.operations.has(id)) return this.operations.get(id);
-    const pending = this.refreshInner(id).finally(() => this.operations.delete(id));
+    const pending = this.refreshInner(id, options).finally(() => this.operations.delete(id));
     this.operations.set(id, pending); return pending;
   }
-  async refreshInner(id) {
+  async refreshInner(id, { manual = false } = {}) {
     const task = await this.read(id);
     if (task.status === 'completed' && (await fs.stat(this.file(id, 'glb')).catch(() => null))?.size === task.bytes) return this.public(task);
     if (!task.taskId || task.status === 'failed') return this.public(task);
-    if (task.nextPollAt > Date.now()) return this.public(task);
+    if (task.status === 'processing' && Date.now() - task.createdAt > 24 * 3600_000) {
+      task.status = 'failed'; task.error = '3D 任务超过 24 小时仍未完成，已停止查询；请在 RunningHub 平台核对，不会自动重新提交';
+      this.active.delete(id); await this.write(task); return this.public(task);
+    }
+    if (task.downloadStopped && !manual) return this.public(task);
+    if (manual && task.downloadStopped) { task.downloadAttempts = 0; delete task.downloadStopped; this.active.add(id); }
+    if (!manual && task.nextPollAt > Date.now()) return this.public(task);
     const channel = this.store.value.channels.find(channel => channel.id === task.channelId);
     if (!channel?.apiKey || channel.protocol !== runningHub.protocol) { task.status = 'blocked'; task.error = '原 3D 渠道或密钥不可用，请恢复原渠道配置后重新查询'; this.active.delete(id); await this.write(task); return this.public(task); }
     this.active.add(id);
+    let downloadFailed = false;
     try {
       const result = await runningHub.query({ ...channel, baseUrl: task.baseUrl }, task.taskId, { fetchImpl: this.store.fetchImpl, signal: this.controller.signal });
       const status = String(result.status || '').toUpperCase();
@@ -111,17 +126,28 @@ class Model3DTasks {
         const output = result.results?.find(item => /^(?:glb)$/i.test(item.outputType || '') || /\.glb(?:\?|$)/i.test(item.url || ''));
         if (!output?.url) { task.status = 'failed'; this.active.delete(id); throw new Error('3D 任务没有返回可导入的 GLB 文件，请在平台核对输出格式；不会自动重新提交'); }
         task.resultUrl = output.url;
-        await this.download(task);
-        task.status = 'completed'; task.error = ''; task.completedAt = Date.now(); this.active.delete(id);
+        try { await this.download(task); } catch (error) { downloadFailed = true; throw error; }
+        task.status = 'completed'; task.error = ''; task.completedAt = Date.now(); task.downloadAttempts = 0; delete task.downloadStopped; this.active.delete(id);
       } else if (['FAILED', 'CANCELLED', 'CANCELED', 'CANCEL'].includes(status)) {
         task.status = 'failed'; task.error = result.errorMessage || result.errorCode || '3D 生成失败'; this.active.delete(id);
       } else if (!['QUEUED', 'RUNNING'].includes(status)) throw new Error(result.errorMessage || '平台未返回有效的 3D 任务状态');
       else { task.status = 'processing'; task.error = ''; }
     } catch (error) {
-      task.error = error.message;
+      task.error = downloadFailed && error.code !== 'MODEL_TOO_LARGE'
+        ? runningHub.networkError('GLB 下载失败', error, channel.apiKey).message.replaceAll(this.store.dataDir, '[数据目录]').replace(/https?:\/\/\S+/g, '[下载地址]')
+        : error.message;
       if (error.code === 'MODEL_TOO_LARGE') { task.status = 'failed'; this.active.delete(id); }
-      else if (task.status !== 'failed' && task.resultUrl) task.status = 'download_failed';
-      task.nextPollAt = Date.now() + 30000;
+      else if (task.status !== 'failed' && task.resultUrl) {
+        task.status = 'download_failed';
+        if (downloadFailed) {
+          task.downloadAttempts = (task.downloadAttempts || 0) + 1;
+          if (task.downloadAttempts >= 10) {
+            task.downloadStopped = true; this.active.delete(id);
+            task.error = 'GLB 下载已连续失败 10 次，已停止自动重试，可点「重新下载」手动重试：' + task.error;
+          }
+        }
+      }
+      task.nextPollAt = Date.now() + (downloadFailed && error.code !== 'MODEL_TOO_LARGE' ? Math.min(30000 * 2 ** (task.downloadAttempts - 1), 30 * 60_000) : 30000);
     }
     await this.write(task);
     return this.public(task);
@@ -148,7 +174,21 @@ class Model3DTasks {
   }
   async open(id) { const task = await this.read(id); if (task.status !== 'completed') throw new Error('3D 模型尚未保存完成'); const file = this.file(id, 'glb'); const stat = await fs.lstat(file); if (!stat.isFile() || stat.size !== task.bytes) throw new Error('已保存的 GLB 文件不可用，请重新查询原任务'); return { file, bytes: stat.size }; }
   async export(id) { const { file, bytes } = await this.open(id); if (!this.choose) throw new Error('请通过启动器选择保存目录'); const directory = await this.choose(); return directory ? this.exporter.copy({ source: file, bytes, ext: '.glb' }, directory, '3D模型-' + id.slice(0, 8)) : null; }
-  async tick() { if (this.ticking || this.controller.signal.aborted) return; this.ticking = true; try { await this.ready; for (const id of this.active) { if (this.controller.signal.aborted) break; await this.refresh(id).catch(error => this.log('3D 查询：' + error.message)); } } finally { this.ticking = false; } }
+  async tick() {
+    if (this.ticking || this.controller.signal.aborted) return;
+    this.ticking = true;
+    try {
+      await this.ready;
+      const ids = [...this.active]; let index = 0;
+      const worker = async () => {
+        while (index < ids.length && !this.controller.signal.aborted) {
+          const id = ids[index++];
+          await this.refresh(id).catch(error => this.log('3D 查询：' + error.message));
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(3, ids.length) }, worker));
+    } finally { this.ticking = false; }
+  }
   async close() { clearInterval(this.timer); this.controller.abort(); await Promise.allSettled([...this.operations.values()]); }
 }
 module.exports = { Model3DTasks };

@@ -36,12 +36,40 @@ async function fixture(t) {
   };
   const store = await new ConfigStore(directory, value => Buffer.from(value), value => value.toString(), fetchImpl).initialize();
   await store.save({ channels: [{ id: 'mesh', name: '国内建模渠道', protocol: 'runninghub-standard', baseUrl: 'https://www.runninghub.cn', apiKey: 'test-only-key', models: [model, imageModel], runningHubModels: { [model]: spec, [imageModel]: imageSpec } }] });
-  const jobs = new Set();
-  const open = () => { const value = new Model3DTasks(store, { exporter: new MediaExports(store.dataDir), choose: async () => output }); jobs.add(value); return value; };
+  const jobs = new Set(), logs = [];
+  const open = () => { const value = new Model3DTasks(store, { exporter: new MediaExports(store.dataDir), choose: async () => output, log: message => logs.push(message) }); jobs.add(value); return value; };
   t.after(async () => { for (const job of jobs) await job.close(); await fs.rm(root, { recursive: true, force: true }); });
   const input = { id: crypto.randomUUID(), sceneId: 'director-test', channelId: 'mesh', model, prompt: '一个白模茶杯', parameters: { generateType: 'Geometry', faceCount: 50000 } };
-  return { store, bytes, output, state, open, input, imageModel };
+  return { store, bytes, output, state, open, input, imageModel, logs };
 }
+
+test('损坏的任务记录不影响列表，其他导演台与未写盘更新保持独立', async t => {
+  const { open, input, logs } = await fixture(t); const jobs = open(); await jobs.create(input);
+  const valid = await jobs.read(input.id);
+  const other = { ...valid, id: crypto.randomUUID(), sceneId: 'other' };
+  await jobs.write(other);
+  const otherBytes = await fs.readFile(jobs.file(other.id));
+  const pending = { ...valid, id: crypto.randomUUID() };
+  await jobs.write(pending); jobs.unwritten.set(pending.id, { ...pending, status: 'download_failed' });
+  const covered = { ...valid, id: crypto.randomUUID() };
+  await fs.writeFile(jobs.file(covered.id), '{broken'); jobs.unwritten.set(covered.id, covered);
+  const bad = new Map([
+    [crypto.randomUUID(), Buffer.from('{broken')],
+    [crypto.randomUUID(), Buffer.from(JSON.stringify({ ...valid, id: crypto.randomUUID(), format: 2 }))],
+  ]);
+  for (const [id, bytes] of bad) await fs.writeFile(jobs.file(id), bytes);
+  for (let i = 0; i < 3; i++) {
+    const listed = await jobs.list('director-test');
+    assert.deepEqual(new Set(listed.map(task => task.id)), new Set([input.id, pending.id, covered.id]));
+    assert.equal(listed.find(task => task.id === pending.id).status, 'download_failed');
+  }
+  for (const [id, bytes] of bad) {
+    assert.deepEqual(await fs.readFile(jobs.file(id)), bytes);
+    assert.equal(logs.filter(message => message.includes(id + '.json')).length, 1);
+  }
+  assert.deepEqual(await fs.readFile(jobs.file(other.id)), otherBytes);
+  assert.equal(await fs.readFile(jobs.file(covered.id), 'utf8'), '{broken');
+});
 
 test('3D 按官方参数提交、同编号防重、保存 GLB 并另存中文目录且不覆盖同名文件', async t => {
   const { open, input, state, bytes, output } = await fixture(t); const jobs = open();
@@ -111,4 +139,130 @@ test('3D 查询返回错误码时任务立即失败且不再轮询', async t => 
   const queries = state.queries;
   await jobs.refresh(input.id);
   assert.equal(state.queries, queries);
+});
+
+test('处理中超过 24 小时失败，已完成与下载待重试不受此时限影响', async t => {
+  const { open, input, state } = await fixture(t); const jobs = open();
+  await jobs.create(input);
+  let task = await jobs.read(input.id); task.createdAt = Date.now() - 25 * 3600_000; await jobs.write(task);
+  const expired = await jobs.refresh(input.id);
+  assert.equal(expired.status, 'failed'); assert.match(expired.error, /超过 24 小时/);
+  assert.equal(state.queries, 0); assert.equal(jobs.active.has(input.id), false);
+
+  const completedInput = { ...input, id: crypto.randomUUID() };
+  await jobs.create(completedInput); await jobs.refresh(completedInput.id);
+  task = await jobs.read(completedInput.id); task.createdAt = Date.now() - 25 * 3600_000; await jobs.write(task);
+  assert.equal((await jobs.refresh(completedInput.id)).status, 'completed');
+  assert.ok((await fs.stat(jobs.file(completedInput.id, 'glb'))).size > 0);
+
+  const retryInput = { ...input, id: crypto.randomUUID() };
+  await jobs.create(retryInput); state.corrupt = true; await jobs.refresh(retryInput.id);
+  task = await jobs.read(retryInput.id); task.createdAt = Date.now() - 25 * 3600_000; task.nextPollAt = 0; await jobs.write(task);
+  state.corrupt = false; const before = state.urls.filter(url => url.endsWith('.glb')).length;
+  assert.equal((await jobs.refresh(retryInput.id)).status, 'completed');
+  assert.equal(state.urls.filter(url => url.endsWith('.glb')).length, before + 1);
+
+  const inactiveInput = { ...input, id: crypto.randomUUID() };
+  await jobs.create(inactiveInput);
+  for (const status of ['uncertain', 'blocked', 'submitting']) {
+    task = await jobs.read(inactiveInput.id);
+    task.status = status; task.createdAt = Date.now() - 25 * 3600_000; task.nextPollAt = Date.now() + 60000;
+    await jobs.write(task);
+    assert.equal((await jobs.refresh(inactiveInput.id)).status, status);
+  }
+});
+
+test('下载连续失败十次停止自动重试，重启不恢复，手动重试可继续', async t => {
+  const { open, input, state } = await fixture(t); const jobs = open(); await jobs.create(input);
+  state.corrupt = true;
+  for (let attempt = 1; attempt <= 10; attempt++) {
+    const task = await jobs.read(input.id); task.nextPollAt = 0; await jobs.write(task);
+    const before = Date.now(); const result = await jobs.refresh(input.id);
+    assert.equal(result.status, 'download_failed');
+    assert.equal(result.downloadAttempts, attempt);
+    if (attempt < 10) {
+      assert.equal(Boolean(result.downloadStopped), false);
+      const expected = Math.min(30000 * 2 ** (attempt - 1), 30 * 60_000);
+      assert.ok(result.nextPollAt - before >= expected - 1000 && result.nextPollAt - before <= expected + 1000);
+    } else {
+      assert.equal(result.downloadStopped, true); assert.match(result.error, /连续失败 10 次/);
+      assert.equal(jobs.active.has(input.id), false);
+    }
+  }
+  const downloads = state.urls.filter(url => url.endsWith('.glb')).length;
+  await jobs.tick(); assert.equal(state.urls.filter(url => url.endsWith('.glb')).length, downloads);
+  const restored = open(); await restored.ready; assert.equal(restored.active.has(input.id), false);
+  state.corrupt = false;
+  const complete = await restored.refresh(input.id, { manual: true });
+  assert.equal(complete.status, 'completed'); assert.equal(complete.downloadAttempts, 0);
+  assert.equal(complete.downloadStopped, undefined); assert.ok((await fs.stat(restored.file(input.id, 'glb'))).size > 0);
+  assert.equal(state.submits, 1);
+});
+
+test('手动查询不受冷却阻挡，平台失败与模型超限保持原有终态', async t => {
+  const { open, input, state } = await fixture(t); const jobs = open(); await jobs.create(input);
+  let task = await jobs.read(input.id); task.nextPollAt = Date.now() + 10 * 60_000; await jobs.write(task);
+  await jobs.refresh(input.id); assert.equal(state.queries, 0);
+  state.finished = false; await jobs.refresh(input.id, { manual: true }); assert.equal(state.queries, 1);
+  state.queryError = true; task = await jobs.read(input.id); task.nextPollAt = 0; await jobs.write(task);
+  assert.equal((await jobs.refresh(input.id)).status, 'failed'); assert.equal(state.queries, 2);
+  const tooLarge = { ...input, id: crypto.randomUUID() }; state.queryError = false; state.finished = true;
+  await jobs.create(tooLarge);
+  jobs.download = async () => { throw Object.assign(new Error('模型过大'), { code: 'MODEL_TOO_LARGE' }); };
+  const failure = await jobs.refresh(tooLarge.id);
+  assert.equal(failure.status, 'failed'); assert.equal(failure.downloadAttempts, undefined);
+  assert.equal(state.submits, 2);
+});
+
+test('下载错误不暴露密钥、签名地址和本机路径', async t => {
+  const { open, input, store } = await fixture(t); const jobs = open(); await jobs.create(input);
+  jobs.download = async () => { throw new Error(`下载失败 ${store.value.channels[0].apiKey} https://files.example/model.glb?signature=private ${store.dataDir}`); };
+  const task = await jobs.refresh(input.id);
+  assert.equal(task.status, 'download_failed');
+  assert.match(task.error, /下载失败/);
+  for (const secret of ['test-only-key', 'signature=private', store.dataDir]) assert.ok(!task.error.includes(secret));
+});
+
+test('慢下载不阻塞其他任务查询，刷新并发最多三个', async t => {
+  const { open, input, store } = await fixture(t); const jobs = open(); await jobs.ready;
+  const ids = Array.from({ length: 4 }, () => crypto.randomUUID());
+  for (const [index, id] of ids.entries()) {
+    await jobs.write({ format: 1, id, sceneId: input.sceneId, channelId: input.channelId, baseUrl: 'https://www.runninghub.cn', taskId: String(index + 1), status: 'processing', createdAt: Date.now() });
+    jobs.active.add(id);
+  }
+  const queried = []; let concurrent = 0, maximum = 0;
+  store.fetchImpl = async (url, options) => {
+    const taskId = JSON.parse(options.body).taskId; queried.push(taskId);
+    return Response.json(taskId === '1'
+      ? { taskId, status: 'SUCCESS', results: [{ outputType: 'glb', url: 'https://files.example/model.glb' }] }
+      : { taskId, status: 'RUNNING' });
+  };
+  jobs.download = async () => { await new Promise(resolve => setTimeout(resolve, 2000)); };
+  const refresh = jobs.refresh.bind(jobs);
+  jobs.refresh = async id => { concurrent++; maximum = Math.max(maximum, concurrent); try { return await refresh(id); } finally { concurrent--; } };
+  const ticking = jobs.tick();
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.ok(queried.filter(id => id !== '1').length >= 2);
+  await ticking;
+  assert.equal(queried.length, 4); assert.ok(maximum <= 3);
+});
+
+test('重复 tick 与手动刷新同一任务只查询一次，关闭会中止所有并发查询', async t => {
+  const { open, input, store } = await fixture(t); const jobs = open(); await jobs.ready;
+  const ids = Array.from({ length: 4 }, () => crypto.randomUUID());
+  for (const [index, id] of ids.entries()) {
+    await jobs.write({ format: 1, id, sceneId: input.sceneId, channelId: input.channelId, baseUrl: 'https://www.runninghub.cn', taskId: String(index + 1), status: 'processing', createdAt: Date.now() });
+    jobs.active.add(id);
+  }
+  let started = 0, releaseStart;
+  const firstStarted = new Promise(resolve => { releaseStart = resolve; });
+  store.fetchImpl = (_url, options) => {
+    started++; if (started === 3) releaseStart();
+    return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true }));
+  };
+  const ticking = jobs.tick(); await firstStarted;
+  const second = jobs.tick(); const sameId = jobs.refresh(ids[0]);
+  assert.equal(started, 3);
+  await jobs.close(); await Promise.all([ticking, second, sameId]);
+  assert.equal(started, 3);
 });
