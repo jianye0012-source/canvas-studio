@@ -107,7 +107,7 @@ export async function openaiCompatibleProvider() {
 			const base = credential?.env?.[BASE_ENV];
 			if (base && process.env.CANVAS_LOCAL_PROVIDER_BASE) {
 				const entries = await fetchModelList(v1(base), credential.key, "Local model channels", signal);
-				return Promise.all(entries.map(async entry => ({ ...(await serverModel(entry.id, base)), name: entry.name || entry.id })));
+				return Promise.all(entries.map(async entry => ({ ...(await serverModel(entry.id, base)), name: entry.name || entry.id, contextWindow: 131072 })));
 			}
 			return base ? Promise.all((await listEndpoint(base, credential.key, signal)).map((id) => serverModel(id, base))) : [];
 		},
