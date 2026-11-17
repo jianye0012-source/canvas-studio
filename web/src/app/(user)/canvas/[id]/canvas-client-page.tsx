@@ -2799,7 +2799,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             const child: CanvasNodeData = {
                 id: childId,
                 type: CanvasNodeType.Image,
-                title: "Cropped Image",
+                title: "裁剪图片",
                 position: { x: node.position.x + node.width + 96, y: node.position.y },
                 width,
                 height: width * (image.height / image.width),
@@ -2951,7 +2951,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             const child: CanvasNodeData = {
                 id: childId,
                 type: CanvasNodeType.Image,
-                title: "Upscaled Image",
+                title: "放大图片",
                 position: { x: node.position.x + node.width + 96, y: node.position.y },
                 width: size.width,
                 height: size.height,
@@ -3711,7 +3711,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     const videoNode: CanvasNodeData = {
                         id: videoId,
                         type: CanvasNodeType.Video,
-                        title: effectivePrompt.slice(0, 32) || "Generated Video",
+                        title: effectivePrompt.slice(0, 32) || "生成视频",
                         position: isEmptyVideoNode ? sourceNode.position : { x: parent.x + (sourceNode?.width || spec.width) + 96, y: parent.y },
                         width: isEmptyVideoNode ? sourceNode.width : spec.width,
                         height: isEmptyVideoNode ? sourceNode.height : spec.height,
