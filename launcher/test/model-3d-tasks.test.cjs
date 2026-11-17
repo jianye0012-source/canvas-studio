@@ -36,12 +36,40 @@ async function fixture(t) {
   };
   const store = await new ConfigStore(directory, value => Buffer.from(value), value => value.toString(), fetchImpl).initialize();
   await store.save({ channels: [{ id: 'mesh', name: '国内建模渠道', protocol: 'runninghub-standard', baseUrl: 'https://www.runninghub.cn', apiKey: 'test-only-key', models: [model, imageModel], runningHubModels: { [model]: spec, [imageModel]: imageSpec } }] });
-  const jobs = new Set();
-  const open = () => { const value = new Model3DTasks(store, { exporter: new MediaExports(store.dataDir), choose: async () => output }); jobs.add(value); return value; };
+  const jobs = new Set(), logs = [];
+  const open = () => { const value = new Model3DTasks(store, { exporter: new MediaExports(store.dataDir), choose: async () => output, log: message => logs.push(message) }); jobs.add(value); return value; };
   t.after(async () => { for (const job of jobs) await job.close(); await fs.rm(root, { recursive: true, force: true }); });
   const input = { id: crypto.randomUUID(), sceneId: 'director-test', channelId: 'mesh', model, prompt: '一个白模茶杯', parameters: { generateType: 'Geometry', faceCount: 50000 } };
-  return { store, bytes, output, state, open, input, imageModel };
+  return { store, bytes, output, state, open, input, imageModel, logs };
 }
+
+test('损坏的任务记录不影响列表，其他导演台与未写盘更新保持独立', async t => {
+  const { open, input, logs } = await fixture(t); const jobs = open(); await jobs.create(input);
+  const valid = await jobs.read(input.id);
+  const other = { ...valid, id: crypto.randomUUID(), sceneId: 'other' };
+  await jobs.write(other);
+  const otherBytes = await fs.readFile(jobs.file(other.id));
+  const pending = { ...valid, id: crypto.randomUUID() };
+  await jobs.write(pending); jobs.unwritten.set(pending.id, { ...pending, status: 'download_failed' });
+  const covered = { ...valid, id: crypto.randomUUID() };
+  await fs.writeFile(jobs.file(covered.id), '{broken'); jobs.unwritten.set(covered.id, covered);
+  const bad = new Map([
+    [crypto.randomUUID(), Buffer.from('{broken')],
+    [crypto.randomUUID(), Buffer.from(JSON.stringify({ ...valid, id: crypto.randomUUID(), format: 2 }))],
+  ]);
+  for (const [id, bytes] of bad) await fs.writeFile(jobs.file(id), bytes);
+  for (let i = 0; i < 3; i++) {
+    const listed = await jobs.list('director-test');
+    assert.deepEqual(new Set(listed.map(task => task.id)), new Set([input.id, pending.id, covered.id]));
+    assert.equal(listed.find(task => task.id === pending.id).status, 'download_failed');
+  }
+  for (const [id, bytes] of bad) {
+    assert.deepEqual(await fs.readFile(jobs.file(id)), bytes);
+    assert.equal(logs.filter(message => message.includes(id + '.json')).length, 1);
+  }
+  assert.deepEqual(await fs.readFile(jobs.file(other.id)), otherBytes);
+  assert.equal(await fs.readFile(jobs.file(covered.id), 'utf8'), '{broken');
+});
 
 test('3D 按官方参数提交、同编号防重、保存 GLB 并另存中文目录且不覆盖同名文件', async t => {
   const { open, input, state, bytes, output } = await fixture(t); const jobs = open();

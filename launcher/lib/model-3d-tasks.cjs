@@ -15,7 +15,7 @@ class Model3DTasks {
   constructor(store, { exporter, choose, log = () => {} } = {}) {
     Object.assign(this, { store, exporter, choose, log });
     this.root = path.join(store.dataDir, 'projects/model-3d');
-    this.active = new Set(); this.operations = new Map(); this.unwritten = new Map(); this.controller = new AbortController();
+    this.active = new Set(); this.operations = new Map(); this.unwritten = new Map(); this.loggedUnreadable = new Set(); this.controller = new AbortController();
     this.ready = this.restore();
     void this.ready.catch(error => log('3D 任务恢复失败：' + error.message));
     this.timer = setInterval(() => { void this.tick().catch(error => log('3D 任务：' + error.message)); }, 5000);
@@ -48,7 +48,8 @@ class Model3DTasks {
     const files = await fs.readdir(this.root).catch(error => { if (error.code !== 'ENOENT') throw error; return []; });
     const tasks = [];
     for (const name of files.filter(name => /^[a-f0-9-]{36}\.json$/.test(name))) {
-      const task = await this.read(name.slice(0, -5)); if (task.sceneId === sceneId) tasks.push(this.public(task));
+      try { const task = await this.read(name.slice(0, -5)); if (task.sceneId === sceneId) tasks.push(this.public(task)); }
+      catch { if (!this.loggedUnreadable.has(name)) { this.loggedUnreadable.add(name); this.log('3D 任务记录无法读取：' + name); } }
     }
     return tasks.sort((a, b) => b.createdAt - a.createdAt);
   }
