@@ -167,7 +167,21 @@ class Model3DTasks {
   }
   async open(id) { const task = await this.read(id); if (task.status !== 'completed') throw new Error('3D 模型尚未保存完成'); const file = this.file(id, 'glb'); const stat = await fs.lstat(file); if (!stat.isFile() || stat.size !== task.bytes) throw new Error('已保存的 GLB 文件不可用，请重新查询原任务'); return { file, bytes: stat.size }; }
   async export(id) { const { file, bytes } = await this.open(id); if (!this.choose) throw new Error('请通过启动器选择保存目录'); const directory = await this.choose(); return directory ? this.exporter.copy({ source: file, bytes, ext: '.glb' }, directory, '3D模型-' + id.slice(0, 8)) : null; }
-  async tick() { if (this.ticking || this.controller.signal.aborted) return; this.ticking = true; try { await this.ready; for (const id of this.active) { if (this.controller.signal.aborted) break; await this.refresh(id).catch(error => this.log('3D 查询：' + error.message)); } } finally { this.ticking = false; } }
+  async tick() {
+    if (this.ticking || this.controller.signal.aborted) return;
+    this.ticking = true;
+    try {
+      await this.ready;
+      const ids = [...this.active]; let index = 0;
+      const worker = async () => {
+        while (index < ids.length && !this.controller.signal.aborted) {
+          const id = ids[index++];
+          await this.refresh(id).catch(error => this.log('3D 查询：' + error.message));
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(3, ids.length) }, worker));
+    } finally { this.ticking = false; }
+  }
   async close() { clearInterval(this.timer); this.controller.abort(); await Promise.allSettled([...this.operations.values()]); }
 }
 module.exports = { Model3DTasks };

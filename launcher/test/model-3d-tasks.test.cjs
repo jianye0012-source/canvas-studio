@@ -222,3 +222,47 @@ test('下载错误不暴露密钥、签名地址和本机路径', async t => {
   assert.match(task.error, /下载失败/);
   for (const secret of ['test-only-key', 'signature=private', store.dataDir]) assert.ok(!task.error.includes(secret));
 });
+
+test('慢下载不阻塞其他任务查询，刷新并发最多三个', async t => {
+  const { open, input, store } = await fixture(t); const jobs = open(); await jobs.ready;
+  const ids = Array.from({ length: 4 }, () => crypto.randomUUID());
+  for (const [index, id] of ids.entries()) {
+    await jobs.write({ format: 1, id, sceneId: input.sceneId, channelId: input.channelId, baseUrl: 'https://www.runninghub.cn', taskId: String(index + 1), status: 'processing', createdAt: Date.now() });
+    jobs.active.add(id);
+  }
+  const queried = []; let concurrent = 0, maximum = 0;
+  store.fetchImpl = async (url, options) => {
+    const taskId = JSON.parse(options.body).taskId; queried.push(taskId);
+    return Response.json(taskId === '1'
+      ? { taskId, status: 'SUCCESS', results: [{ outputType: 'glb', url: 'https://files.example/model.glb' }] }
+      : { taskId, status: 'RUNNING' });
+  };
+  jobs.download = async () => { await new Promise(resolve => setTimeout(resolve, 2000)); };
+  const refresh = jobs.refresh.bind(jobs);
+  jobs.refresh = async id => { concurrent++; maximum = Math.max(maximum, concurrent); try { return await refresh(id); } finally { concurrent--; } };
+  const ticking = jobs.tick();
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.ok(queried.filter(id => id !== '1').length >= 2);
+  await ticking;
+  assert.equal(queried.length, 4); assert.ok(maximum <= 3);
+});
+
+test('重复 tick 与手动刷新同一任务只查询一次，关闭会中止所有并发查询', async t => {
+  const { open, input, store } = await fixture(t); const jobs = open(); await jobs.ready;
+  const ids = Array.from({ length: 4 }, () => crypto.randomUUID());
+  for (const [index, id] of ids.entries()) {
+    await jobs.write({ format: 1, id, sceneId: input.sceneId, channelId: input.channelId, baseUrl: 'https://www.runninghub.cn', taskId: String(index + 1), status: 'processing', createdAt: Date.now() });
+    jobs.active.add(id);
+  }
+  let started = 0, releaseStart;
+  const firstStarted = new Promise(resolve => { releaseStart = resolve; });
+  store.fetchImpl = (_url, options) => {
+    started++; if (started === 3) releaseStart();
+    return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true }));
+  };
+  const ticking = jobs.tick(); await firstStarted;
+  const second = jobs.tick(); const sameId = jobs.refresh(ids[0]);
+  assert.equal(started, 3);
+  await jobs.close(); await Promise.all([ticking, second, sameId]);
+  assert.equal(started, 3);
+});
