@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { importHdrFile } from './stage-hdr-library.js';
 import { openModelGenerator } from './canvas-model-generator.js';
 import { createSaveQueue } from './canvas-save-queue.js';
+import { createOutputRequests } from './canvas-output-request.js';
 import './canvas-bridge.css';
 
 // The .cclayproject envelope includes meshes, HDRs, images, motion specs and
@@ -12,17 +13,12 @@ export function useCanvasBridge(api) {
     if (!new URLSearchParams(location.search).has('canvas')) return;
     let session, initialized = false, canceled = false, lastSnapshot = '', panoramas = [], activePanorama = null;
     const post = (type, payload) => parent.postMessage({ type, payload }, location.origin);
-    const pendingOutputs = new Map();
-    const sendOutput = (type, payload) => new Promise((resolve, reject) => {
-      const requestId = crypto.randomUUID();
-      const timer = setTimeout(() => { pendingOutputs.delete(requestId); reject(new Error('画布接收超时，请检查本机服务后重试')); }, 120000);
-      pendingOutputs.set(requestId, { resolve, reject, timer });
-      post(type, { ...payload, requestId });
-    });
     const run = async (id, args) => { const result = await latest.current.runStudioAction(id, args); if (!result?.ok) throw new Error(`操作未完成：${id}，请查看导演台提示`); return result; };
     const bar = document.createElement('div'); bar.className = 'canvas-return-bar';
     const label = document.createElement('span'); label.textContent = '正在连接画布…'; label.setAttribute('role', 'status');
     const fail = error => { label.textContent = `未保存：${error.message}`; label.classList.add('error'); };
+    const outputs = createOutputRequests({ post, onAccepted: () => { label.textContent = '画布正在保存…'; label.classList.remove('error'); } });
+    const sendOutput = outputs.send;
     const button = (name, action) => {
       const node = document.createElement('button'); node.textContent = name; node.type = 'button';
       node.onclick = async () => { node.disabled = true; try { await action(); } catch (error) { fail(error); } finally { node.disabled = false; } };
@@ -109,9 +105,8 @@ export function useCanvasBridge(api) {
     async function message(event) {
       if (event.origin !== location.origin || event.source !== parent) return;
       try {
-        if (event.data?.type === 'storyai:director-output-result') {
-          const request = pendingOutputs.get(event.data.payload?.requestId);
-          if (request) { clearTimeout(request.timer); pendingOutputs.delete(event.data.payload.requestId); if (event.data.payload.ok) request.resolve(); else request.reject(new Error(typeof event.data.payload.error === 'string' ? event.data.payload.error.slice(0, 300) : '截图或动画未写入磁盘，请检查数据目录并重试')); }
+        if (['storyai:director-output-accepted', 'storyai:director-output-result'].includes(event.data?.type)) {
+          outputs.receive(event.data.type, event.data.payload);
           return;
         }
         if (event.data?.type === 'storyai:director-session') {
@@ -156,6 +151,6 @@ export function useCanvasBridge(api) {
     window.addEventListener('beforeunload', onLeaving);
     // Used by the File menu too: exports follow the same canvas return path.
     globalThis.__CANVAS_PROJECT_SAVE__ = () => save(true).then(() => ({ saved: true, name: latest.current.scenesDomain.projectName, fileName: '本机导演台场景.cclayproject' }));
-    return () => { canceled = true; for (const request of pendingOutputs.values()) { clearTimeout(request.timer); request.reject(new Error('导演台已关闭')); } clearInterval(ready); clearInterval(autosave); window.removeEventListener('message', message); window.removeEventListener('beforeunload', onLeaving); bar.remove(); delete globalThis.__CANVAS_PROJECT_SAVE__; };
+    return () => { canceled = true; outputs.close(); clearInterval(ready); clearInterval(autosave); window.removeEventListener('message', message); window.removeEventListener('beforeunload', onLeaving); bar.remove(); delete globalThis.__CANVAS_PROJECT_SAVE__; };
   }, []);
 }
