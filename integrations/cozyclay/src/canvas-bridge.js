@@ -54,7 +54,7 @@ export function useCanvasBridge(api) {
       label.textContent = '动画已发送到画布';
     };
     button('← 返回画布', async () => { await save(); post('storyai:director-close'); });
-    button('AI 生成 3D 模型', async () => { if (!initialized) throw new Error('请等待导演台连接完成'); await openModelGenerator({ sceneId: session.instanceId, run, save }); });
+    button('AI 生成 3D 模型', async () => { if (!initialized) throw new Error('请等待导演台连接完成'); await openModelGenerator({ sceneId: session.instanceId, save, importMesh: file => latest.current.appContext.storeDomain('objects').importMeshFile(file) }); });
     button('保存场景', () => save(true)); button('截图到画布', capture); button('动画到画布', video);
     button('导演台 MCP', async () => {
       const response = await fetch('/local/mcp/config'); if (!response.ok) throw new Error('MCP 配置读取失败');

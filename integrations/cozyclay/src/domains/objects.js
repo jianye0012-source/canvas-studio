@@ -419,6 +419,7 @@ export function useObjects(appContext) {
 		if (args.assetId) return args.placeAs === "mesh" ? spawnMeshAt(args.assetId, args.placement, context) : spawnCutoutAt(args.assetId, args.placement, context);
 		return importCommandAsset(args, context);
 	};
+	domain.importMeshFile = (file) => importMesh(file);
 	domain.applyMatte = applyMatte;
 
 	function meshNameFromFile(fileName) {

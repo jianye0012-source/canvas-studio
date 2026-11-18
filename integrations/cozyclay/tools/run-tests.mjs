@@ -139,7 +139,7 @@ const NODE_FILES = [
 	"test/verify-sample-at.mjs",
 	"test/verify-scene-asset-cache.mjs",
 	"test/verify-scene-assets.mjs",
-	"test/verify-scene-mesh.mjs", "test/verify-import-message-zh.mjs", "test/verify-canvas-model-generator.mjs", "test/verify-canvas-save-queue.mjs", "test/verify-canvas-output.mjs",
+	"test/verify-scene-mesh.mjs", "test/verify-import-message-zh.mjs", "test/verify-canvas-model-generator.mjs", "test/verify-model-generator-import.mjs", "test/verify-canvas-save-queue.mjs", "test/verify-canvas-output.mjs",
 	"test/verify-mesh-sniff.mjs",
 	"test/verify-mesh-graph-clone.mjs",
 	"test/verify-scene-objects.mjs",
