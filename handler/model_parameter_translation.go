@@ -21,7 +21,7 @@ func parameterTranslationLog(context aiLogContext, translation *service.Paramete
 	if request == nil {
 		return context
 	}
-	context.Method, context.Endpoint = request.Method, request.URL.String()
+	context.Method, context.Endpoint = request.Method, service.RedactURL(request.URL.String())
 	if request.GetBody != nil {
 		reader, err := request.GetBody()
 		if err == nil {
@@ -82,7 +82,7 @@ func serveParameterTranslation(w http.ResponseWriter, r *http.Request, body []by
 		if credits > 0 && (r.Header.Get("X-Canvas-Node-Request") != "true" || r.Context().Err() == nil) {
 			_ = service.RefundUserCredits(user.ID, request.Model, credits, path)
 		}
-		saveAIProxyLog(logContext, result.StatusCode, result.ResponseBody, err.Error())
+		saveAIProxyLog(logContext, result.StatusCode, result.ResponseBody, service.TransportErrorCause(err).Error())
 		Fail(w, err.Error())
 		return true
 	}
@@ -149,7 +149,7 @@ func serveParameterTranslationVideo(w http.ResponseWriter, r *http.Request, body
 		if credits > 0 {
 			refundVideoCredits(user.ID, request.Model, credits, "/videos")
 		}
-		saveAIProxyLog(logContext, result.StatusCode, result.ResponseBody, err.Error())
+		saveAIProxyLog(logContext, result.StatusCode, result.ResponseBody, service.TransportErrorCause(err).Error())
 		Fail(w, err.Error())
 		return true
 	}

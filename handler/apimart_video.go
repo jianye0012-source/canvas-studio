@@ -1600,8 +1600,8 @@ func uploadAPIMartImageBytes(channel model.ModelChannel, data []byte, filename s
 
 	response, err := service.HTTPClientForChannel(channel).Do(request)
 	if err != nil {
-		log.Printf("APIMart image upload failed: filename=%s err=%v", filename, err)
-		return "", fmt.Errorf("APIMart image upload failed: %v", err)
+		log.Printf("APIMart image upload failed: filename=%s err=%v", filename, service.TransportErrorCause(err))
+		return "", fmt.Errorf("APIMart image upload failed: %v", service.TransportErrorCause(err))
 	}
 	defer response.Body.Close()
 

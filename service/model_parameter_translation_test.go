@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tigerowo/infinite-canvas/model"
 )
@@ -234,5 +235,37 @@ func TestParameterTranslationFailureNeverResubmits(t *testing.T) {
 	_, err = translation.Execute(context.Background(), "image", nil)
 	if err == nil || !strings.Contains(err.Error(), "bad input") || calls != 1 {
 		t.Fatalf("calls=%d err=%v", calls, err)
+	}
+}
+
+func TestParameterTranslationSendChannelURLWithUserInfoRejected(t *testing.T) {
+	translation, err := NewParameterTranslation(model.ModelChannel{BaseURL: "http://user:pass@127.0.0.1:1/v1?token=SECRET", ParameterTranslation: `{models:{sample:{POST:{url:"/generate"}}}}`}, "sample", nil)
+	if err == nil {
+		_, err = translation.Send(context.Background(), "image", false, "")
+	}
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), "user:pass") || strings.Contains(err.Error(), ":pass@") {
+		t.Fatalf("error leaked credentials: %v", err)
+	}
+}
+
+func TestParameterTranslationSendDownloadErrorRedacted(t *testing.T) {
+	prepared, err := http.NewRequest(http.MethodGet, "http://user:pass@127.0.0.1:1/v1?token=SECRET", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	translation := &ParameterTranslation{Client: &http.Client{Timeout: 3 * time.Second}}
+	_, err = translation.Send(context.Background(), "video", true, "task-1", prepared)
+	if err == nil {
+		t.Fatal("expected network error")
+	}
+	message := err.Error()
+	if strings.Contains(message, "SECRET") || strings.Contains(message, "?token=") || strings.Contains(message, "user:pass") || strings.Contains(message, ":pass@") {
+		t.Fatalf("error leaked credentials: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(message), "connect") && !strings.Contains(strings.ToLower(message), "refused") {
+		t.Fatalf("error should keep underlying cause: %v", err)
 	}
 }

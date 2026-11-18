@@ -21,20 +21,20 @@ import (
 const autoDLAPIPath = "/api/v1/comfyui"
 
 type AutoDLInputRule struct {
-	Type      string   `json:"type"`
-	Required  bool     `json:"required"`
-	Default   any      `json:"default,omitempty"`
-	Min       *float64 `json:"min,omitempty"`
-	Max       *float64 `json:"max,omitempty"`
-	Options   []struct {
+	Type     string   `json:"type"`
+	Required bool     `json:"required"`
+	Default  any      `json:"default,omitempty"`
+	Min      *float64 `json:"min,omitempty"`
+	Max      *float64 `json:"max,omitempty"`
+	Options  []struct {
 		Label string `json:"label"`
 	} `json:"options,omitempty"`
 }
 
 type AutoDLWorkflow struct {
-	UUID       string                    `json:"uuid"`
-	Name       string                    `json:"name"`
-	Kind       string                    `json:"kind"`
+	UUID       string                     `json:"uuid"`
+	Name       string                     `json:"name"`
+	Kind       string                     `json:"kind"`
 	InputRules map[string]AutoDLInputRule `json:"input_rules,omitempty"`
 }
 
@@ -148,7 +148,7 @@ func readAutoDLMetadata(baseURL string, path string, body []byte) (json.RawMessa
 	request.Header.Set("Content-Type", "application/json")
 	response, err := SafeProxyHTTPClient().Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("AutoDL 工作流读取失败：%w", err)
+		return nil, fmt.Errorf("AutoDL 工作流读取失败：%s", TransportErrorCause(err))
 	}
 	defer response.Body.Close()
 	var root struct {
@@ -403,7 +403,7 @@ func WaitAutoDLAudio(ctx context.Context, channel model.ModelChannel, payload []
 			SetModelChannelAuthHeader(request, channel)
 			response, err := client.Do(request)
 			if err != nil {
-				return result, err
+				return result, TransportErrorCause(err)
 			}
 			body, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 			response.Body.Close()

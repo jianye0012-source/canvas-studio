@@ -409,9 +409,9 @@ func PollParameterTranslationVideo(ctx context.Context, task model.VideoTask, ch
 			result, err = translation.Send(ctx, "video", true, id)
 			if err != nil {
 				if !result.Retryable && result.StatusCode != http.StatusTooManyRequests {
-					return VideoTaskPollUpdate{Status: "failed", Error: err.Error(), ErrorDetail: err.Error(), ResponseBody: result.ResponseBody, StatusCode: result.StatusCode}, nil
+					return VideoTaskPollUpdate{Status: "failed", Error: TransportErrorCause(err).Error(), ErrorDetail: TransportErrorCause(err).Error(), ResponseBody: result.ResponseBody, StatusCode: result.StatusCode}, nil
 				}
-				update.ErrorDetail = err.Error()
+				update.ErrorDetail = TransportErrorCause(err).Error()
 			}
 			if result.Status == "completed" {
 				snapshot.Completed[id] = ParameterTranslationResult{Status: result.Status, Progress: result.Progress, URLs: result.URLs[:min(1, len(result.URLs))], ContentURL: result.ContentURL, StatusCode: result.StatusCode}
@@ -750,7 +750,7 @@ func (translation *ParameterTranslation) Send(ctx context.Context, kind string, 
 	response, err := translation.Client.Do(request)
 	if err != nil {
 		result.Retryable = true
-		message := err.Error()
+		message := TransportErrorCause(err).Error()
 		if translation.channel.APIKey != "" {
 			for _, key := range []string{translation.channel.APIKey, url.QueryEscape(translation.channel.APIKey), url.PathEscape(translation.channel.APIKey)} {
 				message = strings.ReplaceAll(message, key, "[密钥]")

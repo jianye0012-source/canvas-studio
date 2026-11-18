@@ -14,7 +14,7 @@ import (
 func AutoDLWorkflows(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
 	var input struct {
-		BaseURL string `json:"baseUrl"`
+		BaseURL    string `json:"baseUrl"`
 		WorkflowID string `json:"workflowId"`
 	}
 	if json.NewDecoder(r.Body).Decode(&input) != nil {
@@ -89,7 +89,7 @@ func copyAutoDLResponse(w http.ResponseWriter, response *http.Response, request 
 		if onFailure != nil {
 			onFailure()
 		}
-		saveAIProxyLog(logContext, response.StatusCode, string(payload), err.Error())
+		saveAIProxyLog(logContext, response.StatusCode, string(payload), service.TransportErrorCause(err).Error())
 		Fail(w, err.Error())
 		return true
 	}

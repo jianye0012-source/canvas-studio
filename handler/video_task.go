@@ -122,7 +122,7 @@ func proxyAIVideoTaskRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	request, err := http.NewRequestWithContext(taskContext, http.MethodPost, service.BuildModelChannelURL(channel, upstreamPath), bytes.NewReader(body))
 	if err != nil {
-		log.Printf("AI video build request failed: url=%s err=%v", service.BuildModelChannelURL(channel, upstreamPath), err)
+		log.Printf("AI video build request failed: url=%s err=%v", service.RedactURL(service.BuildModelChannelURL(channel, upstreamPath)), service.TransportErrorCause(err))
 		Fail(w, "AI 接口请求失败")
 		return
 	}
@@ -156,7 +156,7 @@ func proxyAIVideoTaskRequest(w http.ResponseWriter, r *http.Request) {
 		if credits > 0 {
 			refundVideoCredits(user.ID, modelName, credits, upstreamPath)
 		}
-		saveAIProxyLog(logContext, 0, "", err.Error())
+		saveAIProxyLog(logContext, 0, "", service.TransportErrorCause(err).Error())
 		Fail(w, "AI 接口请求失败")
 		return
 	}

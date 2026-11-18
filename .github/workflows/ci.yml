@@ -19,3 +19,14 @@ jobs:
         env:
           TMPDIR: ${{ github.workspace }}/work/tmp
       - run: go test ./config ./middleware ./router ./service ./handler ./repository
+  web-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.22.1
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --prefix web --ignore-scripts
+      - run: npx --prefix web tsc --noEmit -p web/tsconfig.json

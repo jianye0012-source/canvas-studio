@@ -184,7 +184,7 @@ func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 	body, contentType, upstreamPath = prepared.body, prepared.contentType, prepared.path
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, service.BuildModelChannelURL(channel, upstreamPath), bytes.NewReader(body))
 	if err != nil {
-		log.Printf("AI proxy build request failed: url=%s err=%v", service.BuildModelChannelURL(channel, upstreamPath), err)
+		log.Printf("AI proxy build request failed: url=%s err=%v", service.RedactURL(service.BuildModelChannelURL(channel, upstreamPath)), service.TransportErrorCause(err))
 		Fail(w, "AI 接口请求失败")
 		return
 	}
@@ -240,11 +240,11 @@ type aiLogContext struct {
 func copyAIResponse(w http.ResponseWriter, request *http.Request, channel model.ModelChannel, logContext aiLogContext, onFailure func()) {
 	response, err := service.HTTPClientForChannel(channel).Do(request)
 	if err != nil {
-		log.Printf("AI proxy request failed: url=%s err=%v", request.URL.String(), err)
+		log.Printf("AI proxy request failed: url=%s err=%v", service.RedactURL(request.URL.String()), service.TransportErrorCause(err))
 		if onFailure != nil {
 			onFailure()
 		}
-		saveAIProxyLog(logContext, 0, "", err.Error())
+		saveAIProxyLog(logContext, 0, "", service.TransportErrorCause(err).Error())
 		Fail(w, "AI 接口请求失败："+service.TransportErrorCause(err).Error())
 		return
 	}
@@ -252,7 +252,7 @@ func copyAIResponse(w http.ResponseWriter, request *http.Request, channel model.
 
 	if response.StatusCode >= http.StatusBadRequest {
 		payload, _ := io.ReadAll(io.LimitReader(response.Body, 256*1024))
-		log.Printf("AI upstream error: url=%s status=%d body=%s", request.URL.String(), response.StatusCode, strings.TrimSpace(string(payload)))
+		log.Printf("AI upstream error: url=%s status=%d body=%s", service.RedactURL(request.URL.String()), response.StatusCode, strings.TrimSpace(string(payload)))
 		if onFailure != nil {
 			onFailure()
 		}
