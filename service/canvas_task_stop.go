@@ -52,6 +52,11 @@ func CanvasTaskContext(kind, userID, id string) (context.Context, func(), error)
 	return ctx, cleanup, err
 }
 
+func CanvasTaskSubmitting(kind, userID, id string) bool {
+	_, ok := canvasTaskRuns.Load(kind + ":" + userID + ":" + id)
+	return ok
+}
+
 func StopCanvasTask(userID, kind, id string, workflow bool, source string) (bool, error) {
 	source = strings.TrimSpace(source)
 	if source == "" {

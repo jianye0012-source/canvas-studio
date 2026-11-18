@@ -1,7 +1,7 @@
 "use client";
 
 import type { CSSProperties } from "react";
-import { Image as ImageIcon, LoaderCircle, MessageSquare, Music2, Play, Settings2, Video } from "lucide-react";
+import { Image as ImageIcon, LoaderCircle, MessageSquare, Music2, Play, Settings2, Square, Video } from "lucide-react";
 import { Button, Segmented } from "antd";
 
 import { ModelPicker } from "@/components/model-picker";
@@ -26,9 +26,11 @@ type CanvasConfigNodePanelProps = {
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeMetadata>) => void;
     onGenerate: (nodeId: string) => void;
     onComposerToggle: () => void;
+    stoppableChildIds: string[];
+    onStop: () => void;
 };
 
-export function CanvasConfigNodePanel({ node, isRunning, inputSummary, videoFrameOptions = [], videoResourceOptions = [], onConfigChange, onGenerate, onComposerToggle }: CanvasConfigNodePanelProps) {
+export function CanvasConfigNodePanel({ node, isRunning, inputSummary, videoFrameOptions = [], videoResourceOptions = [], onConfigChange, onGenerate, onComposerToggle, stoppableChildIds, onStop }: CanvasConfigNodePanelProps) {
     const globalConfig = useEffectiveConfig();
     const modelCosts = useConfigStore((state) => state.publicSettings?.modelChannel.modelCosts);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
@@ -120,21 +122,36 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, videoFram
                 ) : null}
             </div>
 
-            <Button
-                type="primary"
-                className="mt-auto !h-9 !w-full !cursor-pointer !rounded-lg"
-                disabled={isRunning || !canGenerate}
-                onMouseDown={(event) => event.stopPropagation()}
-                onClick={() => onGenerate(node.id)}
-            >
-                <span className="inline-flex items-center gap-1.5">
-                    <span className="inline-flex items-center gap-1">
-                        {node.metadata?.workflowRef ? "工作流" : <><CreditSymbol />{credits.toLocaleString()}</>}
+            {stoppableChildIds.length > 0 ? (
+                <Button
+                    danger
+                    type="primary"
+                    className="mt-auto !h-9 !w-full !cursor-pointer !rounded-lg"
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onClick={onStop}
+                >
+                    <span className="inline-flex items-center gap-1.5">
+                        <Square className="size-4" />
+                        <span>停止</span>
                     </span>
-                    {isRunning ? <LoaderCircle className="size-4 animate-spin" /> : <Play className="size-4" />}
-                    <span>开始生成</span>
-                </span>
-            </Button>
+                </Button>
+            ) : (
+                <Button
+                    type="primary"
+                    className="mt-auto !h-9 !w-full !cursor-pointer !rounded-lg"
+                    disabled={isRunning || !canGenerate}
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onClick={() => onGenerate(node.id)}
+                >
+                    <span className="inline-flex items-center gap-1.5">
+                        <span className="inline-flex items-center gap-1">
+                            {node.metadata?.workflowRef ? "工作流" : <><CreditSymbol />{credits.toLocaleString()}</>}
+                        </span>
+                        {isRunning ? <LoaderCircle className="size-4 animate-spin" /> : <Play className="size-4" />}
+                        <span>开始生成</span>
+                    </span>
+                </Button>
+            )}
         </div>
     );
 }

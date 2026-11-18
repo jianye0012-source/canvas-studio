@@ -68,7 +68,12 @@ func AIVideo(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	if isClientVideoTaskID(id) {
-		OK(w, map[string]any{"id": id, "task_id": id, "object": "video", "status": "queued", "progress": 0})
+		user, ok := service.UserFromContext(r.Context())
+		if ok && service.CanvasTaskSubmitting("video", user.ID, id) {
+			OK(w, map[string]any{"id": id, "task_id": id, "object": "video", "status": "queued", "progress": 0})
+			return
+		}
+		Fail(w, "视频任务不存在，请在服务商处核对任务是否已提交")
 		return
 	}
 	proxyAIGetRequest(w, r, "/videos/"+id)

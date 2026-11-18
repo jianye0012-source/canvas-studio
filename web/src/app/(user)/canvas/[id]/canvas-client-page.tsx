@@ -14,7 +14,7 @@ import { useParams, useRouter } from "next/navigation";
 import { ChevronLeft, ChevronRight, Download, Globe2, Home, ImageIcon, Images, Layers3, List, Maximize, Menu, Bot, Music2, PanelLeftClose, PanelLeftOpen, Pause, Play, Plus, Redo2, Settings2, Trash2, Undo2, Upload, Video, Volume2, VolumeX, X } from "lucide-react";
 import { saveAs } from "file-saver";
 
-import { listCanvasProjects, deleteCanvasProjects, stopCanvasTask } from "@/services/api/canvas-tasks";
+import { listCanvasProjects, stopCanvasTask } from "@/services/api/canvas-tasks";
 import { createCanvasImageTask, pollCanvasImageTaskStatus, requestImageQuestion, type CanvasImageTask } from "@/services/api/image";
 import { createCanvasAudioTask, pollCanvasAudioTaskStatus, type CanvasAudioTask } from "@/services/api/audio";
 import { createVideoGenerationTask, pollVideoGenerationTaskStatus, VIDEO_POLL_INTERVAL_MS, type VideoResponse } from "@/services/api/video";
@@ -45,7 +45,9 @@ import {
     type CanvasAlignmentGuides,
 } from "../utils/canvas-alignment";
 import { taskPollFailure } from "./canvas-task-poll";
-import { directorOutputError } from "./canvas-director-output";
+import { configStoppableChildren } from "./canvas-config-stop";
+import { hasPendingSubmission } from "./canvas-task-submission";
+import { directorErrorText, directorOutputError } from "./canvas-director-output";
 import { App, Button, Dropdown, Modal, Slider } from "antd";
 import { isCogVideoX3Model, modelKey, supportsVideoAudioGeneration, supportsVideoFrameReferences } from "@/lib/video-model-capabilities";
 import { isMimoVoiceCloneModel } from "@/lib/mimo-tts";
@@ -65,6 +67,7 @@ import { CanvasAssistantPanel } from "../components/canvas-assistant-panel";
 import { CanvasNodeContextMenu } from "../components/canvas-context-menu";
 import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "../components/canvas-node-angle-dialog";
 import { CanvasNodeCropDialog, type CanvasImageCropRect } from "../components/canvas-node-crop-dialog";
+import { CanvasDeleteProjectsDialog } from "../components/canvas-delete-projects-dialog";
 import { CanvasNodeMaskEditDialog, type CanvasImageMaskEditPayload } from "../components/canvas-node-mask-edit-dialog";
 import { CanvasNodeSplitDialog, type CanvasImageSplitParams } from "../components/canvas-node-split-dialog";
 import { CanvasNodeUpscaleDialog, type CanvasImageUpscaleParams } from "../components/canvas-node-upscale-dialog";
@@ -837,6 +840,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             const videoTargets = nodesRef.current.filter((node) => node.type === CanvasNodeType.Video && node.metadata?.status === NODE_STATUS_LOADING && !node.metadata.content && canvasVideoTaskId(node.metadata));
             videoTargets.forEach((node) => {
                 if (pollingVideoNodeIdsRef.current.has(node.id)) return;
+                if (hasPendingSubmission(nodeTaskRunsRef.current.get(node.id))) return;
                 const taskId = canvasVideoTaskId(node.metadata);
                 const workflowToken = node.metadata?.workflowRef ? useUserStore.getState().token : "";
                 const generationConfig = buildGenerationConfig(effectiveConfig, node, "video");
@@ -1718,13 +1722,6 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         router.push(`/canvas/${id}`);
     }, [createProject, router]);
 
-    const deleteCurrentProject = useCallback(() => {
-        void deleteCanvasProjects([projectId]).catch(() => undefined);
-        deleteProjects([projectId]);
-        cleanupAssetImages();
-        router.push("/canvas");
-    }, [cleanupAssetImages, deleteProjects, projectId, router]);
-
     const handleCanvasMouseDown = useCallback(
         (event: ReactPointerEvent<HTMLDivElement>) => {
             setContextMenu(null);
@@ -2038,7 +2035,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             appendImportedImageNode(image, file.name, position, CanvasNodeType.Image);
         } catch (error) {
             console.error("Upload image node failed:", error);
-            message.error("图片上传失败");
+            message.error(`图片上传失败：${directorErrorText(error, 200)}`);
         } finally {
             hideLoading();
         }
@@ -2060,7 +2057,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             setDialogNodeId(node.id);
         } catch (error) {
             console.error("Upload video node failed:", error);
-            message.error("视频上传失败");
+            message.error(`视频上传失败：${directorErrorText(error, 200)}`);
         } finally {
             hideLoading();
         }
@@ -2089,7 +2086,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             return id;
         } catch (error) {
             console.error("Upload audio node failed:", error);
-            message.error("音频上传失败");
+            message.error(`音频上传失败：${directorErrorText(error, 200)}`);
         } finally {
             hideLoading();
         }
@@ -2796,28 +2793,32 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
 
     const cropImageNode = useCallback(async (node: CanvasNodeData, crop: CanvasImageCropRect) => {
         if (!node.metadata?.content) return;
-        const cropped = await cropDataUrl(node.metadata.content, crop);
-        const image = await uploadImage(cropped);
-        const width = Math.min(node.width, Math.max(220, image.width));
-        const childId = nanoid();
-        const child: CanvasNodeData = {
-            id: childId,
-            type: CanvasNodeType.Image,
-            title: "Cropped Image",
-            position: { x: node.position.x + node.width + 96, y: node.position.y },
-            width,
-            height: width * (image.height / image.width),
-            metadata: {
-                ...imageMetadata(image),
-                prompt: node.metadata?.prompt,
-            },
-        };
-        setNodes((prev) => [...prev, child]);
-        setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
-        setSelectedNodeIds(new Set([childId]));
-        setDialogNodeId(childId);
-        setCropNodeId(null);
-    }, []);
+        try {
+            const cropped = await cropDataUrl(node.metadata.content, crop);
+            const image = await uploadImage(cropped);
+            const width = Math.min(node.width, Math.max(220, image.width));
+            const childId = nanoid();
+            const child: CanvasNodeData = {
+                id: childId,
+                type: CanvasNodeType.Image,
+                title: "裁剪图片",
+                position: { x: node.position.x + node.width + 96, y: node.position.y },
+                width,
+                height: width * (image.height / image.width),
+                metadata: {
+                    ...imageMetadata(image),
+                    prompt: node.metadata?.prompt,
+                },
+            };
+            setNodes((prev) => [...prev, child]);
+            setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
+            setSelectedNodeIds(new Set([childId]));
+            setDialogNodeId(childId);
+            setCropNodeId(null);
+        } catch (error) {
+            message.error(`裁剪失败：${directorErrorText(error, 200)}`);
+        }
+    }, [message]);
 
     const splitImageNode = useCallback(
         async (node: CanvasNodeData, params: CanvasImageSplitParams) => {
@@ -2952,7 +2953,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             const child: CanvasNodeData = {
                 id: childId,
                 type: CanvasNodeType.Image,
-                title: "Upscaled Image",
+                title: "放大图片",
                 position: { x: node.position.x + node.width + 96, y: node.position.y },
                 width: size.width,
                 height: size.height,
@@ -3126,7 +3127,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     }
                 } catch (error) {
                     console.error("Upload node file failed:", error);
-                    message.error("上传失败");
+                    message.error(`上传失败：${directorErrorText(error, 200)}`);
                 } finally {
                     hideLoading();
                 }
@@ -3712,7 +3713,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     const videoNode: CanvasNodeData = {
                         id: videoId,
                         type: CanvasNodeType.Video,
-                        title: effectivePrompt.slice(0, 32) || "Generated Video",
+                        title: effectivePrompt.slice(0, 32) || "生成视频",
                         position: isEmptyVideoNode ? sourceNode.position : { x: parent.x + (sourceNode?.width || spec.width) + 96, y: parent.y },
                         width: isEmptyVideoNode ? sourceNode.width : spec.width,
                         height: isEmptyVideoNode ? sourceNode.height : spec.height,
@@ -4694,7 +4695,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     onHome={() => router.push("/")}
                     onProjects={() => router.push("/canvas")}
                     onCreateProject={createAndOpenProject}
-                    onDeleteProject={deleteCurrentProject}
+                    onDeleteProject={() => useCanvasUiStore.getState().setDeleteProjectIds([projectId])}
                     onImportImage={() => handleUploadRequest()}
                     onUndo={undoCanvas}
                     onRedo={redoCanvas}
@@ -4833,6 +4834,10 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                                         videoResourceOptions={videoResourceOptionsByNodeId.get(contentNode.id) || []}
                                         onConfigChange={handleConfigNodeChange}
                                         onComposerToggle={() => setDialogNodeId((current) => (current === contentNode.id ? null : contentNode.id))}
+                                        stoppableChildIds={configStoppableChildren(contentNode.id, nodes, connections)}
+                                        onStop={() => {
+                                            for (const childId of configStoppableChildren(contentNode.id, nodes, connections)) void handleStopNode(childId);
+                                        }}
                                         onGenerate={(nodeId) => {
                                             const target = nodesRef.current.find((item) => item.id === nodeId);
                                             void handleGenerateNode(nodeId, target?.metadata?.generationMode || "image", target?.metadata?.composerContent ?? target?.metadata?.prompt ?? "");
@@ -5143,6 +5148,8 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                 </Modal>
 
                 {cropNode?.metadata?.content ? <CanvasNodeCropDialog dataUrl={cropNode.metadata.content} open={Boolean(cropNode)} onClose={() => setCropNodeId(null)} onConfirm={(crop) => cropImageNode(cropNode!, crop)} /> : null}
+
+                <CanvasDeleteProjectsDialog onDeleted={() => router.push("/canvas")} />
 
                 {maskEditNode?.metadata?.content && maskEditConfig ? (
                     <CanvasNodeMaskEditDialog
@@ -5600,13 +5607,16 @@ function CanvasTopBar({
             <Modal title="快捷键" open={shortcutsOpen} onCancel={() => setShortcutsOpen(false)} footer={null} centered>
                 <div className="space-y-2 border-t pt-4 text-sm" style={{ borderColor: theme.node.stroke }}>
                     <Shortcut keys={["Space", "拖动"]} value="临时反转选择/移动工具" />
+                    <Shortcut keys={["中键", "拖动"]} value="平移画布" />
                     <Shortcut keys={["滚轮"]} value="缩放画布" />
                     <Shortcut keys={["拖动"]} value="使用当前工具操作画布" />
                     <Shortcut keys={["Shift / Ctrl / Cmd", "点击"]} value="追加选择节点" />
+                    <Shortcut keys={["Ctrl / Cmd", "A"]} value="全选画布节点" />
                     <Shortcut keys={["Ctrl / Cmd", "G"]} value="创建组" />
                     <Shortcut keys={["Ctrl / Cmd", "C / V"]} value="复制 / 粘贴节点，或粘贴剪切板文本/图片" />
                     <Shortcut keys={["Ctrl / Cmd", "Z"]} value="撤销" />
                     <Shortcut keys={["Ctrl / Cmd", "Shift", "Z"]} value="重做" />
+                    <Shortcut keys={["Ctrl / Cmd", "Y"]} value="重做" />
                     <Shortcut keys={["Delete / Backspace"]} value="删除选中" />
                     <Shortcut keys={["Esc"]} value="取消选择并关闭浮层" />
                     <Shortcut keys={["拖入图片/视频/音频"]} value="上传到画布" />
