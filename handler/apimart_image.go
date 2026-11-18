@@ -251,12 +251,12 @@ func pollAPIMartImageTask(request *http.Request, channel model.ModelChannel, tas
 
 		pollRequest, err := http.NewRequestWithContext(request.Context(), http.MethodGet, pollURL, nil)
 		if err != nil {
-			return nil, err.Error()
+			return nil, service.TransportErrorCause(err).Error()
 		}
 		pollRequest.Header.Set("Authorization", "Bearer "+channel.APIKey)
 		response, err := service.HTTPClientForChannel(channel).Do(pollRequest)
 		if err != nil {
-			return nil, err.Error()
+			return nil, service.TransportErrorCause(err).Error()
 		}
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 512*1024))
 		_ = response.Body.Close()
