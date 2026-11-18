@@ -64,6 +64,8 @@ test('查询返回空状态和错误码时判定失败', async () => {
   const channel = { baseUrl: 'https://www.runninghub.cn', apiKey: 'invalid-key' };
   for (const [response, expected] of [
     [{ status: '', errorCode: '806', errorMessage: 'APIKEY_USER_NOT_FOUND' }, 'FAILED'],
+    [{ status: '', errorCode: 806 }, 'FAILED'],
+    [{ status: '', errorCode: 'E_UNAUTHORIZED' }, 'FAILED'],
     [{ status: '', errorCode: '' }, ''],
     [{ status: '', errorCode: '0' }, ''],
     [{ status: 'RUNNING', errorCode: '806' }, 'RUNNING'],
@@ -72,6 +74,31 @@ test('查询返回空状态和错误码时判定失败', async () => {
     assert.equal(result.status, expected);
     assert.equal(result.errorCode, response.errorCode);
     assert.equal(result.errorMessage, response.errorMessage);
+  }
+});
+
+test('视频提交无任务编号时保留平台原因并隐藏密钥和签名地址', async () => {
+  const endpoint = 'example/text-to-video', key = 'private-video-key';
+  const channel = { baseUrl: 'https://www.runninghub.cn', apiKey: key, models: [endpoint], modelCapabilities: { [endpoint]: 'video' }, runningHubModels: { [endpoint]: { required: ['prompt'], properties: { prompt: { type: 'string' } } } } };
+  const input = { model: endpoint, prompt: '测试' };
+  const url = 'https://user:pw@cdn.example/video.mp4?signature=private';
+  await assert.rejects(callStandardVideo(channel, input, { fetchImpl: async () => Response.json({ taskId: '', status: '', errorCode: '806', errorMessage: `APIKEY_USER_NOT_FOUND ${key} ${url}` }) }), error => {
+    assert.match(error.message, /RunningHub 视频提交失败：APIKEY_USER_NOT_FOUND/);
+    for (const secret of [key, 'signature=private', '@']) assert.ok(!error.message.includes(secret));
+    return true;
+  });
+  await assert.rejects(callStandardVideo(channel, input, { fetchImpl: async () => Response.json({ taskId: '', status: '', errorCode: '806' }) }), /视频提交失败：806/);
+  await assert.rejects(callStandardVideo(channel, input, { fetchImpl: async () => Response.json({ taskId: '', status: '', errorCode: `806 ${key} ${url}` }) }), error => /视频提交失败：806/.test(error.message) && !error.message.includes(key) && !error.message.includes('signature='));
+  await assert.rejects(callStandardVideo(channel, input, { fetchImpl: async () => Response.json({ taskId: '', status: '' }) }), /未返回有效任务编号/);
+  await assert.rejects(callStandardVideo(channel, input, { fetchImpl: async () => Response.json({ taskId: '', status: 'FAILED', errorMessage: '平台拒绝' }) }), /平台拒绝/);
+  await assert.rejects(callStandardVideo(channel, input, { fetchImpl: async () => Response.json({ msg: `平台拒绝 ${key} ${url}` }, { status: 400 }) }), error => /平台拒绝/.test(error.message) && !error.message.includes(key) && !error.message.includes('signature='));
+  const result = await query(channel, '1', { fetchImpl: async () => Response.json({ taskId: '1', status: 'SUCCESS', errorMessage: `原因 ${key} ${url}`, errorCode: `806 ${key} ${url}`, results: [{ url }] }) });
+  assert.equal(result.results[0].url, url);
+  assert.match(result.errorMessage, /原因/);
+  assert.match(result.errorCode, /^806 /);
+  for (const secret of [key, 'signature=private', '@']) {
+    assert.ok(!result.errorMessage.includes(secret));
+    assert.ok(!result.errorCode.includes(secret));
   }
 });
 
