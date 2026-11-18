@@ -750,7 +750,7 @@ func (translation *ParameterTranslation) Send(ctx context.Context, kind string, 
 	response, err := translation.Client.Do(request)
 	if err != nil {
 		result.Retryable = true
-		message := err.Error()
+		message := TransportErrorCause(err).Error()
 		if translation.channel.APIKey != "" {
 			for _, key := range []string{translation.channel.APIKey, url.QueryEscape(translation.channel.APIKey), url.PathEscape(translation.channel.APIKey)} {
 				message = strings.ReplaceAll(message, key, "[密钥]")
