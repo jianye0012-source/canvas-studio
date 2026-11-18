@@ -217,19 +217,24 @@ async function downloadResult(channel, taskId, { fetchImpl = fetch, signal, look
     throw Object.assign(new Error('RunningHub 任务尚未完成'), { status: 409 });
   }
   const url = await validateResultURL(result.results[0].url, lookup);
-  try { return await fetchImpl(url, { redirect: 'error', credentials: 'omit', signal }); }
+  let response;
+  try { response = await fetchImpl(url, { redirect: 'manual', credentials: 'omit', signal }); }
   catch (error) {
-    if (/redirect/i.test(String(error?.message || ''))) throw Object.assign(new Error('RunningHub 结果地址发生跳转，已拒绝下载'), { status: 422 });
+    if (error?.code === 'ERR_REDIRECT_BLOCKED') throw Object.assign(new Error('RunningHub 结果地址发生跳转，已拒绝下载'), { status: 422 });
     throw Object.assign(networkError('无法下载 RunningHub 结果，请检查网络与系统代理后重试', error, channel.apiKey), { status: 502 });
   }
+  if (response.status >= 300 && response.status < 400) throw Object.assign(new Error('RunningHub 结果地址发生跳转，已拒绝下载'), { status: 422 });
+  return response;
 }
 
 async function callStandardVideo(channel, input, options) {
   const result = await submit(channel, input, 'video', options);
   const id = result.taskId;
   const state = String(result.status).toUpperCase();
-  if (['FAILED', 'CANCEL', 'CANCELLED'].includes(state)) throw new Error(result.errorMessage || result.errorCode || 'RunningHub 视频生成失败');
-  if (typeof id !== 'string' || !/^\d{1,32}$/.test(id)) throw new Error('RunningHub 未返回有效任务编号，请核对平台任务记录');
+  const code = String(result.errorCode ?? '').trim();
+  const reason = result.errorMessage || (code && code !== '0' ? code : '');
+  if (['FAILED', 'CANCEL', 'CANCELLED'].includes(state)) throw new Error(reason || 'RunningHub 视频生成失败');
+  if (typeof id !== 'string' || !/^\d{1,32}$/.test(id)) throw new Error(reason ? 'RunningHub 视频提交失败：' + reason : 'RunningHub 未返回有效任务编号，请核对平台任务记录');
   return { id, task_id: id, status: state === 'RUNNING' ? 'running' : 'queued' };
 }
 

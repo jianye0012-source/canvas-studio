@@ -41,8 +41,12 @@ test('结果下载先查询任务、跳转即拒绝、失败原因不含密钥',
   await assert.rejects(downloadResult(channel, '1', { fetchImpl: queryReply({ status: 'RUNNING' }), lookup }), error => error.status === 409 && /尚未完成/.test(error.message));
   await assert.rejects(downloadResult(channel, '1', { fetchImpl: queryReply({ status: 'SUCCESS', results: [{ url: 'http://a.com/x.png' }] }), lookup }), error => error.status === 422);
   const success = { status: 'SUCCESS', results: [{ url: 'https://rh-images.xiaoyaoyou.com/a/output/x.png' }] };
-  const redirect = async url => { if (url.endsWith('/query')) return Response.json(success); throw new TypeError("Attempted to redirect, but redirect policy was 'error'"); };
+  const redirect = async (url, options) => { if (url.endsWith('/query')) return Response.json(success); assert.equal(options.redirect, 'manual'); return new Response(null, { status: 302, headers: { location: 'https://x/' } }); };
   await assert.rejects(downloadResult(channel, '1', { fetchImpl: redirect, lookup }), error => error.status === 422 && /发生跳转/.test(error.message));
+  const blocked = async url => { if (url.endsWith('/query')) return Response.json(success); throw Object.assign(new Error('Redirect was cancelled'), { code: 'ERR_REDIRECT_BLOCKED' }); };
+  await assert.rejects(downloadResult(channel, '1', { fetchImpl: blocked, lookup }), error => error.status === 422 && /发生跳转/.test(error.message));
+  const offline = async url => { if (url.endsWith('/query')) return Response.json(success); throw new TypeError('fetch failed', { cause: new Error('getaddrinfo ENOTFOUND') }); };
+  await assert.rejects(downloadResult(channel, '1', { fetchImpl: offline, lookup }), error => error.status === 502 && !/发生跳转/.test(error.message));
   const network = async url => { if (url.endsWith('/query')) return Response.json(success); throw new Error('fetch failed secret-key-x https://user:pw@cdn.example/x?signature=private'); };
   await assert.rejects(downloadResult(channel, '1', { fetchImpl: network, lookup }), error => {
     assert.equal(error.status, 502);
@@ -67,6 +71,20 @@ test('查询返回空状态和错误码时判定失败', async () => {
     assert.equal(result.errorCode, response.errorCode);
     assert.equal(result.errorMessage, response.errorMessage);
   }
+});
+
+test('视频提交无任务编号时保留平台原因并隐藏密钥', async () => {
+  const endpoint = 'example/text-to-video', key = 'private-video-key';
+  const channel = { baseUrl: 'https://www.runninghub.cn', apiKey: key, models: [endpoint], modelCapabilities: { [endpoint]: 'video' }, runningHubModels: { [endpoint]: { required: ['prompt'], properties: { prompt: { type: 'string' } } } } };
+  const input = { model: endpoint, prompt: '测试' };
+  await assert.rejects(callStandardVideo(channel, input, { fetchImpl: async () => Response.json({ taskId: '', status: '', errorCode: '806', errorMessage: `APIKEY_USER_NOT_FOUND ${key}` }) }), error => {
+    assert.match(error.message, /RunningHub 视频提交失败：APIKEY_USER_NOT_FOUND/);
+    assert.ok(!error.message.includes(key));
+    return true;
+  });
+  await assert.rejects(callStandardVideo(channel, input, { fetchImpl: async () => Response.json({ taskId: '', status: '', errorCode: '806' }) }), /视频提交失败：806/);
+  await assert.rejects(callStandardVideo(channel, input, { fetchImpl: async () => Response.json({ taskId: '', status: '' }) }), /未返回有效任务编号/);
+  await assert.rejects(callStandardVideo(channel, input, { fetchImpl: async () => Response.json({ taskId: '', status: 'FAILED', errorMessage: '平台拒绝' }) }), /平台拒绝/);
 });
 
 test('RunningHub 账户和查询保留网络异常原因，并脱敏密钥及限制长度', async () => {

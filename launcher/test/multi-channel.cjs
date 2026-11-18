@@ -41,7 +41,7 @@ const assert = require('node:assert/strict');
       await page.getByLabel('接口地址', { exact: true }).fill(`http://127.0.0.1:${servers[index].address().port}/v1`);
       await page.getByLabel('API Key', { exact: true }).fill('channel-test-' + name);
       await page.getByRole('button', { name: '测试此渠道 / 读取模型', exact: true }).click();
-      await page.getByRole('status').filter({ hasText: `渠道「联调渠道 ${name}」连接成功` }).waitFor();
+      await page.getByRole('status').filter({ hasText: '本次联网读取 3 个模型' }).waitFor();
       for (const [model, type] of [['shared-chat', 'text'], ['shared-image', 'image'], ['shared-video', 'video']]) {
         await page.getByLabel('模型名称', { exact: true }).fill(model); await page.getByLabel('类型', { exact: true }).selectOption(type);
         await page.getByRole('button', { name: '加入模型', exact: true }).click();

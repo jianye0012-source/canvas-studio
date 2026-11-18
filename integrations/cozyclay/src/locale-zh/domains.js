@@ -1,6 +1,17 @@
 // Chinese UI copy for domain refusals, notifications and project actions.
 // Keyed by the English default in ko(en, ko) so those call sites stay untouched.
 export const ZH_DOMAINS = {
+	"Import failed: ": "导入失败：",
+	"That model is too large to import — larger than N MB": "模型过大，超过 N MB，无法导入",
+	"That model has no measurable geometry": "模型没有可测量的几何体",
+	"That model has no measurable geometry.": "模型没有可测量的几何体",
+	"That model could not be prepared for the set": "无法处理该模型文件",
+	"That file is not a GLB model": "文件不是 GLB 模型",
+	"That FBX file is too old to import": "FBX 文件版本过旧，无法导入",
+	"That file is not an FBX model": "文件不是 FBX 模型",
+	"That file is not an OBJ model": "文件不是 OBJ 模型",
+	"That file is not a 3D model": "文件不是 3D 模型",
+	"That model is no longer stored.": "该模型已不在存储中",
 	"Character added to the scene": "角色已添加到场景",
 	"The active character's rig is not loaded": "当前角色的骨骼尚未加载",
 	"The path already fills the clip — extend the duration or clear a waypoint": "路径已填满整个片段 — 请延长时长或清除一个路径点",

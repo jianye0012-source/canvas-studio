@@ -11,9 +11,10 @@ const { parameters, imageFields } = require('./runninghub-schema.cjs');
 const idPattern = /^[a-f0-9-]{36}$/;
 const scenePattern = /^[a-zA-Z0-9_-]{1,160}$/;
 const maxBytes = 100 * 1024 ** 2;
+const rejectedResultURL = () => Object.assign(new Error('3D 结果地址无效、指向本机内网或发生跳转，已拒绝下载；不会自动重新提交'), { code: 'RESULT_URL_REJECTED' });
 class Model3DTasks {
-  constructor(store, { exporter, choose, log = () => {} } = {}) {
-    Object.assign(this, { store, exporter, choose, log });
+  constructor(store, { exporter, choose, lookup, log = () => {} } = {}) {
+    Object.assign(this, { store, exporter, choose, lookup, log });
     this.root = path.join(store.dataDir, 'projects/model-3d');
     this.active = new Set(); this.operations = new Map(); this.unwritten = new Map(); this.loggedUnreadable = new Set(); this.controller = new AbortController();
     this.ready = this.restore();
@@ -133,10 +134,11 @@ class Model3DTasks {
       } else if (!['QUEUED', 'RUNNING'].includes(status)) throw new Error(result.errorMessage || '平台未返回有效的 3D 任务状态');
       else { task.status = 'processing'; task.error = ''; }
     } catch (error) {
-      task.error = downloadFailed && error.code !== 'MODEL_TOO_LARGE'
-        ? runningHub.networkError('GLB 下载失败', error, channel.apiKey).message.replaceAll(this.store.dataDir, '[数据目录]').replace(/https?:\/\/\S+/g, '[下载地址]')
+      const terminalDownload = ['MODEL_TOO_LARGE', 'RESULT_URL_REJECTED'].includes(error.code);
+      task.error = downloadFailed && !terminalDownload
+        ? runningHub.networkError('GLB 下载失败', error, channel.apiKey).message.replaceAll(this.store.dataDir, '[数据目录]')
         : error.message;
-      if (error.code === 'MODEL_TOO_LARGE') { task.status = 'failed'; this.active.delete(id); }
+      if (terminalDownload) { task.status = 'failed'; this.active.delete(id); }
       else if (task.status !== 'failed' && task.resultUrl) {
         task.status = 'download_failed';
         if (downloadFailed) {
@@ -147,16 +149,20 @@ class Model3DTasks {
           }
         }
       }
-      task.nextPollAt = Date.now() + (downloadFailed && error.code !== 'MODEL_TOO_LARGE' ? Math.min(30000 * 2 ** (task.downloadAttempts - 1), 30 * 60_000) : 30000);
+      task.nextPollAt = Date.now() + (downloadFailed && !terminalDownload ? Math.min(30000 * 2 ** (task.downloadAttempts - 1), 30 * 60_000) : 30000);
     }
     await this.write(task);
     return this.public(task);
   }
   async download(task) {
-    const url = new URL(task.resultUrl);
-    if (url.protocol !== 'https:' || url.username || url.password) throw new Error('3D 模型下载地址无效');
+    let href;
+    try { href = await runningHub.validateResultURL(task.resultUrl, this.lookup); }
+    catch (error) { if (error.status === 422) throw rejectedResultURL(); throw error; }
     await writableDirectory(this.store.dataDir); await requireFreeSpace(this.store.dataDir, maxBytes);
-    const response = await this.store.fetchImpl(url.href, { credentials: 'omit', signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(120000)]) });
+    let response;
+    try { response = await this.store.fetchImpl(href, { redirect: 'manual', credentials: 'omit', signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(120000)]) }); }
+    catch (error) { if (error.code === 'ERR_REDIRECT_BLOCKED') throw rejectedResultURL(); throw error; }
+    if (response.status >= 300 && response.status < 400) throw rejectedResultURL();
     if (!response.ok || !response.body) throw new Error('GLB 模型下载失败（HTTP ' + response.status + '），稍后将继续查询原任务');
     const temporary = this.file(task.id, crypto.randomUUID() + '.part');
     let size = 0, header = Buffer.alloc(0);

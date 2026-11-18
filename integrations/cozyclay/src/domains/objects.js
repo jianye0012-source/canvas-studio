@@ -33,6 +33,7 @@ import {
 } from "../scene-objects.js";
 
 import { ko } from "../locale.js";
+import { localizedImportMessage } from "./import-message.js";
 import {
 	sceneObjectNameDisplayKo,
 	attachWorldMatrix,
@@ -392,13 +393,13 @@ export function useObjects(appContext) {
 		importFiles.current.set(fileToken, file);
 		try {
 			const receipt = await appContext.bus.run("asset.import", { fileToken, placeAs });
-			if (!receipt.ok) appContext.notify(receipt.message);
+			if (!receipt.ok) appContext.notify(localizedImportMessage(receipt.message));
 			return receipt;
 		} finally { importFiles.current.delete(fileToken); }
 	}
 	async function importStoredAsset(assetId, placeAs, placement) {
 		const receipt = await appContext.bus.run("asset.import", { assetId, placeAs, ...(placement ? { placement } : {}) });
-		if (!receipt.ok) appContext.notify(receipt.message);
+		if (!receipt.ok) appContext.notify(localizedImportMessage(receipt.message));
 		return receipt;
 	}
 	function publishImported(object, commandContext) {
