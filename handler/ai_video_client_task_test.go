@@ -77,7 +77,7 @@ func TestAIVideoStoppedClientTaskReturnsCancelled(t *testing.T) {
 	}
 }
 
-func TestAIVideoClientTaskRegistrationEndsBeforeRecordWritten(t *testing.T) {
+func TestAIVideoClientTaskRecordWrittenBeforeRegistrationEnds(t *testing.T) {
 	setupVideoClientTaskTest(t)
 	const id = "client_video_task_timing"
 	_, cleanup, err := service.CanvasTaskContext("video", "u1", id)
