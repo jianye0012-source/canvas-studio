@@ -64,13 +64,10 @@ const docsURL = baseUrl => baseUrl + (baseUrl.endsWith('.cn') ? '/runninghub-api
 
 function networkError(message, error, apiKey) {
   const detail = [error?.name, error?.message || String(error), error?.code, error?.cause?.code, error?.cause?.message].filter(Boolean).join(' ');
-  return new Error(message + '：' + redactErrorDetail(detail, apiKey));
-}
-
-function redactErrorDetail(value, apiKey) {
-  return (apiKey ? value.replaceAll(apiKey, '***') : value).replace(/https?:\/\/[^\s"'<>]+/gi, value => {
+  const redacted = (apiKey ? detail.replaceAll(apiKey, '***') : detail).replace(/https?:\/\/[^\s"'<>]+/gi, value => {
     try { const url = new URL(value); return url.origin + url.pathname; } catch { return '[URL]'; }
-  }).slice(0, 300);
+  });
+  return new Error(message + '：' + redacted.slice(0, 300));
 }
 
 async function request(channel, route, body, { fetchImpl = fetch, signal } = {}) {
@@ -87,13 +84,12 @@ async function request(channel, route, body, { fetchImpl = fetch, signal } = {})
   if (response.status === 401 || response.status === 403) throw new Error('RunningHub 拒绝访问，请核对企业级共享 API Key');
   const result = await response.json().catch(() => null);
   if (!response.ok || (result?.code !== undefined && Number(result.code) !== 0)) {
-    const detail = redactErrorDetail(String(result?.msg || result?.message || result?.errorMessage || ''), channel.apiKey);
+    const detail = String(result?.msg || result?.message || result?.errorMessage || '').replaceAll(channel.apiKey, '***').slice(0, 300);
     const reason = response.ok ? '' : '（HTTP ' + response.status + '）';
     throw new Error('RunningHub 请求失败' + reason + (detail ? '：' + detail : ''));
   }
   if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('RunningHub 响应格式无效');
-  if (typeof result.errorMessage === 'string') result.errorMessage = redactErrorDetail(result.errorMessage, channel.apiKey);
-  if (typeof result.errorCode === 'string') result.errorCode = redactErrorDetail(result.errorCode, channel.apiKey);
+  if (typeof result.errorMessage === 'string') result.errorMessage = result.errorMessage.replaceAll(channel.apiKey, '***').slice(0, 300);
   return result;
 }
 
@@ -227,7 +223,7 @@ async function downloadResult(channel, taskId, { fetchImpl = fetch, signal, look
     if (error?.code === 'ERR_REDIRECT_BLOCKED') throw Object.assign(new Error('RunningHub 结果地址发生跳转，已拒绝下载'), { status: 422 });
     throw Object.assign(networkError('无法下载 RunningHub 结果，请检查网络与系统代理后重试', error, channel.apiKey), { status: 502 });
   }
-  if (response.status >= 300 && response.status < 400 || response.type === 'opaqueredirect') throw Object.assign(new Error('RunningHub 结果地址发生跳转，已拒绝下载'), { status: 422 });
+  if (response.status >= 300 && response.status < 400) throw Object.assign(new Error('RunningHub 结果地址发生跳转，已拒绝下载'), { status: 422 });
   return response;
 }
 
@@ -235,8 +231,8 @@ async function callStandardVideo(channel, input, options) {
   const result = await submit(channel, input, 'video', options);
   const id = result.taskId;
   const state = String(result.status).toUpperCase();
-  const message = String(result.errorMessage || '').trim(), code = String(result.errorCode ?? '').trim();
-  const reason = (message && message !== '0' ? message : '') || (code && code !== '0' ? redactErrorDetail(code, channel.apiKey) : '');
+  const code = String(result.errorCode ?? '').trim();
+  const reason = result.errorMessage || (code && code !== '0' ? code : '');
   if (['FAILED', 'CANCEL', 'CANCELLED'].includes(state)) throw new Error(reason || 'RunningHub 视频生成失败');
   if (typeof id !== 'string' || !/^\d{1,32}$/.test(id)) throw new Error(reason ? 'RunningHub 视频提交失败：' + reason : 'RunningHub 未返回有效任务编号，请核对平台任务记录');
   return { id, task_id: id, status: state === 'RUNNING' ? 'running' : 'queued' };

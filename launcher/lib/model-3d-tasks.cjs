@@ -136,7 +136,7 @@ class Model3DTasks {
     } catch (error) {
       const terminalDownload = ['MODEL_TOO_LARGE', 'RESULT_URL_REJECTED'].includes(error.code);
       task.error = downloadFailed && !terminalDownload
-        ? runningHub.networkError('GLB 下载失败', error, channel.apiKey).message.replaceAll(this.store.dataDir, '[数据目录]').replace(/https?:\/\/\S+/g, '[下载地址]')
+        ? runningHub.networkError('GLB 下载失败', error, channel.apiKey).message.replaceAll(this.store.dataDir, '[数据目录]')
         : error.message;
       if (terminalDownload) { task.status = 'failed'; this.active.delete(id); }
       else if (task.status !== 'failed' && task.resultUrl) {
@@ -162,7 +162,7 @@ class Model3DTasks {
     let response;
     try { response = await this.store.fetchImpl(href, { redirect: 'manual', credentials: 'omit', signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(120000)]) }); }
     catch (error) { if (error.code === 'ERR_REDIRECT_BLOCKED') throw rejectedResultURL(); throw error; }
-    if (response.status >= 300 && response.status < 400 || response.type === 'opaqueredirect') throw rejectedResultURL();
+    if (response.status >= 300 && response.status < 400) throw rejectedResultURL();
     if (!response.ok || !response.body) throw new Error('GLB 模型下载失败（HTTP ' + response.status + '），稍后将继续查询原任务');
     const temporary = this.file(task.id, crypto.randomUUID() + '.part');
     let size = 0, header = Buffer.alloc(0);

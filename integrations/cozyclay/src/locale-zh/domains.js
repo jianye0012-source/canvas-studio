@@ -2,7 +2,6 @@
 // Keyed by the English default in ko(en, ko) so those call sites stay untouched.
 export const ZH_DOMAINS = {
 	"Import failed: ": "导入失败：",
-	"importMeshFile needs a File or Blob": "请选择模型文件",
 	"That model is too large to import — larger than N MB": "模型过大，超过 N MB，无法导入",
 	"That model has no measurable geometry": "模型没有可测量的几何体",
 	"That model has no measurable geometry.": "模型没有可测量的几何体",
