@@ -12,7 +12,7 @@ const assert = require('node:assert/strict');
     await page.locator('[data-page="models"]').click();
     for (const name of ['文字渠道', '图片渠道']) {
       await page.locator('#add-channel').click();
-      await page.locator('[name="name"]').fill(name);
+      await page.getByRole('textbox', { name: '渠道名称' }).fill(name);
       await page.locator('[name="baseUrl"]').fill('https://example.com/v1');
       await page.locator('#new-model').fill('same-model'); await page.locator('#new-capability').selectOption(name === '文字渠道' ? 'text' : 'image');
       await page.locator('#add-model').click();
