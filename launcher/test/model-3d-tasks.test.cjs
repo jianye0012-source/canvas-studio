@@ -17,16 +17,21 @@ async function fixture(t) {
   const properties = { prompt: { type: 'string', maxLength: 20000 }, enablePbr: { type: 'boolean', default: false }, generateType: { type: 'string', enum: ['Normal', 'Geometry'], default: 'Normal' }, faceCount: { type: 'integer', minimum: 10000, maximum: 1500000, default: 500000 } };
   const spec = normalizeModel(model, { type: '3d', name: '测试文生3D', required: ['prompt', 'enablePbr', 'generateType'], properties });
   const imageSpec = normalizeModel(imageModel, { type: '3d', name: '测试图生3D', required: ['imageUrl'], properties: { imageUrl: { type: 'string' }, leftImageUrl: { type: 'string' } } });
-  const state = { urls: [], submits: 0, queries: 0, uploads: 0, finished: true, corrupt: false, uncertain: false, queryError: false };
+  const state = { urls: [], submits: 0, queries: 0, uploads: 0, finished: true, corrupt: false, uncertain: false, queryError: false, resultUrl: 'https://files.example/model.glb' };
   const fetchImpl = async (url, options) => {
     state.urls.push(url);
     if (url.endsWith('/media/upload/binary')) { state.uploads++; assert.ok(options.body instanceof FormData); return Response.json({ code: 0, data: { download_url: `https://files.example/${state.uploads}.png` } }); }
     if (url.endsWith('/query')) {
       state.queries++; assert.equal(JSON.parse(options.body).taskId, '9000000000001');
       if (state.queryError) return Response.json({ taskId: '9000000000001', status: '', errorCode: '806', errorMessage: 'APIKEY_USER_NOT_FOUND' });
-      return Response.json({ taskId: '9000000000001', status: state.finished ? 'SUCCESS' : 'RUNNING', results: state.finished ? [{ outputType: 'glb', url: 'https://files.example/model.glb' }] : null });
+      return Response.json({ taskId: '9000000000001', status: state.finished ? 'SUCCESS' : 'RUNNING', results: state.finished ? [{ outputType: 'glb', url: state.resultUrl }] : null });
     }
-    if (url.endsWith('.glb')) return new Response(state.corrupt ? Buffer.from('not a model') : bytes);
+    if (url.endsWith('.glb')) {
+      assert.equal(options.redirect, 'manual');
+      if (state.downloadError) throw state.downloadError;
+      if (state.downloadResponse) return state.downloadResponse;
+      return new Response(state.corrupt ? Buffer.from('not a model') : bytes);
+    }
     state.submits++;
     if (state.uncertain) throw new TypeError('fetch failed');
     const body = JSON.parse(options.body);
@@ -37,7 +42,7 @@ async function fixture(t) {
   const store = await new ConfigStore(directory, value => Buffer.from(value), value => value.toString(), fetchImpl).initialize();
   await store.save({ channels: [{ id: 'mesh', name: '国内建模渠道', protocol: 'runninghub-standard', baseUrl: 'https://www.runninghub.cn', apiKey: 'test-only-key', models: [model, imageModel], runningHubModels: { [model]: spec, [imageModel]: imageSpec } }] });
   const jobs = new Set(), logs = [];
-  const open = () => { const value = new Model3DTasks(store, { exporter: new MediaExports(store.dataDir), choose: async () => output, log: message => logs.push(message) }); jobs.add(value); return value; };
+  const open = (options = {}) => { const value = new Model3DTasks(store, { exporter: new MediaExports(store.dataDir), choose: async () => output, log: message => logs.push(message), lookup: async () => [{ address: '1.1.1.1', family: 4 }], ...options }); jobs.add(value); return value; };
   t.after(async () => { for (const job of jobs) await job.close(); await fs.rm(root, { recursive: true, force: true }); });
   const input = { id: crypto.randomUUID(), sceneId: 'director-test', channelId: 'mesh', model, prompt: '一个白模茶杯', parameters: { generateType: 'Geometry', faceCount: 50000 } };
   return { store, bytes, output, state, open, input, imageModel, logs };
@@ -82,6 +87,49 @@ test('3D 按官方参数提交、同编号防重、保存 GLB 并另存中文目
   assert.deepEqual(await fs.readFile(path.join(output, b.name)), bytes);
   assert.ok(!(await fs.readFile(jobs.file(input.id), 'utf8')).includes('test-only-key'));
   assert.equal((await jobs.list('director-test')).length, 1);
+});
+
+test('3D 结果地址为内网或跳转时直接失败且不重试', async t => {
+  const { open, input, state } = await fixture(t);
+  const jobs = open({ lookup: async () => [{ address: '192.168.1.5', family: 4 }] });
+  for (const url of ['https://127.0.0.1/a.glb', 'https://10.0.0.2/a.glb', 'https://cdn.private.example/a.glb']) {
+    state.resultUrl = url;
+    const id = crypto.randomUUID(); await jobs.create({ ...input, id });
+    const before = state.urls.filter(value => value.endsWith('.glb')).length;
+    const failed = await jobs.refresh(id);
+    assert.equal(failed.status, 'failed');
+    assert.match(failed.error, /3D 结果地址无效、指向本机内网或发生跳转，已拒绝下载；不会自动重新提交/);
+    assert.equal(failed.downloadAttempts, undefined);
+    assert.equal(state.urls.filter(value => value.endsWith('.glb')).length, before);
+    assert.equal(jobs.active.has(id), false);
+    await jobs.refresh(id); assert.equal(state.urls.filter(value => value.endsWith('.glb')).length, before);
+  }
+  const redirectJobs = open();
+  state.resultUrl = 'https://files.example/model.glb';
+  state.downloadResponse = new Response(null, { status: 302, headers: { location: 'https://other.example/model.glb' } });
+  const id = crypto.randomUUID(); await redirectJobs.create({ ...input, id });
+  const failed = await redirectJobs.refresh(id);
+  assert.equal(failed.status, 'failed'); assert.equal(failed.downloadAttempts, undefined);
+  assert.match(failed.error, /发生跳转，已拒绝下载/);
+  state.downloadResponse = null;
+  state.downloadError = Object.assign(new Error('Redirect was cancelled'), { code: 'ERR_REDIRECT_BLOCKED' });
+  const blockedId = crypto.randomUUID(); await redirectJobs.create({ ...input, id: blockedId });
+  const blocked = await redirectJobs.refresh(blockedId);
+  assert.equal(blocked.status, 'failed'); assert.equal(blocked.downloadAttempts, undefined);
+  assert.match(blocked.error, /发生跳转，已拒绝下载/);
+});
+
+test('3D 下载网络错误和 HTTP 5xx 保持退避重试', async t => {
+  const { open, input, state } = await fixture(t); const jobs = open();
+  for (const failure of [new TypeError('fetch failed'), new Response(null, { status: 503 })]) {
+    state.downloadError = failure instanceof Error ? failure : null;
+    state.downloadResponse = failure instanceof Response ? failure : null;
+    const id = crypto.randomUUID(); await jobs.create({ ...input, id });
+    const before = Date.now(); const task = await jobs.refresh(id);
+    assert.equal(task.status, 'download_failed'); assert.equal(task.downloadAttempts, 1);
+    assert.ok(task.nextPollAt >= before + 29000);
+    assert.equal(jobs.active.has(id), true);
+  }
 });
 
 test('重启后查询原 3D 任务及原站点，下载损坏可重试但不重新生成', async t => {
