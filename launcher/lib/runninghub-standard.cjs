@@ -217,11 +217,14 @@ async function downloadResult(channel, taskId, { fetchImpl = fetch, signal, look
     throw Object.assign(new Error('RunningHub 任务尚未完成'), { status: 409 });
   }
   const url = await validateResultURL(result.results[0].url, lookup);
-  try { return await fetchImpl(url, { redirect: 'error', credentials: 'omit', signal }); }
+  let response;
+  try { response = await fetchImpl(url, { redirect: 'manual', credentials: 'omit', signal }); }
   catch (error) {
-    if (/redirect/i.test(String(error?.message || ''))) throw Object.assign(new Error('RunningHub 结果地址发生跳转，已拒绝下载'), { status: 422 });
+    if (error?.code === 'ERR_REDIRECT_BLOCKED') throw Object.assign(new Error('RunningHub 结果地址发生跳转，已拒绝下载'), { status: 422 });
     throw Object.assign(networkError('无法下载 RunningHub 结果，请检查网络与系统代理后重试', error, channel.apiKey), { status: 502 });
   }
+  if (response.status >= 300 && response.status < 400 || response.type === 'opaqueredirect') throw Object.assign(new Error('RunningHub 结果地址发生跳转，已拒绝下载'), { status: 422 });
+  return response;
 }
 
 async function callStandardVideo(channel, input, options) {

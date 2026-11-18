@@ -41,8 +41,14 @@ test('结果下载先查询任务、跳转即拒绝、失败原因不含密钥',
   await assert.rejects(downloadResult(channel, '1', { fetchImpl: queryReply({ status: 'RUNNING' }), lookup }), error => error.status === 409 && /尚未完成/.test(error.message));
   await assert.rejects(downloadResult(channel, '1', { fetchImpl: queryReply({ status: 'SUCCESS', results: [{ url: 'http://a.com/x.png' }] }), lookup }), error => error.status === 422);
   const success = { status: 'SUCCESS', results: [{ url: 'https://rh-images.xiaoyaoyou.com/a/output/x.png' }] };
-  const redirect = async url => { if (url.endsWith('/query')) return Response.json(success); throw new TypeError("Attempted to redirect, but redirect policy was 'error'"); };
+  const redirect = async (url, options) => { if (url.endsWith('/query')) return Response.json(success); assert.equal(options.redirect, 'manual'); return new Response(null, { status: 302, headers: { location: 'https://x/' } }); };
   await assert.rejects(downloadResult(channel, '1', { fetchImpl: redirect, lookup }), error => error.status === 422 && /发生跳转/.test(error.message));
+  const opaque = async url => url.endsWith('/query') ? Response.json(success) : { status: 0, type: 'opaqueredirect' };
+  await assert.rejects(downloadResult(channel, '1', { fetchImpl: opaque, lookup }), error => error.status === 422 && /发生跳转/.test(error.message));
+  const blocked = async url => { if (url.endsWith('/query')) return Response.json(success); throw Object.assign(new Error('Redirect was cancelled'), { code: 'ERR_REDIRECT_BLOCKED' }); };
+  await assert.rejects(downloadResult(channel, '1', { fetchImpl: blocked, lookup }), error => error.status === 422 && /发生跳转/.test(error.message));
+  const offline = async url => { if (url.endsWith('/query')) return Response.json(success); throw new TypeError('fetch failed', { cause: new Error('getaddrinfo ENOTFOUND') }); };
+  await assert.rejects(downloadResult(channel, '1', { fetchImpl: offline, lookup }), error => error.status === 502 && !/发生跳转/.test(error.message));
   const network = async url => { if (url.endsWith('/query')) return Response.json(success); throw new Error('fetch failed secret-key-x https://user:pw@cdn.example/x?signature=private'); };
   await assert.rejects(downloadResult(channel, '1', { fetchImpl: network, lookup }), error => {
     assert.equal(error.status, 502);
