@@ -353,7 +353,7 @@ func runVideoTaskPoller() {
 						return
 					}
 					if err != nil {
-						update = VideoTaskPollUpdate{Status: task.Status, ErrorDetail: err.Error()}
+						update = VideoTaskPollUpdate{Status: task.Status, ErrorDetail: TransportErrorCause(err).Error()}
 					}
 					if err := UpdateVideoTaskFromPoll(task, update); err != nil {
 						log.Printf("update video task failed id=%s err=%v", task.ID, err)

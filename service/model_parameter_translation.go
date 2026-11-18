@@ -409,9 +409,9 @@ func PollParameterTranslationVideo(ctx context.Context, task model.VideoTask, ch
 			result, err = translation.Send(ctx, "video", true, id)
 			if err != nil {
 				if !result.Retryable && result.StatusCode != http.StatusTooManyRequests {
-					return VideoTaskPollUpdate{Status: "failed", Error: err.Error(), ErrorDetail: err.Error(), ResponseBody: result.ResponseBody, StatusCode: result.StatusCode}, nil
+					return VideoTaskPollUpdate{Status: "failed", Error: TransportErrorCause(err).Error(), ErrorDetail: TransportErrorCause(err).Error(), ResponseBody: result.ResponseBody, StatusCode: result.StatusCode}, nil
 				}
-				update.ErrorDetail = err.Error()
+				update.ErrorDetail = TransportErrorCause(err).Error()
 			}
 			if result.Status == "completed" {
 				snapshot.Completed[id] = ParameterTranslationResult{Status: result.Status, Progress: result.Progress, URLs: result.URLs[:min(1, len(result.URLs))], ContentURL: result.ContentURL, StatusCode: result.StatusCode}
