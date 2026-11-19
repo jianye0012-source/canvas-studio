@@ -76,7 +76,7 @@ const assert = require('node:assert/strict');
     await page.getByLabel('渠道名称', { exact: true }).fill('联调渠道 B 已修改');
     await page.getByRole('link', { name: '← 返回画布', exact: true }).click();
     const warning = page.getByRole('dialog').filter({ hasText: '模型配置有未保存的改动' });
-    await warning.waitFor(); await warning.getByRole('button', { name: '取消', exact: true }).click();
+    await warning.waitFor(); await warning.getByRole('button', { name: /^取\s*消$/ }).click();
     assert.equal(new URL(page.url()).pathname, '/local-settings');
     await page.getByLabel('渠道名称', { exact: true }).fill('联调渠道 B');
     await page.getByRole('link', { name: '← 返回画布', exact: true }).click();
