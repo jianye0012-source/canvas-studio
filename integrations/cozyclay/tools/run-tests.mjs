@@ -204,7 +204,7 @@ const NODE_FILES = [
 	"test/verify-group-rotation.mjs",
 	"test/verify-number-field-scrub.mjs",
 	"test/verify-speed-envelope.mjs",
-	"test/verify-project-resources.mjs",
+	"test/verify-project-resources.mjs", "test/verify-project-referenced-assets.mjs",
 	"test/verify-workflow-resources.mjs",
 	"test/verify-resource-status.mjs",
 ];

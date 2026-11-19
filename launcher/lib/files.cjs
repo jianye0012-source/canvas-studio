@@ -11,6 +11,15 @@ async function atomicJson(file, value) {
   } finally { await fs.rm(temporary, { force: true }); }
 }
 
+async function atomicBytes(file, bytes) {
+  const temporary = `${file}.${crypto.randomUUID()}.tmp`;
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  try {
+    await fs.writeFile(temporary, bytes, { mode: 0o600 });
+    await fs.rename(temporary, file);
+  } finally { await fs.rm(temporary, { force: true }); }
+}
+
 function contained(root, relative) {
   if (typeof relative !== 'string' || relative.includes('\\') || relative.includes('\0') || path.isAbsolute(relative)) throw new Error('文件路径无效');
   const target = path.resolve(root, relative);
@@ -51,4 +60,4 @@ async function verifyManifest(root, { required = true, filename = 'bundle-manife
   return { checked, version: manifest.version };
 }
 
-module.exports = { atomicJson, contained, writableDirectory, verifyManifest, requireFreeSpace };
+module.exports = { atomicJson, atomicBytes, contained, writableDirectory, verifyManifest, requireFreeSpace };

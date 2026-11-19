@@ -15,6 +15,7 @@ const { directorModelId, supportsRole } = require('./config.cjs');
 const { atomicJson, contained, writableDirectory } = require('./files.cjs');
 const { MediaExports, NativeMediaPicker } = require('./media-files.cjs');
 const { Model3DTasks } = require('./model-3d-tasks.cjs');
+const { DirectorStore } = require('./director-store.cjs');
 
 function json(res, status, value) { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(value)); }
 async function bodyJson(req, limit = 1024 * 1024) {
@@ -34,6 +35,16 @@ async function proxyBody(req, limit = 200 * 1024 * 1024) {
   }
   return Buffer.concat(chunks, length);
 }
+async function bodyBytes(req, limit) {
+  if (Number(req.headers['content-length']) > limit) throw Object.assign(new Error('素材超过 100 MB'), { status: 413 });
+  let length = 0; const chunks = [];
+  for await (const chunk of req) {
+    length += chunk.length;
+    if (length > limit) throw Object.assign(new Error('素材超过 100 MB'), { status: 413 });
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, length);
+}
 
 class Gateway {
   constructor({ store, root, apiPort, webPort, cozyPort, livePort, serviceToken, providerToken, log, chooseFolder, chooseMedia, chooseOutput, cancelPicker }) {
@@ -47,6 +58,7 @@ class Gateway {
       if (res.writeHead && !res.headersSent) json(res, 502, { code: 1, msg: message }); else res.destroy();
     });
     this.writes = new Map();
+    this.directors = new DirectorStore(path.join(this.store.dataDir, 'projects'));
     this.sockets = new Set();
     this.bridge = new CanvasBridge();
     this.editors = new ProjectEditors(store.dataDir);
@@ -54,6 +66,11 @@ class Gateway {
     this.media = new NativeMediaPicker(chooseMedia);
     this.exports = new MediaExports(store.dataDir, { apiPort, token: serviceToken, choose: chooseOutput });
     this.model3D = new Model3DTasks(store, { exporter: this.exports, choose: chooseOutput, log });
+  }
+  async serial(id, task) {
+    const previous = this.writes.get(id) || Promise.resolve();
+    const write = previous.catch(() => {}).then(task); this.writes.set(id, write);
+    try { return await write; } finally { if (this.writes.get(id) === write) this.writes.delete(id); }
   }
   mcpServers() {
     const command = path.join(this.root, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node');
@@ -246,29 +263,57 @@ class Gateway {
       res.writeHead(302, { location: `https://github.com/${owner}/${repository}/releases/tag/v${version}` });
       return res.end();
     }
+    if (url.pathname.startsWith('/local/director-assets/')) {
+      try {
+        const id = this.directors.assetId(url.pathname.slice('/local/director-assets/'.length));
+        if (req.method === 'PUT') {
+          const bytes = await bodyBytes(req, 100 * 1024 * 1024);
+          await writableDirectory(this.store.dataDir);
+          return json(res, 200, await this.directors.putAsset(id, bytes, { type: req.headers['x-asset-type'], name: decodeURIComponent(req.headers['x-asset-name']) }));
+        }
+        if (req.method === 'HEAD' || req.method === 'GET') {
+          const asset = await this.directors.assetFile(id);
+          if (req.method === 'HEAD') {
+            res.writeHead(asset ? 200 : 404, asset ? { 'content-length': asset.meta.size } : {});
+            return res.end();
+          }
+          if (!asset) return json(res, 404, { msg: '素材不存在' });
+          res.writeHead(200, { 'content-type': asset.meta.type, 'content-length': asset.meta.size, 'cache-control': 'no-store' });
+          await pipeline(require('node:fs').createReadStream(asset.file), res);
+          return;
+        }
+        return json(res, 405, { msg: '不支持的操作' });
+      } catch (error) {
+        if (req.method === 'HEAD' && error.status === 400) { res.writeHead(400); return res.end(); }
+        if ([400, 404, 409, 413].includes(error.status)) return json(res, error.status, { msg: error.message, ...(error.missing ? { missing: error.missing } : {}) });
+        throw error;
+      }
+    }
     if (url.pathname.startsWith('/local/director/')) {
-      const id = url.pathname.slice('/local/director/'.length);
-      if (!/^[a-zA-Z0-9_-]{1,160}$/.test(id)) return json(res, 400, { msg: '导演台编号无效' });
-      const file = path.join(this.store.dataDir, 'projects', 'director', id + '.json');
-      if (req.method === 'GET') {
-        try { return json(res, 200, JSON.parse(await fs.readFile(file, 'utf8'))); }
-        catch (e) { if (e.code === 'ENOENT') return json(res, 404, { msg: '暂无保存的导演台场景' }); throw e; }
+      try {
+        const id = url.pathname.slice('/local/director/'.length);
+        if (!/^[a-zA-Z0-9_-]{1,160}$/.test(id)) return json(res, 400, { msg: '导演台编号无效' });
+        if (req.method === 'GET') {
+          const value = await this.serial(id, () => this.directors.readProject(id, { inline: url.searchParams.get('inline') === '1' }));
+          return value === null ? json(res, 404, { msg: '暂无保存的导演台场景' }) : json(res, 200, value);
+        }
+        if (req.method === 'PUT') {
+          const value = await bodyJson(req, 400 * 1024 * 1024);
+          if (value.engine !== 'cozyclay' || ![1, 2].includes(value.schemaVersion) || value.project?.app !== 'cozyclay' || value.project?.kind !== 'project') return json(res, 400, { msg: '导演台项目格式无效' });
+          await writableDirectory(this.store.dataDir);
+          await this.serial(id, () => this.directors.writeProject(id, value));
+          return json(res, 200, { saved: true });
+        }
+        if (req.method === 'DELETE') {
+          await writableDirectory(this.store.dataDir);
+          await this.serial(id, () => this.directors.deleteProject(id));
+          return json(res, 200, { deleted: true });
+        }
+        return json(res, 405, { msg: '不支持的操作' });
+      } catch (error) {
+        if ([400, 404, 409, 413].includes(error.status)) return json(res, error.status, { msg: error.message, ...(error.missing ? { missing: error.missing } : {}) });
+        throw error;
       }
-      if (req.method === 'PUT') {
-        const value = await bodyJson(req, 400 * 1024 * 1024);
-        if (value.engine !== 'cozyclay' || value.schemaVersion !== 1 || value.project?.app !== 'cozyclay' || value.project?.kind !== 'project') return json(res, 400, { msg: '导演台项目格式无效' });
-        await writableDirectory(this.store.dataDir);
-        const previous = this.writes.get(id) || Promise.resolve();
-        const write = previous.catch(() => {}).then(() => atomicJson(file, value)); this.writes.set(id, write);
-        try { await write; } finally { if (this.writes.get(id) === write) this.writes.delete(id); }
-        return json(res, 200, { saved: true });
-      }
-      if (req.method === 'DELETE') {
-        await writableDirectory(this.store.dataDir);
-        await fs.rm(file, { force: true });
-        return json(res, 200, { deleted: true });
-      }
-      return json(res, 405, { msg: '不支持的操作' });
     }
     if (url.pathname === '/admin/settings') { res.writeHead(302, { location: '/local-settings' }); return res.end(); }
     if (/^\/(login|admin\/(users|credit-logs))/.test(url.pathname)) { res.writeHead(302, { location: '/canvas' }); return res.end(); }

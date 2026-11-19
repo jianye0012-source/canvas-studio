@@ -3,6 +3,7 @@ import { importHdrFile } from './stage-hdr-library.js';
 import { openModelGenerator } from './canvas-model-generator.js';
 import { createSaveQueue } from './canvas-save-queue.js';
 import { createOutputRequests } from './canvas-output-request.js';
+import { openAssetDb, listAssetIds, putAsset } from './scene-assets.js';
 import './canvas-bridge.css';
 
 // The .cclayproject envelope includes meshes, HDRs, images, motion specs and
@@ -12,6 +13,27 @@ export function useCanvasBridge(api) {
   useEffect(() => {
     if (!new URLSearchParams(location.search).has('canvas')) return;
     let session, initialized = false, canceled = false, lastSnapshot = '', panoramas = [], activePanorama = null;
+    const known = new Map();
+    const upload = async asset => {
+      const url = `/local/director-assets/${asset.id}`;
+      if ((await fetch(url, { method: 'HEAD' })).ok) return;
+      const response = await fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'x-asset-type': asset.type, 'x-asset-name': encodeURIComponent(asset.name || '') }, body: asset.bytes });
+      if (!response.ok) throw new Error((await response.json()).msg || '素材保存失败');
+    };
+    const restoreAssets = async entries => {
+      const db = await openAssetDb();
+      try {
+        const have = new Set(await listAssetIds(db));
+        for (const { size, ...entry } of entries) {
+          if (!have.has(entry.id)) {
+            const response = await fetch(`/local/director-assets/${entry.id}`);
+            if (!response.ok) throw new Error(`缺少素材 ${entry.id}，无法打开导演台`);
+            await putAsset(db, { ...entry, bytes: await response.arrayBuffer() });
+          }
+          known.set(entry.id, { ...entry, size });
+        }
+      } finally { db.close(); }
+    };
     const post = (type, payload) => parent.postMessage({ type, payload }, location.origin);
     const run = async (id, args) => { const result = await latest.current.runStudioAction(id, args); if (!result?.ok) throw new Error(`操作未完成：${id}，请查看导演台提示`); return result; };
     const bar = document.createElement('div'); bar.className = 'canvas-return-bar';
@@ -30,13 +52,12 @@ export function useCanvasBridge(api) {
       const before = snapshot();
       if (!force && before === lastSnapshot) return;
       label.textContent = '正在保存到本机…'; label.classList.remove('error');
-      const serialized = await latest.current.scenesDomain.collectProjectSerialized(latest.current.scenesDomain.projectName || '白模导演台');
-      const project = JSON.parse(serialized);
-      const envelope = { engine: 'cozyclay', schemaVersion: 1, project, panoramas, activePanorama };
+      const project = await latest.current.scenesDomain.collectProjectReferenced(latest.current.scenesDomain.projectName || '白模导演台', known, upload);
+      const envelope = { engine: 'cozyclay', schemaVersion: 2, project, panoramas, activePanorama };
       const response = await fetch(`/local/director/${encodeURIComponent(session.instanceId)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(envelope) });
-      if (!response.ok) throw new Error((await response.json()).msg || '磁盘保存失败，请检查数据目录');
+      if (!response.ok) { const body = await response.json(); (body.missing || []).forEach(id => known.delete(id)); throw new Error(body.msg || '磁盘保存失败，请检查数据目录'); }
       lastSnapshot = before;
-      post('storyai:director-project-changed', { project: { engine: 'cozyclay', schemaVersion: 1, projectId: session.instanceId, name: project.name, savedAt: project.savedAt } });
+      post('storyai:director-project-changed', { project: { engine: 'cozyclay', schemaVersion: 2, projectId: session.instanceId, name: project.name, savedAt: project.savedAt } });
       label.textContent = '已保存到本机';
     });
     const capture = async () => {
@@ -122,7 +143,8 @@ export function useCanvasBridge(api) {
           }
           if (response.ok) {
             const saved = await response.json();
-            if (saved.engine !== 'cozyclay' || saved.schemaVersion !== 1) throw new Error('导演台保存格式不受支持');
+            if (saved.engine !== 'cozyclay' || saved.schemaVersion !== 2) throw new Error('导演台保存格式不受支持');
+            await restoreAssets(saved.project.resources.assets);
             await run('project.open', { serialized: JSON.stringify(saved.project) });
             panoramas = saved.panoramas || []; activePanorama = saved.activePanorama || null;
           } else if (response.status === 404 && !session.project?.projectId) {

@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { rehydrateProjectAssets } from "../project-assets-restore.js";
 import { StudioProtocolError } from "../studio-agent-protocol.js";
 import { createDocumentStore } from "../document-store.js";
 import { useDocumentDomain } from "../store/use-document-store.js";
@@ -264,6 +265,31 @@ export function useScenes(appContext) {
 		}
 	}
 
+	async function collectProjectReferenced(name, known, upload) {
+		const input = projectDocumentInput(name);
+		const workflowResult = await internWorkflowOutputs(input.workflow);
+		const outputs = new Map(workflowResult.assets.map((asset) => [asset.id, asset]));
+		const records = [];
+		const db = await openAssetDb();
+		try {
+			for (const id of new Set([...referencedAssetIds(input.scenesDocument.scenes), ...outputs.keys()])) {
+				if (!known.has(id)) {
+					const asset = outputs.get(id) ?? await getAsset(db, id);
+					if (!asset) continue;
+					await upload(asset);
+					known.set(id, { ...asset, bytes: undefined, size: asset.bytes.byteLength });
+				}
+				records.push(known.get(id));
+			}
+		} finally {
+			db.close();
+		}
+		const manifest = resourceManifest({ scenesDocument: input.scenesDocument, workflow: workflowResult.graph, poseLibrary: input.customPoses, assets: records, workflowOutputRefs });
+		setProjectManifest(manifest);
+		if (manifest.missing.length) throw Object.assign(new Error("Project has missing resources"), { code: "missing-resources", items: manifest.missing });
+		return { ...createProjectDocument({ ...input, workflow: workflowResult.graph, assets: [], savedAt: Date.now() }), resources: { assets: records } };
+	}
+
 	function markProjectClean(name, snapshot, previousName) {
 		appContext.shared.projectSnapshotRef.current = snapshot;
 		if (domain.metadata().name === previousName) domain.nameSaved(name);
@@ -277,33 +303,6 @@ export function useScenes(appContext) {
 		return ko(` · skipped ${problems.length} embedded resource${problems.length === 1 ? "" : "s"}${codes ? ` (${codes})` : ""}`,
 			` · 포함된 자원 ${problems.length}개를 건너뛰었어요${codes ? ` (${codes})` : ""}`,
 			` · 已跳过 ${problems.length} 个嵌入资源${codes ? `（${codes}）` : ""}`);
-	}
-
-	async function rehydrateProjectAssets(project, warnings = []) {
-		for (const warning of warnings) console.warn(`[cozyclay] ${warning}`);
-		if (!project.assets.length) return;
-		try {
-			const db = await openAssetDb();
-			try {
-				const referenced = referencedAssetIds(project.scenesDocument.scenes);
-				const results = await Promise.allSettled(project.assets.map(async (asset) => {
-					if (!referenced.has(asset.id)) {
-						console.warn(`[cozyclay] skipped embedded asset outside the project closure: ${asset.id}`);
-						return;
-					}
-					if (!(await verifyEmbeddedAsset(asset))) {
-						console.warn(`[cozyclay] skipped embedded asset with mismatched content address: ${asset.id}`);
-						return;
-					}
-					await putAsset(db, asset);
-				}));
-				for (const result of results) if (result.status === "rejected") console.warn("[cozyclay] could not restore an embedded asset", result.reason);
-			} finally {
-				db.close();
-			}
-		} catch (error) {
-			console.warn("[cozyclay] could not open the asset store for project restore", error);
-		}
 	}
 
 	/** Save the project; the answer says what happened, for project.save:
@@ -804,7 +803,7 @@ export function useScenes(appContext) {
 		setProjectMenuOpen, projectBrowserOpen, setProjectBrowserOpen, projectNameDialog, setProjectNameDialog,
 		projectStartupOpen, setProjectStartupOpen, projectManifest, setProjectManifest, saveBlockedReasons,
 		setSaveBlockedReasons, workflowRevision, setWorkflowRevision, collectProjectSnapshot,
-		collectProjectSerialized, projectProblemsNotice, rehydrateProjectAssets, saveProject, applyProject,
+		collectProjectSerialized, collectProjectReferenced, projectProblemsNotice, rehydrateProjectAssets, saveProject, applyProject,
 		exportAsAnimationProject,
 		openStarterScene: async (id, source = "starter", name = null, castStyle = undefined) => (await runProject("project.openStarter", { id, source, ...(name ? { name } : {}), ...(castStyle ? { castStyle } : {}) })).output?.opened === true,
 		openProject, openProjectByHandle, requestNewProject, newProject, restoreOffer,
