@@ -63,11 +63,13 @@ test('本机会话保护数据，拒绝外站来源，项目串行落盘并重�
   const headers = { cookie: login.headers.get('set-cookie').split(';')[0], 'content-type': 'application/json' };
   assert.equal((await fetch(url + '/local/config', { headers: { ...headers, origin: 'https://example.com' } })).status, 403);
   assert.equal((await fetch(url + '/local/config', { headers })).status, 200);
-  const envelope = { engine: 'cozyclay', schemaVersion: 1, project: { app: 'cozyclay', kind: 'project', name: 'saved-scene', resources: { assets: [{ id: 'mesh-test', bytes: 'YWJj' }] } } };
+  const id = 'mesh-' + crypto.createHash('sha256').update('abc').digest('hex').slice(0, 32), type = 'model/gltf-binary';
+  const envelope = { engine: 'cozyclay', schemaVersion: 1, project: { app: 'cozyclay', kind: 'project', name: 'saved-scene', resources: { assets: [{ id, type, bytes: 'YWJj' }] } } };
   const saved = await fetch(url + '/local/director/test-node', { method: 'PUT', headers, body: JSON.stringify(envelope) });
   assert.equal(saved.status, 200);
-  assert.deepEqual(await (await fetch(url + '/local/director/test-node', { headers })).json(), envelope);
-  assert.deepEqual(JSON.parse(await fs.readFile(path.join(store.dataDir, 'projects/director/test-node.json'), 'utf8')), envelope);
+  const expected = { ...envelope, schemaVersion: 2, project: { ...envelope.project, resources: { assets: [{ id, type, size: 3 }] } } };
+  assert.deepEqual(await (await fetch(url + '/local/director/test-node', { headers })).json(), expected);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(store.dataDir, 'projects/director/test-node.json'), 'utf8')), expected);
   assert.equal((await fetch(url + '/local/director/bad.node', { headers })).status, 400);
   assert.equal((await fetch(url + '/api/auth/register', { method: 'POST', headers, body: '{}' })).status, 404);
 });
