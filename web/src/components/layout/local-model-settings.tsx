@@ -3,6 +3,9 @@
 import { useEffect, useId, useState } from 'react';
 import { localConfig, localRoles, readLocalRunningHubModel, testLocalChannel, type LocalChannel, type LocalModelConfig, type RunningHubCatalogue } from '@/services/api/local';
 import { useConfigStore } from '@/stores/use-config-store';
+import { useModelSettingsDirtyStore } from '@/stores/use-model-settings-dirty-store';
+
+type Detected = Awaited<ReturnType<typeof testLocalChannel>>;
 
 const fieldClass = 'mt-2 block w-full rounded-md border border-current/15 bg-transparent px-3 py-2 text-sm';
 const buttonClass = 'rounded-md border border-current/15 px-3 py-2 text-sm disabled:opacity-50';
@@ -18,6 +21,7 @@ function validSelections(config: LocalModelConfig) {
     }
     return next;
 }
+const modelState = (value: LocalModelConfig) => JSON.stringify([value.channels, ...localRoles.flatMap(role => [value[`${role.key}Model`], value[`${role.key}ChannelId`]])]);
 
 export function LocalModelSettings() {
     const [config, setConfig] = useState<LocalModelConfig>();
@@ -26,21 +30,39 @@ export function LocalModelSettings() {
     const [busy, setBusy] = useState(false);
     const [testing, setTesting] = useState(false);
     const [catalogues, setCatalogues] = useState<Record<string, string[]>>({});
+    const [detected, setDetected] = useState<Record<string, Detected>>({});
+    const [picked, setPicked] = useState<Record<string, string[]>>({});
+    const [savedState, setSavedState] = useState('');
     const [runningHubCatalogues, setRunningHubCatalogues] = useState<Record<string, RunningHubCatalogue | undefined>>({});
     const [modelName, setModelName] = useState('');
     const [capability, setCapability] = useState<keyof typeof capabilityLabels>('text');
     const listId = useId();
     const loadSettings = useConfigStore(state => state.loadPublicSettings);
-    useEffect(() => { let canceled = false; localConfig().then(value => { if (!canceled) { setConfig(value); setActiveId(value.channels[0]?.id || ''); } }).catch(error => { if (!canceled) setMessage(error.message); }); return () => { canceled = true; }; }, []);
+    const setDirty = useModelSettingsDirtyStore(state => state.setDirty);
+    useEffect(() => { let canceled = false; localConfig().then(value => { if (!canceled) { setConfig(value); setSavedState(modelState(value)); setActiveId(value.channels[0]?.id || ''); } }).catch(error => { if (!canceled) setMessage(error.message); }); return () => { canceled = true; }; }, []);
     const active = config?.channels.find(channel => channel.id === activeId);
     const runningHub = active?.protocol === 'runninghub-standard';
     const runningHubCatalogue = runningHub ? runningHubCatalogues[activeId] : undefined;
+    const candidates = !runningHub && active && detected[activeId]
+        ? detected[activeId].models.filter(model => detected[activeId].modelCapabilities[model] && !active.models.includes(model)).slice(0, Math.max(0, 2000 - active.models.length))
+        : [];
+    const chosen = picked[activeId] || [];
+    const dirty = Boolean(config && savedState && modelState(config) !== savedState);
+    useEffect(() => {
+        setDirty(dirty);
+        if (!dirty) return;
+        const leaving = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
+        window.addEventListener('beforeunload', leaving);
+        return () => { window.removeEventListener('beforeunload', leaving); setDirty(false); };
+    }, [dirty, setDirty]);
     const replaceChannels = (channels: LocalChannel[]) => setConfig(current => current && validSelections({ ...current, channels }));
     const updateChannel = (patch: Partial<LocalChannel>) => {
         if (!config) return;
         if (['baseUrl', 'apiKey', 'protocol'].some(key => Object.hasOwn(patch, key))) {
             setCatalogues(current => { const next = { ...current }; delete next[activeId]; return next; });
             setRunningHubCatalogues(current => ({ ...current, [activeId]: undefined }));
+            setDetected(current => { const next = { ...current }; delete next[activeId]; return next; });
+            setPicked(current => { const next = { ...current }; delete next[activeId]; return next; });
         }
         replaceChannels(config.channels.map(channel => channel.id === activeId ? { ...channel, ...patch } : channel));
     };
@@ -57,31 +79,39 @@ export function LocalModelSettings() {
         if (!active) return;
         const id = modelName.trim();
         if (!id) return setMessage('请填写或选择模型名称');
-        updateChannel({ models: [...new Set([...active.models, id])], modelCapabilities: { ...active.modelCapabilities, [id]: capability } }); setModelName(''); setMessage('模型已加入，请保存全部配置后使用。');
+        updateChannel({ models: [...new Set([...active.models, id])], modelCapabilities: { ...active.modelCapabilities, [id]: capability } }); setModelName(''); setMessage('模型已加入，请保存配置。');
     };
     const readModels = async () => {
         if (!active) return;
         setTesting(true);
         setMessage('');
         setCatalogues(current => { const next = { ...current }; delete next[active.id]; return next; });
+        setDetected(current => { const next = { ...current }; delete next[active.id]; return next; });
+        setPicked(current => { const next = { ...current }; delete next[active.id]; return next; });
         if (runningHub) setRunningHubCatalogues(current => ({ ...current, [active.id]: undefined }));
         try {
             const catalogue = await testLocalChannel(active);
-            const added = catalogue.models.filter(model => catalogue.modelCapabilities[model] && !active.models.includes(model)).slice(0, Math.max(0, 2000 - active.models.length));
-            const models = [...active.models, ...added];
-            const modelCapabilities = { ...active.modelCapabilities };
-            const modelToolSupport = { ...active.modelToolSupport };
-            for (const model of added) {
-                modelCapabilities[model] = catalogue.modelCapabilities[model]!;
-                if (Object.hasOwn(catalogue.modelToolSupport, model)) modelToolSupport[model] = catalogue.modelToolSupport[model];
-            }
-            const pending = catalogue.models.filter(model => !models.includes(model));
-            updateChannel({ models, modelCapabilities, modelToolSupport });
+            const addable = catalogue.models.filter(model => catalogue.modelCapabilities[model] && !active.models.includes(model)).slice(0, Math.max(0, 2000 - active.models.length));
+            const unknown = catalogue.models.filter(model => !catalogue.modelCapabilities[model] && !active.models.includes(model));
             setCatalogues(current => ({ ...current, [active.id]: catalogue.models }));
             if (catalogue.runningHub) setRunningHubCatalogues(current => ({ ...current, [active.id]: catalogue.runningHub }));
-            setMessage(catalogue.runningHub ? '已联网读取 RunningHub 官方目录。已添加的模型可更新参数。' : `本次联网读取 ${catalogue.models.length} 个模型 · ${new Date(catalogue.fetchedAt).toLocaleTimeString()}。新增 ${added.length} 个，${pending.length} 个可手动分类。已配置模型另行保留，请保存配置。`);
+            else setDetected(current => ({ ...current, [active.id]: catalogue }));
+            setMessage(catalogue.runningHub ? '已联网读取 RunningHub 官方模型目录。可从目录添加多个模型，已添加的模型可更新参数。' : `本次联网读取 ${catalogue.models.length} 个模型 · ${new Date(catalogue.fetchedAt).toLocaleTimeString()}。可加入 ${addable.length} 个，请勾选后点「加入所选模型」；${unknown.length} 个无法识别类型，可手动分类。已配置模型不受影响。`);
         } catch (error) { setMessage(error instanceof Error ? error.message : '连接失败'); }
         finally { setTesting(false); }
+    };
+    const addPicked = () => {
+        if (!active || !detected[activeId]) return;
+        const catalogue = detected[activeId];
+        const modelCapabilities = { ...active.modelCapabilities };
+        const modelToolSupport = { ...active.modelToolSupport };
+        for (const model of chosen) {
+            modelCapabilities[model] = catalogue.modelCapabilities[model]!;
+            if (Object.hasOwn(catalogue.modelToolSupport, model)) modelToolSupport[model] = catalogue.modelToolSupport[model];
+        }
+        updateChannel({ models: [...active.models, ...chosen], modelCapabilities, modelToolSupport });
+        setPicked(current => ({ ...current, [activeId]: [] }));
+        setMessage(`已加入 ${chosen.length} 个模型，请保存配置。`);
     };
     const addRunningHubModel = async (id: string) => {
         if (!active) return;
@@ -99,7 +129,7 @@ export function LocalModelSettings() {
     };
     return <form className="space-y-6" onSubmit={async event => {
         event.preventDefault(); if (!config) return; setBusy(true);
-        try { setConfig(await localConfig(config)); await loadSettings(); setMessage('全部渠道和默认选择已保存。已打开的导演台重新打开后生效。'); }
+        try { const saved = await localConfig(config); setConfig(saved); setSavedState(modelState(saved)); await loadSettings(); setMessage('全部渠道和默认模型已保存。已打开的画布刷新后生效，导演台需重新打开。'); }
         catch (error) { setMessage(error instanceof Error ? error.message : '保存失败'); } finally { setBusy(false); }
     }}>
         <p className="text-sm opacity-60">每个渠道分别配置接口类型和密钥。白模导演需支持工具调用，参考图需支持视觉输入。密钥在本机加密保存。</p>
@@ -115,12 +145,14 @@ export function LocalModelSettings() {
                         updateChannel({ protocol: standard ? 'runninghub-standard' : 'openai', baseUrl: standard ? 'https://www.runninghub.cn' : '', models: [], modelCapabilities: {}, modelToolSupport: {}, runningHubModels: {} });
                         setCatalogues(current => ({ ...current, [active.id]: [] }));
                         setRunningHubCatalogues(current => ({ ...current, [active.id]: undefined }));
+                        setDetected(current => { const next = { ...current }; delete next[active.id]; return next; });
+                        setPicked(current => { const next = { ...current }; delete next[active.id]; return next; });
                         setModelName('');
                     }}><option value="openai">OpenAI 兼容</option><option value="runninghub-standard">RunningHub 标准模型</option></select></label>
                     <label className="block text-sm">接口地址<input type="url" className={fieldClass} value={active.baseUrl} placeholder="https://你的服务地址/v1" onChange={event => updateChannel({ baseUrl: event.target.value })} /></label>
                     <label className="block text-sm">API Key<input type="password" autoComplete="off" className={fieldClass} value={active.apiKey || ''} placeholder={active.hasApiKey ? '已设置，留空保留原密钥' : '接口无需密钥时可留空'} onChange={event => updateChannel({ apiKey: event.target.value, clearApiKey: false })} /></label>
                     {active.keyUnavailable && <p role="alert" className="text-sm">此渠道密钥无法解密，请重新填写或清除。</p>}
-                    <div className="flex flex-wrap gap-2"><button type="button" disabled={testing} className={buttonClass} onClick={readModels}>{testing ? '正在连接…' : runningHub ? '检测渠道并读取模型' : '测试此渠道 / 读取模型'}</button><button type="button" className={buttonClass} onClick={() => { updateChannel({ apiKey: '', clearApiKey: true, hasApiKey: false }); setMessage('该渠道密钥将于保存时清除。'); }}>清除此渠道密钥</button></div>
+                    <div className="flex flex-wrap gap-2"><button type="button" disabled={testing} className={buttonClass} onClick={readModels}>{testing ? '正在连接…' : runningHub ? '检测渠道并读取模型' : '测试此渠道 / 读取模型'}</button><button type="button" className={buttonClass} onClick={() => { updateChannel({ apiKey: '', clearApiKey: true, hasApiKey: false }); setMessage('此渠道密钥将于保存时清除。'); }}>清除此渠道密钥</button></div>
                     {runningHub ? <p className="text-sm opacity-60">展开图片、视频或 3D 目录，点击「添加」读取该模型的官方参数。每个渠道可保存多个模型。文字和白模导演使用 OpenAI 兼容渠道。</p> : <div className="border-t border-current/10 pt-4"><p className="mb-2 text-sm opacity-60">无法识别类型的模型可从列表选取并手动分类。</p><div className="flex flex-wrap items-end gap-2"><label className="min-w-36 flex-1 text-sm">模型名称<input className={fieldClass} list={listId} value={modelName} onChange={event => setModelName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addModel(); } }} /></label><label className="text-sm">类型<select aria-label="类型" className={fieldClass} value={capability} onChange={event => setCapability(event.target.value as keyof typeof capabilityLabels)}>{Object.entries(capabilityLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><button type="button" className={buttonClass} onClick={addModel}>加入模型</button></div><datalist id={listId}>{(catalogues[active.id] || []).map(model => <option key={model} value={model} />)}</datalist></div>}
                     <h4 className="text-sm font-medium">已配置模型</h4>
                     <ul className="space-y-2" aria-label="此渠道的模型">{active.models.map(model => <li key={model} className="flex items-center gap-3 text-sm"><span className="min-w-0 flex-1 break-all">{model}{missingFromLatest(model) && <small className="block opacity-60">本次目录未返回可用条目</small>}</span><span className="opacity-60">{active.modelToolSupport?.[model] === false ? '文字' : active.modelCapabilities[model] === '3d' ? '3D 模型' : capabilityLabels[active.modelCapabilities[model] as keyof typeof capabilityLabels]}</span><button type="button" aria-label={`移除模型 ${model}`} className={buttonClass} onClick={() => {
@@ -128,6 +160,17 @@ export function LocalModelSettings() {
                         delete runningHubModels[model];
                         updateChannel({ models: active.models.filter(entry => entry !== model), runningHubModels });
                     }}>移除</button></li>)}</ul>
+                    {candidates.length > 0 && <section aria-label="本次检测到的模型" className="space-y-2 rounded-md border border-current/15 p-3 text-sm">
+                        <h4 className="font-medium">可加入的模型 {candidates.length} 个</h4>
+                        <ul className="max-h-56 space-y-1 overflow-auto">{candidates.map(model => <li key={model} className="flex items-center gap-3">
+                            <input type="checkbox" aria-label={`选择模型 ${model}`} checked={chosen.includes(model)} onChange={event => setPicked(current => ({ ...current, [activeId]: event.target.checked ? [...chosen, model] : chosen.filter(entry => entry !== model) }))} />
+                            <span className="min-w-0 flex-1 break-all">{model}</span><span className="opacity-60">{detected[activeId].modelToolSupport?.[model] === false ? '文字' : capabilityLabels[detected[activeId].modelCapabilities[model] as keyof typeof capabilityLabels]}</span>
+                        </li>)}</ul>
+                        <div className="flex gap-2">
+                            <button type="button" className={buttonClass} onClick={() => setPicked(current => ({ ...current, [activeId]: chosen.length === candidates.length ? [] : candidates }))}>{chosen.length === candidates.length ? '全不选' : '全选'}</button>
+                            <button type="button" className={buttonClass} disabled={!chosen.length} onClick={addPicked}>加入所选模型</button>
+                        </div>
+                    </section>}
                     {runningHubCatalogue && <section aria-label="RunningHub 官方模型目录" className="space-y-2 rounded-md border border-current/15 p-3 text-sm">
                         <h4 className="font-medium">本次联网读取 RunningHub 官方目录 {runningHubCatalogue.models.length} 个模型条目 · {new Date(runningHubCatalogue.fetchedAt).toLocaleTimeString()}</h4>
                         <p className="opacity-70">{runningHubCatalogue.accountError || '密钥已通过账户检查。具体模型权限以 RunningHub 提交结果为准。'}</p>
