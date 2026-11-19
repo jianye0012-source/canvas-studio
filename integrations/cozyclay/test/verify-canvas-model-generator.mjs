@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { generatedGlbProblem, hasActiveModelTask } from '../src/canvas-model-generator.js';
+import { generatedGlbProblem, hasActiveModelTask, modelTaskStatusText } from '../src/canvas-model-generator.js';
 
 function glb(json) {
   const source = Buffer.from(JSON.stringify(json));
@@ -37,3 +37,15 @@ assert.equal(hasActiveModelTask([{ status: 'completed' }, { status: 'failed' }])
 for (const status of ['submitting', 'processing', 'download_failed']) assert.equal(hasActiveModelTask([{ status }]), true);
 assert.equal(hasActiveModelTask([{ status: 'download_failed', downloadStopped: true }]), false);
 console.log('PASS 只有活动任务继续轮询');
+
+for (const [input, expected] of [
+  [{ status: 'processing', platformStatus: 'QUEUED' }, '排队中'],
+  [{ status: 'processing', platformStatus: 'RUNNING' }, '生成中'],
+  [{ status: 'processing' }, '生成中'],
+  [{ status: 'processing', download: { received: 4718592, total: 10485760 } }, '下载中 45%（4.5 / 10.0 MB）'],
+  [{ status: 'processing', download: { received: 4718592, total: 0 } }, '下载中 · 已下载 4.5 MB'],
+  [{ status: 'download_failed', downloadStopped: true, download: { received: 1, total: 2 } }, '模型下载已停止自动重试'],
+  [{ status: 'completed' }, '已生成并保存到本机'],
+  [{ status: 'weird' }, '待查询'],
+]) assert.equal(modelTaskStatusText(input), expected);
+console.log('PASS 排队、生成、下载进度及终态文案');

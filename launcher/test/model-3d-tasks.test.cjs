@@ -17,14 +17,14 @@ async function fixture(t) {
   const properties = { prompt: { type: 'string', maxLength: 20000 }, enablePbr: { type: 'boolean', default: false }, generateType: { type: 'string', enum: ['Normal', 'Geometry'], default: 'Normal' }, faceCount: { type: 'integer', minimum: 10000, maximum: 1500000, default: 500000 } };
   const spec = normalizeModel(model, { type: '3d', name: '测试文生3D', required: ['prompt', 'enablePbr', 'generateType'], properties });
   const imageSpec = normalizeModel(imageModel, { type: '3d', name: '测试图生3D', required: ['imageUrl'], properties: { imageUrl: { type: 'string' }, leftImageUrl: { type: 'string' } } });
-  const state = { urls: [], submits: 0, queries: 0, uploads: 0, finished: true, corrupt: false, uncertain: false, queryError: false, resultUrl: 'https://files.example/model.glb' };
+  const state = { urls: [], submits: 0, queries: 0, uploads: 0, finished: true, queryStatus: 'RUNNING', corrupt: false, uncertain: false, queryError: false, resultUrl: 'https://files.example/model.glb' };
   const fetchImpl = async (url, options) => {
     state.urls.push(url);
     if (url.endsWith('/media/upload/binary')) { state.uploads++; assert.ok(options.body instanceof FormData); return Response.json({ code: 0, data: { download_url: `https://files.example/${state.uploads}.png` } }); }
     if (url.endsWith('/query')) {
       state.queries++; assert.equal(JSON.parse(options.body).taskId, '9000000000001');
       if (state.queryError) return Response.json({ taskId: '9000000000001', status: '', errorCode: '806', errorMessage: 'APIKEY_USER_NOT_FOUND' });
-      return Response.json({ taskId: '9000000000001', status: state.finished ? 'SUCCESS' : 'RUNNING', results: state.finished ? [{ outputType: 'glb', url: state.resultUrl }] : null });
+      return Response.json({ taskId: '9000000000001', status: state.finished ? 'SUCCESS' : state.queryStatus, results: state.finished ? [{ outputType: 'glb', url: state.resultUrl }] : null });
     }
     if (url.endsWith('.glb')) {
       assert.equal(options.redirect, 'manual');
@@ -87,6 +87,43 @@ test('3D 按官方参数提交、同编号防重、保存 GLB 并另存中文目
   assert.deepEqual(await fs.readFile(path.join(output, b.name)), bytes);
   assert.ok(!(await fs.readFile(jobs.file(input.id), 'utf8')).includes('test-only-key'));
   assert.equal((await jobs.list('director-test')).length, 1);
+  assert.equal('download' in (await jobs.list('director-test'))[0], false);
+});
+
+test('平台排队与运行写入 platformStatus', async t => {
+  const { open, input, state } = await fixture(t); const jobs = open();
+  state.finished = false; state.queryStatus = 'QUEUED';
+  await jobs.create(input); await jobs.refresh(input.id);
+  const queued = (await jobs.list('director-test'))[0];
+  assert.equal(queued.platformStatus, 'QUEUED'); assert.equal(queued.status, 'processing');
+  state.queryStatus = 'RUNNING'; await jobs.refresh(input.id, { manual: true });
+  assert.equal((await jobs.list('director-test'))[0].platformStatus, 'RUNNING');
+});
+
+for (const withLength of [true, false]) test(withLength ? '下载中列表返回已接收与总字节' : '无长度时 total 为 0', async t => {
+  const { open, input, state, bytes } = await fixture(t); const jobs = open();
+  let release;
+  const second = new Promise(resolve => { release = resolve; });
+  state.downloadResponse = new Response(new ReadableStream({ async start(controller) {
+    controller.enqueue(bytes.subarray(0, 100));
+    await second;
+    controller.enqueue(bytes.subarray(100)); controller.close();
+  } }), { headers: withLength ? { 'content-length': String(bytes.length) } : {} });
+  await jobs.create(input);
+  const pending = jobs.refresh(input.id);
+  while (jobs.downloads.get(input.id)?.received !== 100) await new Promise(resolve => setImmediate(resolve));
+  const downloading = (await jobs.list('director-test'))[0];
+  assert.deepEqual(downloading.download, { received: 100, total: withLength ? bytes.length : 0 });
+  assert.equal(downloading.status, 'processing');
+  release(); assert.equal((await pending).status, 'completed');
+  assert.equal('download' in (await jobs.list('director-test'))[0], false); assert.equal(jobs.downloads.size, 0);
+});
+
+test('下载失败后 downloads 为空', async t => {
+  const { open, input, state } = await fixture(t); const jobs = open();
+  await jobs.create(input); state.downloadError = new TypeError('fetch failed');
+  assert.equal((await jobs.refresh(input.id)).status, 'download_failed');
+  assert.equal(jobs.downloads.size, 0); assert.equal('download' in (await jobs.list('director-test'))[0], false);
 });
 
 test('3D 结果地址为内网或跳转时直接失败且不重试', async t => {

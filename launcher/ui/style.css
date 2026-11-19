@@ -14,3 +14,5 @@
 #runninghub-catalogue li{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:6px 4px;border-bottom:1px solid #edf0f5;overflow-wrap:anywhere}
 #runninghub-catalogue li small{color:#60728d;white-space:nowrap}
 #runninghub-catalogue li button{padding:4px 8px;font-size:11px;white-space:nowrap}
+
+#detected-list{list-style:none;padding:0;margin:14px 0 0}#detected-list li{display:flex;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid #f0f3f7;font-size:11px}#detected-list label{min-width:0;flex:1;overflow-wrap:anywhere}#detected-list small{color:#8b99ad}

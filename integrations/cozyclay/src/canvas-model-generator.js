@@ -3,6 +3,13 @@ import { localizedImportMessage } from './domains/import-message.js';
 
 const labels = { prompt: '模型描述', imageUrl: '正面参考图', frontImageUrl: '正面参考图', imageUrls: '参考图', leftImageUrl: '左侧参考图', rightImageUrl: '右侧参考图', backImageUrl: '背面参考图', topImageUrl: '顶部参考图', bottomImageUrl: '底部参考图', leftFrontImageUrl: '左前参考图', rightFrontImageUrl: '右前参考图', faceCount: '目标面数', face: '目标面数', requestType: '输出类型', generateType: '生成类型', enablePbr: 'PBR 材质', resolution: '分辨率' };
 const statuses = { submitting: '正在提交', processing: '生成中', completed: '已生成并保存到本机', download_failed: '模型下载待重试', failed: '未完成', uncertain: '提交结果未确认', blocked: '请恢复原渠道配置' };
+const mb = bytes => (bytes / 1024 ** 2).toFixed(1);
+export function modelTaskStatusText(task) {
+  if (task.downloadStopped) return '模型下载已停止自动重试';
+  if (task.download) return task.download.total ? `下载中 ${Math.floor(task.download.received / task.download.total * 100)}%（${mb(task.download.received)} / ${mb(task.download.total)} MB）` : `下载中 · 已下载 ${mb(task.download.received)} MB`;
+  if (task.status === 'processing') return task.platformStatus === 'QUEUED' ? '排队中' : '生成中';
+  return statuses[task.status] || '待查询';
+}
 const readImage = file => new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error('文件读取失败')); reader.readAsDataURL(file); });
 export function generatedGlbProblem(bytes) {
   return compressedGlbReason(bytes) || (!parseGlbBounds(bytes) ? '生成文件不包含可显示的网格，请核对平台结果' : null);
@@ -95,7 +102,7 @@ export function openModelGenerator({ sceneId, save, importMesh }) {
         list.replaceChildren(...result.tasks.map(task => {
           const row = document.createElement('article'); row.className = 'canvas-3d-task';
           const name = document.createElement('strong'); name.textContent = `${task.channelName} · ${task.name}`;
-          const status = document.createElement('p'); status.textContent = (task.downloadStopped ? '模型下载已停止自动重试' : statuses[task.status] || '待查询') + (task.taskId ? ' · 任务 ' + task.taskId : '');
+          const status = document.createElement('p'); status.textContent = modelTaskStatusText(task) + (task.taskId ? ' · 任务 ' + task.taskId : '');
           row.append(name, status);
           if (task.error) { const error = document.createElement('p'); error.className = 'error'; error.textContent = task.error; row.append(error); }
           if (task.status === 'completed') row.append(action('加入场景', async () => {
