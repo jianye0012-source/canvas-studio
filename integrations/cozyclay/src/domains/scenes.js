@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { rehydrateProjectAssets } from "../project-assets-restore.js";
 import { StudioProtocolError } from "../studio-agent-protocol.js";
 import { createDocumentStore } from "../document-store.js";
 import { useDocumentDomain } from "../store/use-document-store.js";
@@ -277,33 +278,6 @@ export function useScenes(appContext) {
 		return ko(` · skipped ${problems.length} embedded resource${problems.length === 1 ? "" : "s"}${codes ? ` (${codes})` : ""}`,
 			` · 포함된 자원 ${problems.length}개를 건너뛰었어요${codes ? ` (${codes})` : ""}`,
 			` · 已跳过 ${problems.length} 个嵌入资源${codes ? `（${codes}）` : ""}`);
-	}
-
-	async function rehydrateProjectAssets(project, warnings = []) {
-		for (const warning of warnings) console.warn(`[cozyclay] ${warning}`);
-		if (!project.assets.length) return;
-		try {
-			const db = await openAssetDb();
-			try {
-				const referenced = referencedAssetIds(project.scenesDocument.scenes);
-				const results = await Promise.allSettled(project.assets.map(async (asset) => {
-					if (!referenced.has(asset.id)) {
-						console.warn(`[cozyclay] skipped embedded asset outside the project closure: ${asset.id}`);
-						return;
-					}
-					if (!(await verifyEmbeddedAsset(asset))) {
-						console.warn(`[cozyclay] skipped embedded asset with mismatched content address: ${asset.id}`);
-						return;
-					}
-					await putAsset(db, asset);
-				}));
-				for (const result of results) if (result.status === "rejected") console.warn("[cozyclay] could not restore an embedded asset", result.reason);
-			} finally {
-				db.close();
-			}
-		} catch (error) {
-			console.warn("[cozyclay] could not open the asset store for project restore", error);
-		}
 	}
 
 	/** Save the project; the answer says what happened, for project.save:
