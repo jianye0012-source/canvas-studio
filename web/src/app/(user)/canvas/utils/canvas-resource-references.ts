@@ -115,3 +115,18 @@ function resourceKind(node: CanvasNodeData): CanvasResourceKind | null {
     if (node.type === CanvasNodeType.Text && (node.metadata?.content || node.metadata?.prompt)) return "text";
     return null;
 }
+
+// 为稳定引用：内容没变的数组沿用上一次的对象（memo 只看引用）
+export function reuseReferenceArrays(previous: Map<string, CanvasResourceReference[]> | null, next: Map<string, CanvasResourceReference[]>) {
+    if (!previous) return next;
+    const merged = new Map<string, CanvasResourceReference[]>();
+    next.forEach((array, id) => {
+        const before = previous.get(id);
+        const same = before && before.length === array.length && array.every((reference, index) => {
+            const keys = Object.keys(reference) as (keyof CanvasResourceReference)[];
+            return keys.length === Object.keys(before[index]).length && keys.every(key => Object.is(before[index][key], reference[key]));
+        });
+        merged.set(id, same ? before : array);
+    });
+    return merged;
+}

@@ -84,7 +84,7 @@ import { CanvasZoomControls } from "../components/canvas-zoom-controls";
 import { CANVAS_ASSET_DRAG_TYPE, CanvasSidePanel } from "../components/canvas-side-panel";
 import { DEFAULT_CANVAS_AGENT_PANEL, DEFAULT_CANVAS_SIDE_PANEL, useCanvasStore, persistCanvasProjectNow, flushCanvasProject } from "../stores/use-canvas-store";
 import { useCanvasUiStore } from "../stores/use-canvas-ui-store";
-import { assistantReferenceContentFromNode, buildNodeMentionReferences, isCanvasReferenceNode } from "../utils/canvas-resource-references";
+import { assistantReferenceContentFromNode, buildNodeMentionReferences, isCanvasReferenceNode, reuseReferenceArrays } from "../utils/canvas-resource-references";
 import { buildCanvasAgentContext } from "../agent/canvas-agent-context";
 import type { CanvasAgentAction, CanvasAgentToolResult } from "../agent/canvas-agent-tools";
 import {
@@ -1274,10 +1274,13 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         });
         return map;
     }, [connections, nodeById, nodes]);
+    const mentionReferencesRef = useRef<Map<string, ReturnType<typeof buildNodeMentionReferences>> | null>(null);
     const mentionReferencesByNodeId = useMemo(() => {
         const map = new Map<string, ReturnType<typeof buildNodeMentionReferences>>();
         nodes.forEach((node) => map.set(node.id, buildNodeMentionReferences(node, nodes, connections)));
-        return map;
+        const merged = reuseReferenceArrays(mentionReferencesRef.current, map);
+        mentionReferencesRef.current = merged;
+        return merged;
     }, [connections, nodes]);
     const connectedNodesByNodeId = useMemo(() => {
         const map = new Map<string, CanvasNodeData[]>();
@@ -4651,6 +4654,84 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         if (focusAnimationRef.current) cancelAnimationFrame(focusAnimationRef.current);
     }, []);
 
+    // 为稳定引用：面板渲染器与事件回调提到调用处之外
+    const renderPanel = (panelNode: CanvasNodeData) => (
+                                panelNode.type === CanvasNodeType.Config ? (
+                                    <CanvasConfigComposer
+                                        value={panelNode.metadata?.composerContent ?? panelNode.metadata?.prompt ?? ""}
+                                        inputs={configInputsById.get(panelNode.id) || []}
+                                        onChange={(composerContent) => handleConfigNodeChange(panelNode.id, { composerContent })}
+                                        onClose={() => setDialogNodeId(null)}
+                                    />
+                                ) : panelNode.type === CanvasNodeType.Director ? null : (
+                                    <CanvasNodePromptPanel
+                                        node={panelNode}
+                                        isRunning={runningNodeId === panelNode.id}
+                                        mentionReferences={mentionReferencesByNodeId.get(panelNode.id) || []}
+                                        connectedNodes={connectedNodesByNodeId.get(panelNode.id) || []}
+                                        videoFrameOptions={videoFrameOptionsByNodeId.get(panelNode.id) || []}
+                                        videoResourceOptions={videoResourceOptionsByNodeId.get(panelNode.id) || []}
+                                        onPromptChange={handleNodePromptChange}
+                                        onConfigChange={handleConfigNodeChange}
+                                        onGenerate={(nodeId, mode, prompt) => {
+                                            if (panelNode.metadata?.status === "stopped" && !prompt.trim()) void handleRetryNode(panelNode);
+                                            else void handleGenerateNode(nodeId, mode, prompt);
+                                        }}
+                                        onStop={handleStopNode}
+                                        onDisconnectReference={disconnectNodeReference}
+                                        onStartReferenceSelection={startNodeReferenceSelection}
+                                        onImageSettingsOpenChange={(open) => {
+                                            setNodeImageSettingsOpen(open);
+                                            if (open) setToolbarNodeId(null);
+                                        }}
+                                    />
+                                )
+                                );
+    const renderNodeContent = (contentNode: CanvasNodeData) => (
+                                contentNode.type === CanvasNodeType.FolderLoop ? (
+                                    <CanvasFolderLoopPanel node={contentNode} active={folderLoops.active.includes(contentNode.id)} progress={folderLoops.importing?.id === contentNode.id ? folderLoops.importing.percent : undefined} onSelect={recursive => folderLoops.select(contentNode.id, recursive)} onRun={retry => { void folderLoops.run(contentNode.id, retry); }} onPause={() => folderLoops.pause(contentNode.id)} />
+                                ) : contentNode.type === CanvasNodeType.Director ? (
+                                    <CanvasDirectorNodePanel onOpen={() => setOpenDirectorNodeId(contentNode.id)} />
+                                ) : (
+                                    <CanvasConfigNodePanel
+                                        node={contentNode}
+                                        isRunning={runningNodeId === contentNode.id}
+                                        inputSummary={getInputSummary(configInputsById.get(contentNode.id) || [])}
+                                        videoFrameOptions={videoFrameOptionsByNodeId.get(contentNode.id) || []}
+                                        videoResourceOptions={videoResourceOptionsByNodeId.get(contentNode.id) || []}
+                                        onConfigChange={handleConfigNodeChange}
+                                        onComposerToggle={() => setDialogNodeId((current) => (current === contentNode.id ? null : contentNode.id))}
+                                        stoppableChildIds={configStoppableChildren(contentNode.id, nodes, connections)}
+                                        onStop={() => {
+                                            for (const childId of configStoppableChildren(contentNode.id, nodes, connections)) void handleStopNode(childId);
+                                        }}
+                                        onGenerate={(nodeId) => {
+                                            const target = nodesRef.current.find((item) => item.id === nodeId);
+                                            void handleGenerateNode(nodeId, target?.metadata?.generationMode || "image", target?.metadata?.composerContent ?? target?.metadata?.prompt ?? "");
+                                        }}
+                                    />
+                                )
+                                );
+    const hoverStart = useCallback((nodeId: string) => {
+        if (nodeDraggingRef.current) return;
+        setHoveredNodeId(nodeId);
+    }, []);
+    const hoverEnd = useCallback((nodeId: string) => {
+        setHoveredNodeId((current) => (current === nodeId ? null : current));
+    }, []);
+    const viewImage = useCallback((node: CanvasNodeData) => setPreviewNodeId(node.id), []);
+    const nodeContextMenu = useCallback((event: ReactMouseEvent, id: string) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setContextMenu({ type: "node", x: event.clientX, y: event.clientY, nodeId: id });
+    }, []);
+    const retryNodeRef = useRef(handleRetryNode);
+    retryNodeRef.current = handleRetryNode;
+    const retryNode = useCallback((node: CanvasNodeData) => void retryNodeRef.current(node), []);
+    const selectReferenceRef = useRef(selectNodeReference);
+    selectReferenceRef.current = selectNodeReference;
+    const selectReference = useCallback((nodeId: string) => selectReferenceRef.current(nodeId), []);
+
     if (!projectLoaded) return <CanvasRefreshShell />;
     return (
         <main
@@ -4786,87 +4867,23 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                             batchRecovering={collapsingBatchIds.has(node.id)}
                             batchMotion={batchMotionById.get(node.id)}
                             showImageInfo={showImageInfo}
-                            mentionReferences={mentionReferencesByNodeId.get(node.id) || []}
+                            mentionReferences={mentionReferencesByNodeId.get(node.id) || noReferences}
                             now={node.metadata?.status === NODE_STATUS_LOADING && !node.metadata.content && (node.type === CanvasNodeType.Video || isCanvasImageNodeType(node.type) || node.type === CanvasNodeType.Audio) ? canvasNow : undefined}
-                            renderPanel={(panelNode) =>
-                                panelNode.type === CanvasNodeType.Config ? (
-                                    <CanvasConfigComposer
-                                        value={panelNode.metadata?.composerContent ?? panelNode.metadata?.prompt ?? ""}
-                                        inputs={configInputsById.get(panelNode.id) || []}
-                                        onChange={(composerContent) => handleConfigNodeChange(panelNode.id, { composerContent })}
-                                        onClose={() => setDialogNodeId(null)}
-                                    />
-                                ) : panelNode.type === CanvasNodeType.Director ? null : (
-                                    <CanvasNodePromptPanel
-                                        node={panelNode}
-                                        isRunning={runningNodeId === panelNode.id}
-                                        mentionReferences={mentionReferencesByNodeId.get(panelNode.id) || []}
-                                        connectedNodes={connectedNodesByNodeId.get(panelNode.id) || []}
-                                        videoFrameOptions={videoFrameOptionsByNodeId.get(panelNode.id) || []}
-                                        videoResourceOptions={videoResourceOptionsByNodeId.get(panelNode.id) || []}
-                                        onPromptChange={handleNodePromptChange}
-                                        onConfigChange={handleConfigNodeChange}
-                                        onGenerate={(nodeId, mode, prompt) => {
-                                            if (panelNode.metadata?.status === "stopped" && !prompt.trim()) void handleRetryNode(panelNode);
-                                            else void handleGenerateNode(nodeId, mode, prompt);
-                                        }}
-                                        onStop={handleStopNode}
-                                        onDisconnectReference={disconnectNodeReference}
-                                        onStartReferenceSelection={startNodeReferenceSelection}
-                                        onImageSettingsOpenChange={(open) => {
-                                            setNodeImageSettingsOpen(open);
-                                            if (open) setToolbarNodeId(null);
-                                        }}
-                                    />
-                                )
-                            }
-                            renderNodeContent={(contentNode) =>
-                                contentNode.type === CanvasNodeType.FolderLoop ? (
-                                    <CanvasFolderLoopPanel node={contentNode} active={folderLoops.active.includes(contentNode.id)} progress={folderLoops.importing?.id === contentNode.id ? folderLoops.importing.percent : undefined} onSelect={recursive => folderLoops.select(contentNode.id, recursive)} onRun={retry => { void folderLoops.run(contentNode.id, retry); }} onPause={() => folderLoops.pause(contentNode.id)} />
-                                ) : contentNode.type === CanvasNodeType.Director ? (
-                                    <CanvasDirectorNodePanel onOpen={() => setOpenDirectorNodeId(contentNode.id)} />
-                                ) : (
-                                    <CanvasConfigNodePanel
-                                        node={contentNode}
-                                        isRunning={runningNodeId === contentNode.id}
-                                        inputSummary={getInputSummary(configInputsById.get(contentNode.id) || [])}
-                                        videoFrameOptions={videoFrameOptionsByNodeId.get(contentNode.id) || []}
-                                        videoResourceOptions={videoResourceOptionsByNodeId.get(contentNode.id) || []}
-                                        onConfigChange={handleConfigNodeChange}
-                                        onComposerToggle={() => setDialogNodeId((current) => (current === contentNode.id ? null : contentNode.id))}
-                                        stoppableChildIds={configStoppableChildren(contentNode.id, nodes, connections)}
-                                        onStop={() => {
-                                            for (const childId of configStoppableChildren(contentNode.id, nodes, connections)) void handleStopNode(childId);
-                                        }}
-                                        onGenerate={(nodeId) => {
-                                            const target = nodesRef.current.find((item) => item.id === nodeId);
-                                            void handleGenerateNode(nodeId, target?.metadata?.generationMode || "image", target?.metadata?.composerContent ?? target?.metadata?.prompt ?? "");
-                                        }}
-                                    />
-                                )
-                            }
+                            renderPanel={dialogNodeId === node.id && !selectionBox ? renderPanel : undefined}
+                            renderNodeContent={node.type === CanvasNodeType.Config || node.type === CanvasNodeType.Director || node.type === CanvasNodeType.FolderLoop ? renderNodeContent : undefined}
                             onMouseDown={handleNodeMouseDown}
-                            onHoverStart={(nodeId) => {
-                                if (nodeDraggingRef.current) return;
-                                setHoveredNodeId(nodeId);
-                            }}
-                            onHoverEnd={(nodeId) => {
-                                setHoveredNodeId((current) => (current === nodeId ? null : current));
-                            }}
+                            onHoverStart={hoverStart}
+                            onHoverEnd={hoverEnd}
                             onConnectStart={handleConnectStart}
                             onResize={handleNodeResize}
                             onContentChange={handleNodeContentChange}
                             onTitleChange={handleNodeTitleChange}
                             onToggleBatch={toggleBatchExpanded}
                             onSetBatchPrimary={setBatchPrimary}
-                            onRetry={(node) => void handleRetryNode(node)}
-                            onViewImage={(node) => setPreviewNodeId(node.id)}
-                            onSelectReference={selectNodeReference}
-                            onContextMenu={(event, id) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                setContextMenu({ type: "node", x: event.clientX, y: event.clientY, nodeId: id });
-                            }}
+                            onRetry={retryNode}
+                            onViewImage={viewImage}
+                            onSelectReference={selectReference}
+                            onContextMenu={nodeContextMenu}
                         />
                     ))}
 
@@ -5830,6 +5847,8 @@ function syncAssistantReferences(sessions: CanvasAssistantSession[], nodes: Canv
 function getGenerationCount(count: string) {
     return Math.max(1, Math.min(15, Math.floor(Math.abs(Number(count)) || 1)));
 }
+
+const noReferences: ReturnType<typeof buildNodeMentionReferences> = [];
 
 function applyNodeConfigPatch(node: CanvasNodeData, patch: Partial<CanvasNodeData["metadata"]>) {
     const safePatch = patch || {};
