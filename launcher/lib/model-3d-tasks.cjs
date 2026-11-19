@@ -17,6 +17,7 @@ class Model3DTasks {
     Object.assign(this, { store, exporter, choose, lookup, log });
     this.root = path.join(store.dataDir, 'projects/model-3d');
     this.active = new Set(); this.operations = new Map(); this.unwritten = new Map(); this.loggedUnreadable = new Set(); this.controller = new AbortController();
+    this.downloads = new Map();
     this.ready = this.restore();
     void this.ready.catch(error => log('3D 任务恢复失败：' + error.message));
     this.timer = setInterval(() => { void this.tick().catch(error => log('3D 任务：' + error.message)); }, 5000);
@@ -49,7 +50,7 @@ class Model3DTasks {
       return spec?.type === '3d' ? [{ channelId: channel.id, model, label: `${channel.name} · ${spec.name}`, fields: Object.entries(spec.properties).map(([name, field]) => ({ name, ...field, media: imageFields.has(name), required: spec.required.includes(name) })) }] : [];
     }));
   }
-  public(task) { const { requestHash, resultUrl, ...value } = task; return value; }
+  public(task) { const { requestHash, resultUrl, ...value } = task; const download = this.downloads.get(task.id); return download ? { ...value, download: { ...download } } : value; }
   async list(sceneId) {
     if (!scenePattern.test(sceneId)) throw Object.assign(new Error('导演台编号无效'), { status: 400 });
     await this.ready;
@@ -132,7 +133,7 @@ class Model3DTasks {
       } else if (['FAILED', 'CANCELLED', 'CANCELED', 'CANCEL'].includes(status)) {
         task.status = 'failed'; task.error = result.errorMessage || result.errorCode || '3D 生成失败'; this.active.delete(id);
       } else if (!['QUEUED', 'RUNNING'].includes(status)) throw new Error(result.errorMessage || '平台未返回有效的 3D 任务状态');
-      else { task.status = 'processing'; task.error = ''; }
+      else { task.status = 'processing'; task.error = ''; task.platformStatus = status; }
     } catch (error) {
       const terminalDownload = ['MODEL_TOO_LARGE', 'RESULT_URL_REJECTED'].includes(error.code);
       task.error = downloadFailed && !terminalDownload
@@ -164,19 +165,22 @@ class Model3DTasks {
     catch (error) { if (error.code === 'ERR_REDIRECT_BLOCKED') throw rejectedResultURL(); throw error; }
     if (response.status >= 300 && response.status < 400) throw rejectedResultURL();
     if (!response.ok || !response.body) throw new Error('GLB 模型下载失败（HTTP ' + response.status + '），稍后将继续查询原任务');
+    const progress = { received: 0, total: Number(response.headers.get('content-length')) || 0 };
     const temporary = this.file(task.id, crypto.randomUUID() + '.part');
     let size = 0, header = Buffer.alloc(0);
     const inspect = new Transform({ transform(chunk, _encoding, callback) {
       size += chunk.length;
+      progress.received = size;
       if (size > maxBytes) return callback(Object.assign(new Error('生成模型超过本机 100 MB 导入上限，请在平台保存原文件或调低模型面数'), { code: 'MODEL_TOO_LARGE' }));
       if (header.length < 12) header = Buffer.concat([header, chunk.subarray(0, 12 - header.length)]);
       callback(null, chunk);
     } });
     try {
+      this.downloads.set(task.id, progress);
       await pipeline(Readable.fromWeb(response.body), inspect, createWriteStream(temporary, { flags: 'wx' }));
       if (header.length !== 12 || header.toString('ascii', 0, 4) !== 'glTF' || header.readUInt32LE(4) !== 2 || header.readUInt32LE(8) !== size) throw new Error('下载结果不是完整的 GLB 2.0 模型，请核对平台结果');
       await fs.rename(temporary, this.file(task.id, 'glb')); task.bytes = size;
-    } finally { await fs.rm(temporary, { force: true }); }
+    } finally { this.downloads.delete(task.id); await fs.rm(temporary, { force: true }); }
   }
   async open(id) { const task = await this.read(id); if (task.status !== 'completed') throw new Error('3D 模型尚未保存完成'); const file = this.file(id, 'glb'); const stat = await fs.lstat(file); if (!stat.isFile() || stat.size !== task.bytes) throw new Error('已保存的 GLB 文件不可用，请重新查询原任务'); return { file, bytes: stat.size }; }
   async export(id) { const { file, bytes } = await this.open(id); if (!this.choose) throw new Error('请通过启动器选择保存目录'); const directory = await this.choose(); return directory ? this.exporter.copy({ source: file, bytes, ext: '.glb' }, directory, '3D模型-' + id.slice(0, 8)) : null; }

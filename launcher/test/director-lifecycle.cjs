@@ -12,10 +12,13 @@ const { browserExecutable } = require('../lib/browser.cjs');
   const directory = await fs.mkdtemp(path.join(root, 'work/tmp/director-lifecycle-'));
   const location = path.join(directory, '中文 工作区'); await fs.mkdir(location);
   const glb = await fs.readFile(path.join(root, 'integrations/cozyclay/test/fixtures/unit-cube.glb'));
-  let submissions = 0;
+  let submissions = 0, queries = 0;
   const provider = async url => {
-    if (url.endsWith('/query')) return Response.json({ taskId: '9000000000001', status: 'SUCCESS', results: [{ outputType: 'glb', url: 'https://fixture.example/cube.glb' }] });
-    if (url.endsWith('.glb')) return new Response(glb);
+    if (url.endsWith('/query')) return Response.json(++queries <= 2 ? { taskId: '9000000000001', status: 'QUEUED' } : { taskId: '9000000000001', status: 'SUCCESS', results: [{ outputType: 'glb', url: 'https://fixture.example/cube.glb' }] });
+    if (url.endsWith('.glb')) return new Response(new ReadableStream({ async start(controller) {
+      const half = Math.floor(glb.length / 2); controller.enqueue(glb.subarray(0, half));
+      await new Promise(resolve => setTimeout(resolve, 4000)); controller.enqueue(glb.subarray(half)); controller.close();
+    } }), { headers: { 'content-length': String(glb.length) } });
     submissions++; return Response.json({ taskId: '9000000000001', status: 'RUNNING' });
   };
   const store = await new ConfigStore(location, value => Buffer.from(value), value => value.toString(), provider).initialize();
@@ -52,7 +55,9 @@ const { browserExecutable } = require('../lib/browser.cjs');
     await panel.getByRole('button', { name: 'AI 生成 3D 模型', exact: true }).click();
     await panel.getByLabel('模型描述', { exact: true }).fill('一个白模茶杯');
     await panel.getByRole('button', { name: '提交 3D 生成', exact: true }).click();
-    await panel.getByRole('button', { name: '加入场景', exact: true }).waitFor({ timeout: 20000 });
+    await panel.locator('.canvas-3d-task p').filter({ hasText: /^排队中 · 任务 9000000000001$/ }).waitFor();
+    await panel.locator('.canvas-3d-task p').filter({ hasText: /^下载中 \d+%（/ }).waitFor();
+    await panel.getByRole('button', { name: '加入场景', exact: true }).waitFor({ timeout: 40000 });
     assert.equal(submissions, 1);
     await panel.getByRole('button', { name: '加入场景', exact: true }).click();
     await panel.getByText('模型已加入场景并保存到本机', { exact: true }).waitFor();
