@@ -265,6 +265,31 @@ export function useScenes(appContext) {
 		}
 	}
 
+	async function collectProjectReferenced(name, known, upload) {
+		const input = projectDocumentInput(name);
+		const workflowResult = await internWorkflowOutputs(input.workflow);
+		const outputs = new Map(workflowResult.assets.map((asset) => [asset.id, asset]));
+		const records = [];
+		const db = await openAssetDb();
+		try {
+			for (const id of new Set([...referencedAssetIds(input.scenesDocument.scenes), ...outputs.keys()])) {
+				if (!known.has(id)) {
+					const asset = outputs.get(id) ?? await getAsset(db, id);
+					if (!asset) continue;
+					await upload(asset);
+					known.set(id, { ...asset, bytes: undefined, size: asset.bytes.byteLength });
+				}
+				records.push(known.get(id));
+			}
+		} finally {
+			db.close();
+		}
+		const manifest = resourceManifest({ scenesDocument: input.scenesDocument, workflow: workflowResult.graph, poseLibrary: input.customPoses, assets: records, workflowOutputRefs });
+		setProjectManifest(manifest);
+		if (manifest.missing.length) throw Object.assign(new Error("Project has missing resources"), { code: "missing-resources", items: manifest.missing });
+		return { ...createProjectDocument({ ...input, workflow: workflowResult.graph, assets: [], savedAt: Date.now() }), resources: { assets: records } };
+	}
+
 	function markProjectClean(name, snapshot, previousName) {
 		appContext.shared.projectSnapshotRef.current = snapshot;
 		if (domain.metadata().name === previousName) domain.nameSaved(name);
@@ -778,7 +803,7 @@ export function useScenes(appContext) {
 		setProjectMenuOpen, projectBrowserOpen, setProjectBrowserOpen, projectNameDialog, setProjectNameDialog,
 		projectStartupOpen, setProjectStartupOpen, projectManifest, setProjectManifest, saveBlockedReasons,
 		setSaveBlockedReasons, workflowRevision, setWorkflowRevision, collectProjectSnapshot,
-		collectProjectSerialized, projectProblemsNotice, rehydrateProjectAssets, saveProject, applyProject,
+		collectProjectSerialized, collectProjectReferenced, projectProblemsNotice, rehydrateProjectAssets, saveProject, applyProject,
 		exportAsAnimationProject,
 		openStarterScene: async (id, source = "starter", name = null, castStyle = undefined) => (await runProject("project.openStarter", { id, source, ...(name ? { name } : {}), ...(castStyle ? { castStyle } : {}) })).output?.opened === true,
 		openProject, openProjectByHandle, requestNewProject, newProject, restoreOffer,

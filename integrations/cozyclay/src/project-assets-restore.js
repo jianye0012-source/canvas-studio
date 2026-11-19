@@ -1,4 +1,4 @@
-import { openAssetDb, referencedAssetIds, putAsset } from "./scene-assets.js";
+import { openAssetDb, referencedAssetIds, getAsset, putAsset } from "./scene-assets.js";
 import { verifyEmbeddedAsset } from "./project.js";
 
 export async function rehydrateProjectAssets(project, warnings = []) {
@@ -9,6 +9,10 @@ export async function rehydrateProjectAssets(project, warnings = []) {
 		try {
 			const referenced = referencedAssetIds(project.scenesDocument.scenes);
 			const results = await Promise.allSettled(project.assets.map(async (asset) => {
+				if (!asset.bytes) {
+					if (asset.role === "workflow-output") asset.bytes = (await getAsset(db, asset.id))?.bytes;
+					return;
+				}
 				if (!referenced.has(asset.id)) {
 					console.warn(`[cozyclay] skipped embedded asset outside the project closure: ${asset.id}`);
 					return;

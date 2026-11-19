@@ -236,6 +236,11 @@ function readEmbeddedAssets(value, report) {
 			report("image", id, "duplicate");
 			continue;
 		}
+		if (entry.bytes === undefined && Number.isInteger(entry.size) && entry.size > 0) {
+			seen.add(id);
+			assets.push({ ...entry });
+			continue;
+		}
 		const decoded = base64ToBytes(entry.bytes, ASSET_MAX_SOURCE_BYTES);
 		if (decoded.code) {
 			report("image", id, decoded.code);
