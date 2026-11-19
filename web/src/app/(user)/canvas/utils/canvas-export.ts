@@ -65,7 +65,7 @@ export async function exportCanvasProjects(projects: CanvasProject[], fileName =
             }
             if (!local || node.type !== CanvasNodeType.Director) continue;
             const pointer = node.metadata?.directorProject as { projectId?: string } | undefined;
-            const response = await fetch("/local/director/" + encodeURIComponent(pointer?.projectId || node.id));
+            const response = await fetch("/local/director/" + encodeURIComponent(pointer?.projectId || node.id) + "?inline=1");
             if (response.status === 404 && !pointer?.projectId) continue;
             if (!response.ok) { missing.push(`${project.title} / 导演台「${node.title}」`); continue; }
             const scene = await response.json();

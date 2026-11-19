@@ -2418,13 +2418,13 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     const handleDirectorProjectChange = useCallback(
         (project: unknown) => {
             if (!openDirectorNodeId) return;
-            setNodes((prev) =>
-                prev.map((node) =>
-                    node.id === openDirectorNodeId && node.type === CanvasNodeType.Director
-                        ? { ...node, metadata: { ...node.metadata, directorProject: project } }
-                        : node,
-                ),
-            );
+            const next = project as Record<string, unknown>;
+            setNodes((prev) => {
+                const index = prev.findIndex((node) => node.id === openDirectorNodeId && node.type === CanvasNodeType.Director);
+                const old = prev[index]?.metadata?.directorProject as Record<string, unknown> | undefined;
+                if (index < 0 || (old && (["projectId", "engine", "schemaVersion"] as const).every((key) => old[key] === next[key]))) return prev;
+                return prev.map((node, i) => (i === index ? { ...node, metadata: { ...node.metadata, directorProject: project } } : node));
+            });
         },
         [openDirectorNodeId],
     );
