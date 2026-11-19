@@ -35,6 +35,10 @@ const assert = require('node:assert/strict');
     await page.goto(runtime.launchUrl); await page.waitForURL('**/canvas');
     original = await page.evaluate(() => fetch('/local/config').then(r => r.json()));
     await page.goto(runtime.url + '/local-settings');
+    let dialogs = 0;
+    page.on('dialog', async dialog => { dialogs++; await dialog.dismiss(); });
+    await page.reload(); await page.getByRole('button', { name: '＋ 新增渠道', exact: true }).waitFor();
+    assert.equal(dialogs, 0);
     for (const [index, name] of ['A', 'B'].entries()) {
       await page.getByRole('button', { name: '＋ 新增渠道', exact: true }).click();
       await page.getByLabel('渠道名称', { exact: true }).fill('联调渠道 ' + name);
@@ -42,7 +46,15 @@ const assert = require('node:assert/strict');
       await page.getByLabel('API Key', { exact: true }).fill('channel-test-' + name);
       await page.getByRole('button', { name: '测试此渠道 / 读取模型', exact: true }).click();
       await page.getByRole('status').filter({ hasText: '本次联网读取 3 个模型' }).waitFor();
-      for (const [model, type] of [['shared-chat', 'text'], ['shared-image', 'image'], ['shared-video', 'video']]) {
+      if (name === 'A') {
+        const candidates = page.getByRole('region', { name: '本次检测到的模型' });
+        assert.equal(await candidates.isVisible(), true);
+        assert.equal(await page.getByRole('list', { name: '此渠道的模型' }).locator('li').count(), 0);
+        await candidates.getByRole('button', { name: '全选', exact: true }).click();
+        await candidates.getByRole('button', { name: '加入所选模型', exact: true }).click();
+        assert.equal(await page.getByRole('status').textContent(), '已加入 3 个模型，请保存配置。');
+      }
+      if (name === 'B') for (const [model, type] of [['shared-chat', 'text'], ['shared-image', 'image'], ['shared-video', 'video']]) {
         await page.getByLabel('模型名称', { exact: true }).fill(model); await page.getByLabel('类型', { exact: true }).selectOption(type);
         await page.getByRole('button', { name: '加入模型', exact: true }).click();
       }
@@ -52,13 +64,23 @@ const assert = require('node:assert/strict');
     const b = JSON.parse(selected.find(option => option.text.includes('联调渠道 B')).value)[0];
     for (const [role, id, model] of [['白模导演', a, 'shared-chat'], ['画布文字', b, 'shared-chat'], ['图片生成', b, 'shared-image'], ['视频生成', a, 'shared-video']]) await page.getByLabel(role, { exact: true }).selectOption(JSON.stringify([id, model]));
     await page.getByRole('button', { name: '保存全部配置', exact: true }).click();
-    await page.getByRole('status').filter({ hasText: '全部渠道和默认选择已保存' }).waitFor();
+    await page.getByRole('status').filter({ hasText: '全部渠道和默认模型已保存' }).waitFor();
     await page.reload(); await page.getByLabel('白模导演', { exact: true }).waitFor();
+    assert.equal(dialogs, 0);
     assert.equal(await page.getByLabel('白模导演', { exact: true }).inputValue(), JSON.stringify([a, 'shared-chat']));
     const publicConfig = await page.evaluate(() => fetch('/local/config').then(r => r.json()));
     assert.equal(JSON.stringify(publicConfig).includes('channel-test-'), false);
     assert.equal(publicConfig.channels.find(channel => channel.id === a).hasApiKey, true);
     await page.screenshot({ path: path.join(root, 'outputs/多渠道模型配置.png'), fullPage: true });
+    await page.getByRole('button', { name: /联调渠道 B/ }).click();
+    await page.getByLabel('渠道名称', { exact: true }).fill('联调渠道 B 已修改');
+    await page.getByRole('link', { name: '← 返回画布', exact: true }).click();
+    const warning = page.getByRole('dialog').filter({ hasText: '模型配置有未保存的改动' });
+    await warning.waitFor(); await warning.getByRole('button', { name: /^取\s*消$/ }).click();
+    assert.equal(new URL(page.url()).pathname, '/local-settings');
+    await page.getByLabel('渠道名称', { exact: true }).fill('联调渠道 B');
+    await page.getByRole('link', { name: '← 返回画布', exact: true }).click();
+    await page.waitForURL('**/canvas'); assert.equal(await warning.count(), 0);
     const results = await page.evaluate(async ({ a, b }) => {
       const send = async (url, channelId, body) => { const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', 'X-Model-Channel-ID': channelId }, body: JSON.stringify(body) }); return { status: response.status, body: await response.json() }; };
       return {
