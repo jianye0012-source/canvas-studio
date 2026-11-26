@@ -16,16 +16,15 @@ const inputs = {
   'shot.setCameraRail': { shotId: 'shot-a', points: [{ x: -2, z: 4 }, { x: 2, z: 4 }] },
   'shot.clearCameraRail': { shotId: 'shot-a' },
   'shot.rename': { shotId: 'shot-a', name: 'Wide' }, 'shot.setCameraMode': { shotId: 'shot-a', mode: 'follow' },
-  'shot.createStill': { caption: 'Panel' }, 'shot.setCaption': { shotId: 'shot-a', caption: 'Panel' },
-  'shot.setCastOverride': { shotId: 'shot-a', characterId: 'actor-a', override: { x: 1, z: 2, rot: 0 } }, 'shot.setHold': { shotId: 'shot-a', hold: 12 },
-  'shot.set': { id: 'shot-a', set: { targetModel: 'seedance-2.5' } },
+  'shot.set': { id: 'shot-a', set: { targetModel: 'seedance-2.5' } }, 'shot.setTimeline': { frameCount: 96 },
+  // Include easing in the agent action parity contract.
+  'shot.setKeyEase': { shotId: 'shot-a', keyId: 'key-a', ease: 'linear' },
   'shot.frame': { subjectIds: ['actor-a'], keyAtFrame: 5, framing: { exact: { position: { x: 1, y: 2, z: 6 }, lookAt: { x: 0, y: 1, z: 0 }, focalMm: 35 } } },
 };
 assert.deepEqual(Object.keys(inputs).sort(), declarations.filter(row => row.kind === 'mutation' && row.exposure !== 'ui-only').map(row => row.id).sort());
 function owned(f) { assert.ok(f.shots.documentStore?.owns('shot'), 'the shipped useShots hook must own the shot slice'); }
 function seed(f, command) {
   const shot = seedShot();
-  if (['shot.setHold', 'shot.createStill'].includes(command)) shot.kind = 'still';
   if (command === 'shot.clearCameraRail') Object.assign(shot.camera, { mode: 'rail', cameraRail: [{ x: -2, z: 4 }, { x: 2, z: 4 }] });
   f.shots.load({ shots: [shot], frameCount: 120, camera: f.actual.readStudioState().camera });
   f.live.current.timeline.currentFrame = command === 'shot.create' ? 30 : 12;
@@ -65,7 +64,8 @@ test('1: every shot action and origin runs the six parity checks through real Ap
       const job = f.run('fixture.shotJob', {}, origin);
       f.run(command, args, origin);
       release();
-      assert.equal((await job).code, 'STALE_TARGET');
+      // A length that leaves shot-a whole touches no shot, so the job on shot-a is not stale.
+      assert.equal((await job).code, command === 'shot.setTimeline' ? undefined : 'STALE_TARGET');
       console.log(`PASS real shots parity ${command} ${origin}: receipt, undo, expiry, cancel, stale revision, concurrent job`);
     } finally { f.dispose(); }
   }
@@ -91,7 +91,7 @@ test('2: a UI keyframe drag commits one history entry and one authored receipt; 
   } finally { f.dispose(); }
 });
 test('3: every patchable shot path shares normalization and readback with patch_elements', async () => {
-  const values = { 'shot.cameraKeys': [{ id: 'key-b', frame: 8, framing }], 'shot.targetModel': 'seedance-2.5' };
+  const values = { 'shot.cameraKeys': [{ id: 'key-b', frame: 8, framing }], 'shot.subjectIds': ['actor-a', 'actor-b'], 'shot.targetModel': 'seedance-2.5' };
   assert.deepEqual(Object.keys(values).sort(), [...STUDIO_PATCHABLE_PATHS.shot].sort());
   for (const [path, value] of Object.entries(values)) {
     const a = shotsFixture(), b = shotsFixture();
@@ -174,5 +174,20 @@ test('setCameraMode: an agent sets a shot camera to keys after its rail is gone;
     assert.equal(f.run('shot.rename', { shotId: 'shot-a', name: 'Wide opener' }, 'agent').ok, true);
     assert.equal(f.shots.read().find(shot => shot.id === 'shot-a').name, 'Wide opener');
     console.log('PASS setCameraMode and rename from the agent');
+  } finally { f.dispose(); }
+});
+
+// Verify clearing and undo restore the authored key.
+test('camera key easing sets, clears, validates and undoes', () => {
+  const f = shotsFixture();
+  try {
+    const args = { shotId: 'shot-a', keyId: 'key-a' };
+    const set = f.run('shot.setKeyEase', { ...args, ease: 'linear' }, 'agent');
+    assert.equal(set.ok, true); assert.equal(f.shots.read()[0].cameraKeys[0].ease, 'linear');
+    assert.equal(f.run('shot.setKeyEase', { ...args, ease: 'invalid' }, 'agent').ok, false);
+    const clear = f.run('shot.setKeyEase', { ...args, ease: null }, 'agent');
+    assert.equal(clear.ok, true); assert.equal('ease' in f.shots.read()[0].cameraKeys[0], false);
+    assert.equal(f.run('edit.undo', { receiptId: clear.receiptId }).status, 'undone');
+    assert.equal(f.shots.read()[0].cameraKeys[0].ease, 'linear');
   } finally { f.dispose(); }
 });

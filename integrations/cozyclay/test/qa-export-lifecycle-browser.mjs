@@ -101,7 +101,8 @@ async function exportMenu(testId, modifiers = 0) {
 		await changeAndWait("!!document.querySelector('#export-menu-trigger')", () => click("[data-testid=menu-file]"), "File menu open");
 	}
 	if (!await evaluate("!!document.querySelector('.export-menu')")) {
-		await changeAndWait("!!document.querySelector('.export-menu')", () => click("#export-menu-trigger"), "Export menu open");
+		// Alt held: the menu also lists its other formats (the keyframe pack, one shot's video, the cut list).
+		await changeAndWait("!!document.querySelector('.export-menu')", () => click("#export-menu-trigger", 1), "Export menu open");
 	}
 	await click(`[data-testid='${testId}']`, modifiers);
 }
@@ -131,7 +132,7 @@ const graph = { version: 1, nodes: [{ id: "qa-scene", type: "scene", position: {
 // Runs in every same-origin document, including Workflow's actual iframe.
 function installBrowserFixture(sceneDocument, workflowGraph, deadline, scenesKey) {
 	if (window === window.top) {
-		localStorage.clear();
+		localStorage.clear(); localStorage.setItem('cozyclay.shell.agent-pane.v1','folded');
 		localStorage.setItem("cozyclay.locale", "en");
 		localStorage.setItem("cozyclay.project-session.v1", JSON.stringify({ name: "QA", updatedAt: Date.now() }));
 		localStorage.setItem(scenesKey, JSON.stringify(sceneDocument));
@@ -302,7 +303,7 @@ try {
 	pass("Studio and real analytics sanitizer ready");
 
 	// A real editor selection before exporting, rather than hooks-only QA.
-	await changeAndWait("document.querySelector('[data-node-id=characterA]')?.getAttribute('aria-selected') === 'true'", () => click("[data-node-id='characterA'] .hierarchy-row"), "character selected through editor");
+	await changeAndWait("document.querySelector('[data-node-id=\"character:char-a\"]')?.getAttribute('aria-selected') === 'true'", () => click('[data-node-id="character:char-a"] .hierarchy-row'), "character selected through editor");
 	await screenshot("studio-desktop");
 	await runAttempt("studio-video", { kind: "video", format: "mp4", legacy: "export:video_succeeded" }, () => exportMenu("export-video"), { downloads: 1 });
 

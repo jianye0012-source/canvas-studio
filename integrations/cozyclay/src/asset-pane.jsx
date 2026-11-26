@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ko } from "./locale.js";
-import { CHARACTER_MODEL_IDS, PROXY_FIGURE_MODEL } from "./scenes.js";
+import { PROXY_FIGURE_MODEL } from "./scenes.js";
+import { addCharacterEntries } from "./shell/add-character-entries.js";
 import { OBJECT_LIBRARY } from "./scene-objects.js";
 import { displayObjectLabel } from "./object-catalog.jsx";
 import { assetAspect, isImageAssetId, isMeshAssetId, isSupportedMeshType } from "./scene-assets.js";
@@ -8,20 +9,14 @@ import { assetKind, formatAssetBytes } from "./asset-shelf.js";
 import { assetRecord } from "./scene-asset-cache.js";
 import ResourceStatus from "./resource-status.jsx";
 import { ContentTile, grabProps } from "./content-tile.jsx";
-import SculptShelf from "./sculpt-shelf-tiles.jsx";
+import SculptShelf from "./sculpt-shelf-tiles.jsx"; import { AllFolders } from "./asset-all-grid.jsx";
 import { logStore } from "./shell/log-store.js";
 import { SearchEmpty } from "./search-friction.js";
 import "./asset-pane.css";
 
-/** Casting assets offered in the Content browser's Characters folder. A rig's `id` doubles as
- * the FBX file stem and the ARDY wire rig name (see scenes.js); the capsule figure has no FBX. */
-export const CHARACTER_ASSETS = [
-	...CHARACTER_MODEL_IDS.map((id) => ({
-		id,
-		label: id === "y-bot-tpose" ? "Y Bot" : "X Bot",
-	})),
-	{ id: PROXY_FIGURE_MODEL, label: ko("Capsule figure", "캡슐 인물") },
-];
+/** Casting assets offered in the Content browser's Characters folder: the bodies of Add > Character, labelled as there:
+ * the one rig, drawn in the Studio's figure look (the X Bot skeleton), and the capsule figure, which has no FBX. */
+export const CHARACTER_ASSETS = addCharacterEntries("rig").map(entry => ({ id: entry.model, label: entry.label() }));
 
 function CharacterPreview({ model }) {
 	if (model === PROXY_FIGURE_MODEL) {
@@ -54,7 +49,6 @@ const OBJECT_GLYPHS = {
 	plane: "M12 7.5 21 12l-9 4.5L3 12z",
 };
 
-const STORAGE_FOLDER = "__storage";
 
 function ObjectPreview({ kind }) {
 	const d = OBJECT_GLYPHS[kind] ?? "M5 5h14v14H5z";
@@ -336,12 +330,11 @@ function matchesQuery(label, query) {
 /** Folder ids in display order. Basic Shapes holds the object catalogue's
  * primitives; Props holds what the user imported. */
 const FOLDERS = [
-	{ id: "basic", label: () => ko("Basic Shapes", "기본 도형") },
-	{ id: "characters", label: () => ko("Characters", "인물") },
+	{ id: "all", label: () => ko("All", "전체") },
+	{ id: "basic", label: () => ko("Basic Shapes", "기본 도형") }, { id: "characters", label: () => ko("Characters", "인물") },
 	{ id: "props", label: () => ko("Props", "소품") },
 	{ id: "cameras", label: () => ko("Cameras", "카메라") },
 	{ id: "motions", label: () => ko("Motions", "모션") },
-	{ id: "poses", label: () => ko("Poses", "포즈") },
 	{ id: "sculpts", label: () => ko("Sculpts", "조형물", "雕塑") },
 ];
 
@@ -367,8 +360,8 @@ function catalogueTile(entry, props) {
 
 const EmptyNote = ({ children }) => <p className="content-empty">{children}</p>;
 
-export function FolderGrid({ folder, query, ...props }) {
-	const { imageAssetIds, meshAssetIds, shots = [], takeVersions = [], poses = [], onShotOpen, onTakeOpen, selectedKey, onSelect } = props;
+const FolderView = ({ folder, ...props }) => (folder === "all" ? <AllFolders folders={FOLDERS.slice(1)} Grid={FolderGrid} {...props} /> : <FolderGrid folder={folder} {...props} />); export function FolderGrid({ folder, query, ...props }) {
+	const { imageAssetIds, meshAssetIds, shots = [], takeVersions = [], onShotOpen, onTakeOpen, selectedKey, onSelect } = props;
 	let tiles = [];
 	let empty = null;
 	if (folder === "sculpts") return <SculptShelf query={query} {...props} />;
@@ -451,25 +444,6 @@ export function FolderGrid({ folder, query, ...props }) {
 				);
 			});
 		if (!takeVersions.length) empty = ko("No takes for this character yet. Ask the agent to compile one.", "이 인물의 테이크가 아직 없어요. 에이전트에게 모션 컴파일을 요청하세요.");
-	} else if (folder === "poses") {
-		tiles = poses.map((pose, index) => ({ pose, index, label: pose?.name || pose?.label || ko(`Pose ${index + 1}`, `포즈 ${index + 1}`, `姿势 ${index + 1}`) }))
-			.filter(({ label }) => matchesQuery(label, query))
-			.map(({ pose, index, label }) => {
-				const key = `pose:${pose?.id ?? index}`;
-				return (
-					<ContentTile
-						key={key}
-						assetKey={key}
-						label={label}
-						type={ko("Pose", "포즈")}
-						title={label}
-						preview={<CharacterPreview model="y-bot-tpose" />}
-						selected={selectedKey === key}
-						onSelect={onSelect}
-					/>
-				);
-			});
-		if (!poses.length) empty = ko("No saved poses yet. Save one from the pose studio.", "저장된 포즈가 아직 없어요. 포즈 스튜디오에서 저장하세요.");
 	}
 	if (empty) return <EmptyNote>{empty}</EmptyNote>;
 	if (query && folder !== "props" && !tiles.length) return <SearchEmpty surface="assets" query={query}><EmptyNote>{ko("Nothing matches this search.", "검색 결과가 없어요.")}</EmptyNote></SearchEmpty>;
@@ -536,15 +510,15 @@ function Chevron({ open }) {
 export default function AssetPane({
 	onAssetGrab, onAssetPlace, imageAssetIds, meshAssetIds = null, manageStorage, onManageStorageToggle,
 	unusedAssetIds, usedAssetIds, usageCounts, graphSignature, trashCount, onDeleteUnusedAsset, onUndoDelete,
-	deletingAssetId, resourceManifest, shots, takeVersions, poses, onShotOpen, onTakeOpen,
+	deletingAssetId, resourceManifest, shots, takeVersions, onShotOpen, onTakeOpen,
 	collapsed, onCollapsedChange, onShelfVisibleChange,
 }) {
 	const [tab, setTab] = useState("content");
-	const [folder, setFolder] = useState("basic");
+	const [folder, setFolder] = useState("all");
 	const [search, setSearch] = useState("");
 	const [selectedKey, setSelectedKey] = useState(null);
 	const query = search.trim().toLowerCase();
-	const shelfVisible = !collapsed && tab === "content" && (folder === "props" || manageStorage);
+	const shelfVisible = !collapsed && tab === "content" && (folder === "props" || folder === "all" || manageStorage);
 	useEffect(() => {
 		onShelfVisibleChange?.(shelfVisible);
 	}, [shelfVisible, onShelfVisibleChange]);
@@ -572,23 +546,8 @@ export default function AssetPane({
 					<button type="button" role="tab" data-testid="content-tab-content" aria-selected={tab === "content"} onClick={() => { setTab("content"); if (collapsed) onCollapsedChange(false); }}>{ko("Content", "콘텐츠")}</button>
 					<button type="button" role="tab" data-testid="content-tab-log" aria-selected={tab === "log"} onClick={() => { setTab("log"); if (collapsed) onCollapsedChange(false); }}>{ko("Log", "로그")}</button>
 				</div>
-				{tab === "content" && !collapsed && (
-					<label className="content-folder-picker" title={ko("Folder", "폴더")}>
-						<select
-							data-testid="content-folder-picker"
-							aria-label={ko("Folder", "폴더")}
-							value={manageStorage ? STORAGE_FOLDER : folder}
-							onChange={(event) => {
-								if (event.target.value === STORAGE_FOLDER) { if (!manageStorage) onManageStorageToggle(); }
-								else openFolder(event.target.value);
-							}}
-						>
-							{FOLDERS.map((entry) => <option key={entry.id} value={entry.id}>{entry.label()}</option>)}
-							<option value={STORAGE_FOLDER}>{ko("Manage storage", "저장 공간 관리")}</option>
-						</select>
-						<svg viewBox="0 0 10 10" aria-hidden="true"><path d="m2.5 4 2.5 2.5L7.5 4" /></svg>
-					</label>
-				)}
+				{/* No folder picker: Content shows every folder on one scroll (asset-all-grid.jsx). */}
+				{tab === "content" && !collapsed && <button type="button" className="content-storage-toggle" data-testid="content-storage-toggle" aria-pressed={!!manageStorage} onClick={() => { if (manageStorage) openFolder("all"); else onManageStorageToggle(); }}>{manageStorage ? ko("Back to content", "콘텐츠로") : ko("Manage storage", "저장 공간 관리")}</button>}
 				<nav className="content-breadcrumb" aria-label={ko("Location", "위치")}>
 					{tab === "content" ? <>
 						<span>{ko("Content", "콘텐츠")}</span><span aria-hidden="true">/</span><span className="is-leaf">{folderLabel}</span>
@@ -632,7 +591,7 @@ export default function AssetPane({
 						{manageStorage ? (
 							<StorageManager unusedAssetIds={unusedAssetIds} usedAssetIds={usedAssetIds} usageCounts={usageCounts} graphSignature={graphSignature} trashCount={trashCount} onDelete={onDeleteUnusedAsset} onUndo={onUndoDelete} deletingAssetId={deletingAssetId} />
 						) : (
-							<FolderGrid
+							<FolderView
 								folder={folder}
 								query={query}
 								onAssetGrab={onAssetGrab}
@@ -641,7 +600,6 @@ export default function AssetPane({
 								meshAssetIds={meshAssetIds}
 								shots={shots}
 								takeVersions={takeVersions}
-								poses={poses}
 								onShotOpen={onShotOpen}
 								onTakeOpen={onTakeOpen}
 								selectedKey={selectedKey}

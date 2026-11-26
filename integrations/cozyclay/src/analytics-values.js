@@ -5,7 +5,7 @@
 export const EXPORT_FAILURE_CODES = new Set(["unsupported_codec", "encode_failed", "render_failed", "aborted", "unknown"]);
 const COUNT_BUCKETS = new Set(["0", "1-3", "4-10", "gte11"]);
 const EXPORT_PROPERTY_VALUES = Object.freeze({
-	export_kind: new Set(["video", "depth_video", "frame", "keyframe_pack", "workflow_send", "animation_project", "contact_sheet", "panel_pack", "animatic", "storyboard", "render_pass", "otio"]),
+	export_kind: new Set(["video", "depth_video", "frame", "keyframe_pack", "workflow_send", "storyboard", "render_pass", "otio", "ai_reference"]),
 	format: new Set(["mp4", "png", "zip", "cclayproject", "otio"]),
 	surface: new Set(["studio", "workflow", "embed"]),
 	duration_bucket: new Set(["lt1s", "1-3s", "3-10s", "10-30s", "gte30s"]),
@@ -35,6 +35,22 @@ export const ERROR_TYPE_VALUES = new Set([
 	"NotReadableError", "InvalidStateError", "QuotaExceededError", "SecurityError", "NetworkError",
 	"DataCloneError", "OperationError", "EncodingError", "UnknownError", "DOMException", "non_error", "other",
 ]);
+// The studio UI language (locale.js) app:error and app:render_crash carry, so a
+// crash can be told apart by in-app language rather than browser language (#1046).
+// Read here, not imported from locale.js, to keep the analytics modules light.
+export const UI_LOCALE_VALUES = new Set(["en", "ko", "zh", "other"]);
+const UI_LOCALE_KEY = "cozyclay.locale";
+
+/** The UI locale label: the stored choice, "en" when none (locale.js's default), "other" for an unknown value. */
+export function uiLocale() {
+	let value;
+	try {
+		value = globalThis.localStorage?.getItem(UI_LOCALE_KEY) ?? "en";
+	} catch {
+		return "en";
+	}
+	return value === "en" || value === "ko" || value === "zh" ? value : "other";
+}
 export const SESSION_DURATION_BUCKETS = new Set(["lt1m", "1-5m", "5-15m", "15-30m", "gte30m"]);
 // The SDK's session id is a random UUID; nothing else may ride in that slot.
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -46,4 +62,23 @@ export function sessionEndedPropAllowed(key, value) {
 	if (key === "scenes_touched") return Number.isInteger(value) && value >= 0 && value <= SCENES_TOUCHED_MAX;
 	if (key === "session_id") return typeof value === "string" && SESSION_ID_PATTERN.test(value);
 	return key.endsWith("_bucket") && COUNT_BUCKETS.has(value);
+}
+
+// Session replay for the hosted studio (cozyclay.org/app/) only (#1321). Inputs
+// and the agent transcript are masked; the 3D viewport is sampled at a low frame
+// rate; console logs and network headers/bodies are never recorded.
+export const REPLAY_OPTIONS = Object.freeze({
+	maskAllInputs: true,
+	maskTextSelector: ".agent-transcript",
+	recordHeaders: false,
+	recordBody: false,
+	captureCanvas: { recordCanvas: true, canvasFps: 2, canvasQuality: "0.4" },
+	canvasCapture: { resolutionScale: 0.5 },
+});
+export const REPLAY_INIT = Object.freeze({ disable_session_recording: false, session_recording: REPLAY_OPTIONS, enable_recording_console_log: false });
+export const NO_REPLAY = Object.freeze({ disable_session_recording: true });
+
+/** Replay records the hosted studio only: never the npm package and never the landing page (lite). */
+export function recordsReplay(resolved, lite) {
+	return resolved?.kind === "enabled" && resolved.distribution === "hosted" && !lite;
 }

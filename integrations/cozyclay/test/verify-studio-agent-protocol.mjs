@@ -8,11 +8,11 @@ import * as protocol from "../src/studio-agent-protocol.js";
 import * as contextTools from "../src/studio-agent-context.js";
 import { STUDIO_ELEMENTS } from "../src/studio-elements.js";
 import { createAgentHandler } from "../bin/agent/agent-routes.mjs";
-import { PREVIS_MODES } from "../src/project.js";
 import { POSTURES } from "../src/scenes.js";
 import { createFakeModel } from "./fixtures/fake-model.mjs";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import { toAgentTools } from "../bin/agent/pi-tools.mjs";
+import { characterRowId } from "../src/hierarchy-model.js";
 
 export const uuid = "00000000-0000-4000-8000-000000000001";
 export function contextFixture() {
@@ -22,7 +22,7 @@ export function contextFixture() {
 		revision: { scene: 41, physics: 9, view: 18 },
 		units: { distance: "m", angle: "deg", up: "+Y", yawZero: "+Z", yawPositiveToward: "+X", pivot: "base", fps: 24, rangeEnd: "exclusive" },
 		scene: { name: "Workshop", aspect: "16:9", floorY: 0, frameCount: 144, objectCount: 0, characterCount: 1 },
-		selection: { kind: "character", id: "char-alex", hierarchyId: "characterA" }, activeCharacterId: "char-alex",
+		selection: { kind: "character", id: "char-alex", hierarchyId: "character:char-alex" }, activeCharacterId: "char-alex",
 		view: { mode: "scene", frame: 0, playing: false, lookThrough: false, grid: false, autoColor: false }, shot: null, camera: null,
 		entities: [{ id: "char-alex", kind: "character", name: "Alex", token: "ct-11", position: { x: 0, y: 0, z: 0 }, yawDeg: 0, scale: 1 }],
 		entityPage: { returned: 1, total: 1, truncated: false, nextCursor: null },
@@ -67,6 +67,26 @@ function registerTests() {
 		try { globalThis.Buffer = undefined; const value = contextFixture(); value.scene.name = "한글 😀 <&>"; protocol.validateStudioContext(value); const encoded = contextTools.encodeStudioContext(value); assert.equal(JSON.parse(encoded).scene.name, value.scene.name); assert.equal(encoded.includes("<"), false); }
 		finally { globalThis.Buffer = saved; }
 	});
+	test("D1b a context carrying annotation marks validates (the server reads the same schema)", () => {
+		const value = { ...contextFixture(), marks: [{ n: 1, kind: "pin", hit: { type: "object", id: "cube", name: "Cube" }, points: [{ x: 0, y: 1, z: 0 }], frame: 0 }] };
+		assert.equal(protocol.validateStudioContext(value).marks[0].hit.id, "cube");
+	});
+	test("encoded hierarchy rows preserve valid character IDs in native context", () => {
+		for (const id of ["actor.v1", "actor.rig", "char:side", `a${".".repeat(119)}`]) {
+			for (const suffix of ["", ".rig.rightShoulder"]) {
+				const value = contextFixture();
+				value.activeCharacterId = id;
+				value.entities[0].id = id;
+				value.selection = { kind: "character", id, hierarchyId: characterRowId(id) + suffix };
+				assert.deepEqual(protocol.validateStudioContext(value).selection, value.selection);
+			}
+		}
+		const overlong = contextFixture(), rawId = `a${".".repeat(120)}`;
+		overlong.activeCharacterId = rawId;
+		overlong.entities[0].id = rawId;
+		overlong.selection = { kind: "character", id: rawId, hierarchyId: characterRowId(rawId) };
+		rejects(() => protocol.validateStudioContext(overlong), "INVALID_CONTEXT");
+	});
 	test("D2 HTTP uses turnId and rejects turn_id as a Studio identity alias", async () => {
 		protocol.validateStudioTurnEnvelope(envelopeFixture());
 		const alias = envelopeFixture(); alias.turn_id = alias.turnId; delete alias.turnId;
@@ -106,9 +126,9 @@ function registerTests() {
 	test("D3 bogus typed object op, unknown nested fields and later variants cannot pass", () => {
 		for (const args of [{ ops: [{ op: "bogus" }] }, { ops: [] }, { ops: [createOp()], document: {} }, { ops: [{ ...createOp(), source: { imageId: "image-1", placeAs: "cutout" } }] }, { ops: [{ op: "attach", id: "a", characterId: "b", bone: null }] }, { ops: [{ ...createOp(), position: { world: { ...point(), password: "private" } } }] }, { ops: [{ op: "update", id: "a" }] }]) rejects(() => protocol.validateStudioCommand({ name: "arrange_objects", args }));
 	});
-	test("#637 context carries previsMode, character kind and storyboard capability, all optional", () => {
+	test("#637 context carries character kind; an older editor's previsMode and storyboard capability stay optional", () => {
 		const bare = contextFixture();
-		assert.deepEqual(protocol.StudioSchemas.StudioContextV1.properties.scene.properties.previsMode.enum, [...PREVIS_MODES], "protocol mirrors PREVIS_MODES");
+		assert.deepEqual(protocol.StudioSchemas.StudioContextV1.properties.scene.properties.previsMode.enum, ["storyboard", "animation"], "an older editor's previsMode still validates");
 		assert.deepEqual(protocol.StudioSchemas.Entity.properties.posture.enum, [...POSTURES], "protocol mirrors POSTURES");
 		assert.equal(protocol.validateStudioContext(bare).scene.previsMode, undefined, "a context without previsMode still validates");
 		const value = contextFixture();
@@ -147,6 +167,16 @@ function registerTests() {
 			const descriptor = protocol.STUDIO_PATCH_DESCRIPTORS.find(row => row.path === path);
 			assert.equal(typeof descriptor.note, "string", `${path} descriptor must carry its pivot note`);
 			assert.equal(descriptor.note, STUDIO_ELEMENTS.find(row => row.path === path).note);
+		}
+	});
+	test("object.path patch carries the speed curve (timing) the context already reads back", () => {
+		const schema = protocol.patchValueSchema(STUDIO_ELEMENTS.find(row => row.path === "object.path"));
+		const route = { points: [{ x: 0, y: 0, z: 0 }, { x: 4, y: 0, z: 0 }], speed: 1 };
+		const timing = { cuts: [{ t: 0.3, d: 0.5 }], envelopes: [[0, 0, 1, 2], [1, 1]] };
+		assert.deepEqual(protocol.validateStudioSchema(schema, { ...route, timing }).timing, timing);
+		assert.equal(protocol.validateStudioSchema(schema, { ...route, timing: null }).timing, null);
+		for (const bad of [{ cuts: [{ t: 2, d: 0.5 }] }, { cuts: [], extra: 1 }, { cuts: [], envelopes: [[1]] }]) {
+			rejects(() => protocol.validateStudioSchema(schema, { ...route, timing: bad }), "INVALID_ARGUMENT");
 		}
 	});
 	test("D3 finite limits, mutually exclusive fields and avoid constraints", () => {
@@ -202,17 +232,15 @@ function registerTests() {
 		assert.doesNotMatch(prompt, /Grouping carries position only/);
 	});
 	test("#742 the Studio prompt carries the previs procedure and keeps the protocol rules", async () => {
-		const { STUDIO_SYSTEM_PROMPT: prompt, STUDIO_SYSTEM_PROMPT_STORYBOARD: storyboard } = await import("../bin/agent/studio-prompt.mjs");
+		const { STUDIO_SYSTEM_PROMPT: prompt } = await import("../bin/agent/studio-prompt.mjs");
 		assert.match(prompt, /Previs procedure/);
 		assert.match(prompt, /180/);
 		assert.match(prompt, /axisConsistent/);
-		assert.ok(prompt.includes("On STALE_SCENE, inspect_studio once to read the fresh revision and re-issue the exact same operation with that revision as the new admission"));
+		assert.ok(prompt.includes("On STALE_SCENE, the admission is already refreshed: adapt the operation to the listed changes and resubmit; inspect_studio only ids not listed"));
 		assert.ok(prompt.indexOf("Previs procedure") > prompt.indexOf("Ask concise questions only when"), "appended after the existing rules");
-		assert.doesNotMatch(storyboard, /Previs procedure/);
 	});
 	test("D3 patch_elements schema is derived from the element declaration table", () => {
 		assert.equal(protocol.STUDIO_TOOL_FAMILIES.length, 3);
-		assert.ok(protocol.STUDIO_TOOL_ALIASES.includes("patch_elements"));
 		assert.ok(protocol.STUDIO_CATALOGUE.some(tool => tool.name === "patch_elements"));
 		// Every family must fit the context capability list.
 		const c = contextFixture(); c.capabilities.tools = [...protocol.STUDIO_TOOL_FAMILIES]; protocol.validateStudioContext(c);
@@ -225,7 +253,7 @@ function registerTests() {
 		assert.deepEqual(derived.stage.properties.spotlight, { type: "number", minimum: -2, maximum: 7 });
 		assert.equal(protocol.STUDIO_PATCH_SET_SCHEMAS.stage.properties.spotlight, undefined);
 		assert.equal(derived.character.properties.tint.pattern, "^#[0-9a-fA-F]{6}$");
-		assert.deepEqual(derived.character.properties.model.enum, ["y-bot-tpose", "x-bot-tpose", "proxy-figure"]);
+		assert.deepEqual(derived.character.properties.model.enum, ["x-bot-tpose", "proxy-figure"]);
 		assert.deepEqual(derived.character.properties.posture.enum, ["stand", "sit", "lie"]);
 		assert.equal(derived.character.properties.scale.minimum, 0.2);
 		assert.equal(derived.character.properties.scale.maximum, 3);
@@ -349,6 +377,30 @@ function registerTests() {
 		assert.ok(result.entities.every(e=>!e.name || [...e.name].length <= 120)); protocol.validateStudioContext(result);
 		const stale = structuredClone(result); stale.entities = stale.entities.filter(e=>e.id!=="char-alex"); stale.entityPage.returned--;
 		rejects(()=>protocol.validateStudioContext(stale));
+	});
+	test("D4 a selection that names nothing in the scene is no selection; a missing target is named", () => {
+		const base = contextFixture(), prop = { id: "object-001", kind: "object", name: "Crate", token: "t-1", position: { x: 1, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } };
+		// the selected thing was removed (an object, an attached object, a character, a rig): no selection, no refusal
+		for (const selection of [{ kind: "object", id: "object-gone" }, { kind: "character", id: "char-gone" }, { kind: "rig", id: "char-gone" }]) {
+			const c = structuredClone(base); c.selection = selection;
+			const result = contextTools.buildStudioContext(c);
+			assert.equal(result.selection, null, `${selection.kind} ${selection.id}`); protocol.validateStudioContext(result);
+		}
+		// the same selection with its object in the scene (not removed, or brought back by an undo) stays, and leads the detail
+		const kept = structuredClone(base); kept.entities.push(prop); kept.scene.objectCount = 1; kept.selection = { kind: "object", id: prop.id };
+		const selected = contextTools.buildStudioContext(kept);
+		assert.deepEqual(selected.selection, { kind: "object", id: prop.id }); assert.equal(selected.entities[0].id, prop.id);
+		// a selection that is not an entity (the camera, the scene) is untouched
+		for (const selection of [{ kind: "camera", id: "camera" }, { kind: "scene", id: base.host.sceneId }]) {
+			const c = structuredClone(base); c.selection = selection;
+			assert.deepEqual(contextTools.buildStudioContext(c).selection, selection);
+		}
+		// what is still mandatory and missing is refused by its id
+		const lost = structuredClone(base); lost.selection = null; lost.entities = lost.entities.filter(e => e.id !== lost.activeCharacterId);
+		assert.throws(() => contextTools.buildStudioContext(lost), error => error.code === "TARGET_NOT_READY" && error.message === `Mandatory target ${base.activeCharacterId} is not in the scene.`);
+		const subject = structuredClone(base); subject.shot = { id: "shot-1", name: "Current", range: { startFrame: 0, endFrameExclusive: 144 }, mode: "keys", subjectIds: ["object-gone"] };
+		subject.shots = [{ id: "shot-1", name: "Current", range: subject.shot.range, keyCount: 0 }];
+		assert.throws(() => contextTools.buildStudioContext(subject), error => error.code === "TARGET_NOT_READY" && error.message.includes("object-gone"));
 	});
 	test("D4 context indexes every entity (cap 400) beside at most 24 detailed ones", () => {
 		const c = contextFixture();
@@ -485,7 +537,7 @@ function registerTests() {
 	test("schema refusals name the path, what is allowed and what arrived (G3)", () => {
 		const said = (name, args) => { try { protocol.validateStudioCommand({ name, args }); return "accepted"; } catch (error) { assert.equal(error.code, "INVALID_ARGUMENT"); return error.message; } };
 		const exact = [
-			["inspect_studio", { scope: "overview" }, '$.args.scope: "overview" is not one of: selection, scene, entities, shot, motion, catalogue, actions, document.'],
+			["inspect_studio", { scope: "overview" }, '$.args.scope: "overview" is not one of: selection, scene, entities, shot, motion, catalogue, actions, document, relations.'],
 			["inspect_studio", { scope: "actions", ids: '["motion.compile"]' }, "$.args.ids: expected an array of strings, got a string."],
 			["inspect_studio", {}, '$.args: missing required field "scope".'],
 			["inspect_studio", { scope: "actions", ids: ["a", "a"] }, '$.args.ids: items must be unique; "a" appears twice.'],
@@ -521,12 +573,8 @@ function registerTests() {
 			{ message: 'Validation failed for tool "inspect_studio": root has unknown field "section"; allowed: scope, ids, select, query, cursor, limit; missing required: scope.' });
 		// run3 turn 1: ids as JSON text is taken as the array it encodes, and still validated
 		assert.deepEqual(call("inspect_studio", { scope: "actions", ids: '["motion.compile", "motion.describe"]' }), { scope: "actions", ids: ["motion.compile", "motion.describe"] });
-		assert.throws(() => call("inspect_studio", { scope: "actions", ids: '["bad id"]' }), /ids\.0: must match pattern/);
+		assert.throws(() => call("inspect_studio", { scope: "actions", ids: '["bad id"]' }), /ids\.0: expected to match /);
 		assert.deepEqual(call("run_action", { action: "motion.compile", args: { characterId: "char-a" } }), { action: "motion.compile", args: { characterId: "char-a" } });
-	});
-	test("GENERATION_LIMIT is a failure code of its own, distinct from AUTH_REQUIRED", () => {
-		const failure={ok:false,commandId:"cmd-1",host:receiptFixture().host,code:"GENERATION_LIMIT",phase:"admission",affectedIds:[],expectedTargets:[],currentTargets:[],mutated:false,preserved:{authoredState:"unchanged"},recovery:{action:"none"}};
-		assert.equal(protocol.validateReceipt(failure).code,"GENERATION_LIMIT");assert.ok(protocol.STUDIO_ERROR_CODES.includes("AUTH_REQUIRED"));
 	});
 	test("HTTP stale epoch/token fences use authoritative injected state before execution", async()=>{
 		let executed=0;const runtime={readContext:async()=>contextFixture(),handleTurn:async(v,req,res)=>{executed++;res.writeHead(200,{"content-type":"application/json"});res.end(JSON.stringify({turnId:v.turnId}));}};

@@ -6,6 +6,7 @@ import { fitAspect } from "./shot-frame.js";
 import { HANDLE_PROXY_FLAG, claimsPress } from "./gizmo-claim.js";
 import { CUTOUT_KIND, rotatePatch, scalePatch, screenRotatePatch, translatePatch, wrapAngle } from "./scene-objects.js";
 import { dragTravel, dragTurn } from "./held-object-pose.js";
+import { viewportTools } from "./viewport-tools.js"; import { viewportSketch } from "./viewport-sketch.js";
 import { HeldTrail } from "./held-object-edit.jsx";
 import { ACTIVE_COLOR, ARROW_LEN, AXES, AXIS_VECTORS, BOX_SIZE, CARD_CORNERS, CENTRE_BOX, CORNER_BOX, FAR_HALF_ALPHA, GROUND, PICK_CENTRE_R, PICK_CORNER_R, PICK_SHAFT_R, PICK_TUBE_R,
 	PLANES, PLANE_OFFSET, PLANE_SIZE, RING_R, RING_TUBE, SCREEN_RING_R, SCREEN_SCALE, SHAFT_R, TIP_LEN, TIP_R, gizmoOrigin, gizmoTurn, handleKey } from "./object-gizmo-parts.js";
@@ -307,6 +308,15 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 				for (const axis of drag.planeAxes) {
 					Object.assign(patch, translatePatch(drag.start, axis, tools.delta.dot(AXIS_VECTORS[axis]), snapping ? undefined : 0));
 				}
+				if (viewportTools().surfaceSnap && drag.planeAxes.includes("x") && drag.planeAxes.includes("z")) {
+					tools.raycaster.layers.set(0);
+					const surface = tools.raycaster.intersectObjects(scene.children, true).find(hit => {
+						if (!hit.object.isMesh || !hit.object.visible) return false;
+						for (let node = hit.object; node; node = node.parent) if (node.userData?.sceneObjectId === drag.id) return false;
+						return true;
+					});
+					if (surface) patch.y = surface.point.y;
+				}
 				change?.(drag.id, patch, drag.token);
 				return;
 			}
@@ -484,10 +494,10 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			// is inert because the token is retired first (§5.2).
 			// A held-object drag edits the motion, not the record: no scene transaction.
 			const heldDrag = Boolean(heldEdit?.editable && (kind === "rotate" || (!heldEdit.hinge && (kind === "move" || kind === "plane"))) && heldEdit.begin());
-			const token = heldDrag ? undefined : stateRef.current.onDragStart?.({
+			let token; try { token = heldDrag ? undefined : stateRef.current.onDragStart?.({
 				owner: "gizmo",
 				cancel: teardownDrag,
-			});
+			}); } catch (error) { if (error?.code === "TARGET_BUSY") return true; throw error; } // refused (an agent turn holds the scene; the bus toasts why): claim the press, start no drag
 			const corner = kind === "corner" ? dir : null;
 			dragRef.current = { ...drag, id: live.id, axis, plane, corner, start: { ...live }, token, held: heldDrag };
 			// the grabbed handle turns yellow now and stays yellow after
@@ -531,7 +541,7 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 		const onDown = (event) => {
 			// Plain left only. Alt+left orbits, middle pans, right flies — those
 			// belong to the camera and must pass straight through.
-			if (event.button !== 0 || event.altKey || event.target !== gl.domElement) return;
+			if (event.button !== 0 || event.altKey || event.target !== gl.domElement || viewportSketch().tool) return; // the Annotate pen owns the press (context-chip-tools.jsx)
 			// A mode that owns this press outranks selection entirely. This
 			// window-capture listener runs BEFORE any listener below the window
 			// (capture descends root-first), so without this yield the line-edit
@@ -544,13 +554,14 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			// any handle overlapping it: the puck's own body-drag and the dot's
 			// own grab are the primary interaction there, and the centre
 			// plane-square would otherwise silently claim the grab. (A routed
-			// object drawn at frame 0 sits exactly on its route's start dot.)
+			// object drawn at frame 0 sits exactly on its route's start dot.) So does a selected crane mark's turn
+			// ring: the camera body often stands on the very mark the user picked to turn.
 			if (grabbed && rayFrom(event)) {
 				tools.raycaster.layers.set(GIZMO_LAYER);
 				const dotClaims = tools.raycaster.intersectObjects(scene.children, true).some((entry) => {
 					for (let node = entry.object; node; node = node.parent) {
 						const data = node.userData;
-						if (data?.keyLightPick || data?.pathIndex !== undefined || data?.pathRing || data?.craneIndex !== undefined) return true;
+						if (data?.keyLightPick || data?.pathIndex !== undefined || data?.pathRing || data?.craneIndex !== undefined || data?.craneRing) return true;
 					}
 					return false;
 				});
@@ -661,7 +672,7 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 		if (!root || !camera || !object) return;
 		camera.getWorldPosition(tools.camPos);
 		gizmoOrigin(object, held, tools.origin);
-		root.scale.setScalar(Math.max(0.35, tools.camPos.distanceTo(tools.origin) * SCREEN_SCALE));
+		root.scale.setScalar(Math.max(0.2625, tools.camPos.distanceTo(tools.origin) * SCREEN_SCALE));
 		if (mode !== "rotate") return;
 		// The rotate rings are view-dependent, so their orientation is frame
 		// state: the screen ring billboards flat to the camera (the shot

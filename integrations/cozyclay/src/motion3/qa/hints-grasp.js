@@ -1,18 +1,29 @@
 // Hints for the grasp kinds (#816, qa/grasp-checks.js, skills/catch.js): { cause, hint, fix? } as the other hints-*.js.
 //   FINGER_GAP  fix.grasp false: the fingers stopped at the preset; fix /fix/grasp true. Else the hand toward the object
+//   PALM_OFF    the hand toward the object until the palm is on it (a palm hold presses the palm, not the fingertips)
+//   PALM_GAP    no move: a fit seats the bar on its fingers' point, a power grip or a hook 2 cm under the finger middles
+//               (vocab.js GRASP_POINTS), a plain fit on them, so the palm centre stays 7-8 cm off a bar whatever the anchor
+//               or the grasp; moving anchors.<name>.local turned the hand round the bar instead (bench muscle-up r1: 4 rounds
+//               of that move, 7.8 -> 9.3 cm, 2 -> 18 problems), and the v2 agents switched to hook or no grasp, the palm as
+//               far off. The hint says so, and that the palm is off, a compiler limit to report, with no patch
 //   FINGER_PEN  fix.grasp false: the same fix. Else the hand out of it along its surface normal at the phalanx
 //   THUMB_OFF   the fingers channel: a grip preset held on while the hand holds it (or the object nearer the palm)
+//   TIPS_OFF    a support hold's hand is the compiler's (sockets.js), so never a hand move: an anchor local pins the palm
+//               where it says, and the fix removes it; else the box's key nearest the frame (level, nearer the chest), with
+//               how far its bottom is over what is under it
 //   SUPPORT     the carry names the grasp its shape takes (sphere: spherical, cylinder: power, else palm); with
 //               fix.grasp false, grasp back on first
 //   CATCH       catchObject's f0 earlier by the frames the hand came late (the ball passed the catch point that much
 //               before the grab)
 // LOAD's hint is load.js's (the second hand).
 import { moveHint } from "./hints-contact.js";
+import { clearanceAt } from "./grasp-checks.js";
 import { add, scale, sub, len } from "../compiler/math.js";
 import { shapeOf, normalAt, signedDistance } from "../shapes.js";
-import { partsOf, restingAt } from "../object-pose.js";
+import { partsOf, restingAt, objectPoseAt } from "../object-pose.js";
+import { atReach, bodyMove } from "./hints-goal.js";
 
-const MARGIN = 0.005;
+const MARGIN = 0.005, TILT = 10;
 const graspOff = X => X.spec?.fix?.grasp === false;
 const turnOn = { cause: "spec.fix.grasp false: the fingers stopped at the preset curl", hint: "turn grasp physics on (fix.grasp true): the fingers close until they touch and the thing rests in the hand", fix: { path: "/fix/grasp", value: true } };
 
@@ -22,16 +33,61 @@ function heldAt(X, id, f) {
 	return partsOf(scene, id).map(p => ({ ...scene.objects[p], ...(X.out.ctx.objectPose?.(p, f) ?? at[p] ?? {}) }));
 }
 
+/**
+ * Box QA 2026-11-04 (a cup in the middle of a table): the arm was at full reach on the reach to the grab, so the hand
+ * stopped at the cup's rim and the fingers closed on air; the grip hints (nearer the palm, another point on the cup)
+ * sent the agent through six compiles. When hand k is at full reach on the frames before the grab of carry `id`, the
+ * fix is the body (bodyMove, `need` m nearer), else the object nearer the body: null when the arm reached.
+ */
+function outOfReach(X, k, id, need) {
+	const grab = X.spec?.objects?.[id]?.grab;
+	if (!Number.isInteger(grab) || !X.fr) return null;
+	const f = [grab, grab - 1, grab - 2].find(g => g >= 0 && atReach(X, k, g));
+	if (f === undefined) return null;
+	const why = ` (${id} is out of reach: the hand stops at its rim and the fingers cannot close round it; or move ${id} nearer the body first)`;
+	const body = bodyMove(X, k, f, Math.max(need, 0.03), why), cause = `${id} out of reach at f${f}`;
+	return body ? { cause, ...body } : { cause, hint: `${id}: arm ${k} is at full reach at f${f}; move ${id} nearer the body, or the body nearer it` };
+}
+
+/**
+ * The hand of a "<side> ... <id>" group moved toward the held object until its palm centre is `keep` m from it;
+ * first(k, id, need), when given, answers instead when it has a hint (need: the m the hand is short).
+ */
+function handToward(X, g, re, keep, why, first) {
+	const [, side, id] = re.exec(g.subject) ?? [];
+	if (!id || !X.out) return null;
+	const k = side === "left" ? "l" : "r", S = side === "left" ? "Left" : "Right", f = g.worstFrame, { s } = X.fr(f);
+	const palm = scale(add(s.P[X.I[`${S}Hand`]], s.P[X.I[`${S}HandMiddle1`]]), 0.5), parts = heldAt(X, id, f);
+	if (!parts.length) return null;
+	const near = parts.reduce((m, e) => (signedDistance(e, palm) < signedDistance(m, palm) ? e : m)), gap = signedDistance(near, palm);
+	const instead = first?.(k, id, Math.max(0, gap - keep));
+	if (instead) return instead;
+	return moveHint(X, `hand_${k}`, f, scale(normalAt(near, palm), -Math.max(0, gap - keep)), why(id));
+}
+
+/** The ops that remove anchor `name`'s local from the spec as sent (its anchors entry, or the reachGrip define that makes it), or null. */
+function dropLocal(user, name) {
+	if (user.anchors?.[name]?.local !== undefined) return [{ op: "remove", path: `/anchors/${name}/local` }];
+	const i = (user.use ?? []).findIndex(u => u.args?.anchor === name && u.args.define?.local !== undefined);
+	return i < 0 ? null : [{ op: "remove", path: `/use/${i}/args/define/local` }];
+}
+
 export const graspHints = {
 	FINGER_GAP(X, g) {
 		if (graspOff(X)) return turnOn;
-		const [, side, id] = /^(left|right) fingers off (\S+)$/.exec(g.subject) ?? [];
-		if (!id || !X.out) return null;
-		const k = side === "left" ? "l" : "r", S = side === "left" ? "Left" : "Right", f = g.worstFrame, { s } = X.fr(f);
-		const palm = scale(add(s.P[X.I[`${S}Hand`]], s.P[X.I[`${S}HandMiddle1`]]), 0.5), parts = heldAt(X, id, f);
-		if (!parts.length) return null;
-		const near = parts.reduce((m, e) => (signedDistance(e, palm) < signedDistance(m, palm) ? e : m)), gap = signedDistance(near, palm);
-		return moveHint(X, `hand_${k}`, f, scale(normalAt(near, palm), -Math.max(0, gap - 0.03)), ` (onto ${id}: the fingers reach it from nearer)`);
+		return handToward(X, g, /^(left|right) fingers off (\S+)$/, 0.03, id => ` (onto ${id}: the fingers reach it from nearer)`,
+			(k, id, need) => outOfReach(X, k, id, need));
+	},
+	// the palm's bones sit about 2 cm under its skin: the palm centre that far from the face presses it
+	PALM_OFF(X, g) {
+		return handToward(X, g, /^(left|right) palm off (\S+)$/, 0.02, id => ` (the palm onto ${id}: a palm hold presses the palm, not only the fingertips)`);
+	},
+	PALM_GAP(X, g) {
+		const [, side, id] = /^(left|right) palm centre off (\S+)$/.exec(g.subject) ?? [];
+		if (!id) return null;
+		const d = X.hand(side === "left" ? "l" : "r", g.worstFrame), name = d.anchor ?? "its anchor", grasp = X.spec?.anchors?.[d.anchor]?.grasp;
+		return { cause: `anchors.${name}${grasp ? `.grasp ${grasp}` : " (no grasp)"} (the fit holds ${id} on the fingers' point)`,
+			hint: `${id} sits on the ${side} fingers, the palm centre ${(g.worst * 100).toFixed(1)} cm off it at f${g.worstFrame} (a hand on a bar has it within ${(g.limit * 100).toFixed(0)} cm): where a fit holds a bar is the compiler's; another grasp (power, hook or none) leaves the palm as far off, and moving anchors.${name}.local turns the hand round ${id} and does not seat it in the palm, so report the palm off ${id} (a compiler limit)` };
 	},
 	FINGER_PEN(X, g) {
 		if (graspOff(X)) return turnOn;
@@ -49,12 +105,28 @@ export const graspHints = {
 		const k = side === "left" ? "l" : "r";
 		return { cause: X.cause(`fingers_${k}`, g.worstFrame), hint: `${id}: the thumb is ${(g.worst * 100).toFixed(1)} cm off it; key fingers_${k} with the grip (or spherical) preset at 1 while the hand holds it, or set the hand so ${id} sits in the palm` };
 	},
+	TIPS_OFF(X, g) {
+		const [, side, id] = /^(left|right) fingertips not under (\S+)$/.exec(g.subject) ?? [];
+		if (!id || !X.out) return null;
+		const f = g.worstFrame, name = X.hand(side === "left" ? "l" : "r", f).anchor, a = X.spec.anchors?.[name];
+		const head = `${id} at f${f}: ${4 - g.worst} of 4 ${side} fingertips under its bottom`;
+		if (a?.grasp === "support" && a.local) {
+			return { cause: `anchors.${name}.local`, hint: `${head}; anchors.${name}.local holds the palm ${(a.local[1] * 100).toFixed(0)} cm above the bottom: remove it and the compiler puts the hand low on the face, the fingers round the bottom edge`,
+				fix: { ops: user => dropLocal(user, name) } };
+		}
+		const { gap, on } = clearanceAt(X.out, id, f), R = objectPoseAt(X.out, id, f)?.R, tilt = R ? (Math.acos(Math.min(1, Math.abs(R[1][1]))) * 180) / Math.PI : 0;
+		const keys = X.spec.objects?.[id]?.keys ?? [], i = keys.reduce((b, key, j) => (Math.abs(key.f - f) < Math.abs(keys[b].f - f) ? j : b), 0), under = on ?? "the floor";
+		return { cause: keys.length ? `objects.${id}.keys[${i}] f${keys[i].f}` : `objects.${id}`,
+			hint: `${head}, which is ${(gap * 100).toFixed(1)} cm over ${under}${tilt >= TILT ? ` and tilted ${Math.round(tilt)} deg` : ""}; a support hold's hand is the compiler's: key ${id} level and nearer the chest there, where the arms reach under it` };
+	},
 	SUPPORT(X, g) {
 		if (graspOff(X)) return turnOn;
 		const id = /^(\S+) not supported$/.exec(g.subject)?.[1], o = X.spec?.objects?.[id];
 		if (!o || !X.out) return null;
 		const part = X.out.ctx.scene.objects[partsOf(X.out.ctx.scene, id)[0]], kind = part ? shapeOf(part).kind : "box";
 		const grasp = kind === "sphere" ? "spherical" : kind === "cylinder" ? "power" : "palm";
+		const k = X.spec?.props?.[o.prop]?.hand, short = k && outOfReach(X, k, id, 0.03);
+		if (short) return short;
 		if (o.grasp === grasp) return { cause: `objects.${id}.grasp ${grasp}`, hint: `${id} rests on the fingers only: hold it nearer the palm (the hand lower under it) or with both hands` };
 		return { cause: `objects.${id} (no grasp for a ${kind})`, hint: `${id}: set objects.${id}.grasp to "${grasp}" (how a ${kind} is held)`, fix: { path: `/objects/${id}/grasp`, value: grasp } };
 	},

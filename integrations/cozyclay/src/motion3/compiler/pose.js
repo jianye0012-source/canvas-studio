@@ -9,7 +9,8 @@ import { holdHand } from "./hold.js";
 import { closeOnShape } from "./finger-close.js";
 import { clampWrist } from "./wrist-clamp.js";
 import { ELBOW_REST } from "./arm-orient.js";
-import { wristBody, bodyDistance } from "../body.js";
+import { wristBody, bodyDistance, forgetCentres } from "../body.js";
+import { poseWasm, poseWasmReady } from "./pose-wasm.js";
 
 export const SIDES = { l: "Left", r: "Right" };
 /** How much of an auto-fix elbow turn an arm at IK weight w takes (fix/self.js plans with the same). */
@@ -51,6 +52,8 @@ function softReach(sk, s, a, fa, h, target, diag, k) {
  * hooks.hold(side, s) -> { w, palm, measure, pole?, second? } | null: a held object's keys lead the hand (hold.js).
  * hooks.keepOut(side, s, target) -> target: the blended wrist target kept out of the body (auto-fix, compile.js).
  * hooks.swivel(side) -> deg | undefined, an elbow turn about the shoulder-wrist line, the hand kept (auto-fix, fix/self.js).
+ * hooks.fkArm(side) -> { out, bend } | undefined, the self repair's FK levers (deg, fix/self-moves.js): that arm's arm_rest
+ * less `out` (the arm out from the body) and its abend plus `bend`; an arm on its IK takes them as far as it is on FK.
  * diag.arm_fold_<k>: the flexion (deg) the wrist target asked when past ELBOW_FOLD (arm_miss_<k> is then how far inside).
  * diag.leg_fold_<k>: the knee flexion (deg) the ankle target asked when past KNEE_FOLD (leg_miss_<k> is then how far inside).
  */
@@ -59,10 +62,11 @@ function softReach(sk, s, a, fa, h, target, diag, k) {
 // a working arm (on IK, or a hand that holds something: compile.js hangoff, idle.js busyHands) takes none of it. A rig whose thigh comes near (the X Bot) stops HANG_BACK
 // degrees short of the first angle that brings its forearm or hand within HANG_CLEAR of the skin standing, so the
 // walk's sway does not carry it into the thigh. Faded out as arm_rest raises the arms (none at 45); once per rig and rest.
-const HANG_CLEAR = 0.095, HANG_BACK = 2, hangs = new Map();
+const HANG_CLEAR = 0.095, HANG_BACK = 2, hangs = new WeakMap();
 function hangOf(sk, down) {
-	const key = `${sk.model}|${down}`;
-	if (hangs.has(key)) return hangs.get(key);
+	if (!hangs.has(sk)) hangs.set(sk, new Map());
+	const mine = hangs.get(sk);
+	if (mine.has(down)) return mine.get(down);
 	const full = (90 - down) * Math.min(1, Math.max(0, (down - 45) / 27)), wb = wristBody(sk);
 	const clearAt = h => {
 		const s = restState(sk);
@@ -78,7 +82,7 @@ function hangOf(sk, down) {
 	if (wb && full > 0) {
 		for (let h = 0; h <= full; h += 0.5) if (!clearAt(h)) { hang = Math.max(0, h - HANG_BACK); break; }
 	}
-	hangs.set(key, hang);
+	mine.set(down, hang);
 	return hang;
 }
 
@@ -97,19 +101,26 @@ export function tiltFrame(yaw, pitch, roll) {
 	return { yaw, R: mul(ry(yaw), mul(rx(p * w), rz(r * w))) };
 }
 
+/** One frame: channels -> { s, diag }, on the WebAssembly module once it is ready (pose-wasm.js), the same bit for bit. */
 export function pose(sk, c, hooks = {}) {
+	// a rig with markers (skeleton.js addMarkers) is not in the module's bone table: it runs the JS pose
+	return poseWasmReady() && !sk.markers ? poseWasm(sk, c, hooks, { num, v3, hangOf, tiltFrame, softReach, turnWeight, KNEE_REST, SIDES }) : poseJs(sk, c, hooks);
+}
+
+/** pose() in JS: the reference the module matches, and the path until it loads. */
+export function poseJs(sk, c, hooks = {}) {
 	const s = restState(sk);
 	const diag = {};
 	// Base: arms down from the bind T-pose (body frame, before everything else).
 	const down = num(c.arm_rest, 72), hang = num(c.arm_hang) && num(c.arm_hang) * hangOf(sk, down);
 	for (const [side, sg, k] of [["Left", -1, "l"], ["Right", 1, "r"]]) {
 		const a = sk.index[`${side}Arm`], fa = sk.index[`${side}ForeArm`], h = hang * (1 - Math.min(1, Math.max(0, num(c[`armw_${k}`]) + num(c[`hangoff_${k}`]))));
-		rotateSubtree(sk, s, a, s.P[a].slice(), rz(sg * down));
+		rotateSubtree(sk, s, a, s.P[a].slice(), rz(sg * (down - (hooks.fkArm?.(k)?.out ?? 0))));
 		if (h) rotateSubtree(sk, s, fa, s.P[fa].slice(), rz(sg * h));
 	}
 	// FK arm swing (forward +) and elbow bend, body frame.
 	for (const [k, side] of Object.entries(SIDES)) {
-		const bd = num(c[`abend_${k}`]), sw = num(c[`aswing_${k}`]);
+		const bd = num(c[`abend_${k}`]) + (hooks.fkArm?.(k)?.bend ?? 0), sw = num(c[`aswing_${k}`]);
 		const fa = sk.index[`${side}ForeArm`], a = sk.index[`${side}Arm`];
 		// an FK bend past the fold eases to its stop like the IK (limbs.js elbowFold)
 		if (bd) { rotateSubtree(sk, s, fa, s.P[fa].slice(), rx(-bd)); limitFold(sk, s, side); }
@@ -118,7 +129,8 @@ export function pose(sk, c, hooks = {}) {
 	spread(sk, s, ["Neck", "Head"], num(c.head_yaw), num(c.head_pitch), num(c.head_roll));
 	// the top spine bone turns its share of chest_* when flow bakes one (channels.js overlap: it breaks after the two below)
 	const sy = num(c.spine_yaw), sp = num(c.spine_pitch), sr = num(c.spine_roll);
-	spread(sk, s, ["Spine", "Spine1"], sy, sp, sr, 3);
+	// on a rig whose Spine1 is a marker (skeleton.js addMarkers: no joint there) Spine turns Spine1's share too
+	spread(sk, s, sk.markers && !sk.subtree[sk.index.Spine1]?.length ? ["Spine", "Spine"] : ["Spine", "Spine1"], sy, sp, sr, 3);
 	spread(sk, s, ["Spine2"], num(c.chest_yaw, sy), num(c.chest_pitch, sp), num(c.chest_roll, sr), 3);
 	// Root: turn about the hips joint, then put the hips at `root`.
 	const hips = sk.index.Hips, yaw = num(c.yaw);
@@ -161,6 +173,8 @@ export function pose(sk, c, hooks = {}) {
 			const pole = add(scale(poleFk, 1 - w), scale(poleIk, w));
 			// a target nearer the shoulder than the elbow folds leaves a residual too; arm_fold says what it asked
 			diag[`arm_miss_${k}`] = twoBone(sk, s, a, fa, h, target, pole, ELBOW_REST, hooks.foldFree ? null : "elbow");
+			// the IK moved the arm in place: grid centres the keepOut above cached for s are stale (body.js)
+			forgetCentres(s);
 			const fold = askedFold(sk, s, side, target);
 			if (fold > ELBOW_FOLD && !hooks.foldFree) diag[`arm_fold_${k}`] = fold;
 		}
@@ -180,6 +194,7 @@ export function pose(sk, c, hooks = {}) {
 		const grasped = hooks.heldShapes?.(k, s);
 		if (grasped) diag[`closed_${k}`] = closeOnShape(sk, s, side, grasped).touched;
 		hooks.afterArm?.(k, s, diag);
+		forgetCentres(s);
 	}
 	return { s, diag };
 }

@@ -1,8 +1,10 @@
 // What a cast member can do depends on its kind. A rigged character has a
 // skeleton every motion, IK and physics tool writes to; a capsule figure
 // (PROXY_FIGURE_MODEL) is a placement-only stand-in with no bones at all, so
-// those tools refuse it by name instead of failing on a missing rig.
+// those tools refuse it by name instead of failing on a missing rig. An imported character (character-rig.js) plays
+// compiled takes on its own bones, but Pose mode and IK write the X Bot's bones and rest pose, so those two refuse it.
 import { isProxyFigure } from "./scenes.js";
+import { isImportedModel } from "./character-rig.js";
 import { isKo, isZh } from "./locale.js";
 import { StudioProtocolError } from "./studio-agent-protocol.js";
 import {
@@ -27,22 +29,47 @@ export function proxyFigureBounds(character, placement = character) {
 		// Sit reaches forward (local +z, the facing direction) with its legs.
 		: [[-PROXY_BODY_RADIUS, 0, -PROXY_BODY_RADIUS], [PROXY_BODY_RADIUS, top, posture === "sit" ? PROXY_SIT_LEG_REACH : PROXY_BODY_RADIUS]];
 	const min = { x: Infinity, y: Infinity, z: Infinity }, max = { x: -Infinity, y: -Infinity, z: -Infinity };
-	for (const lx of [minCorner[0], maxCorner[0]]) for (const ly of [minCorner[1], maxCorner[1]]) for (const lz of [minCorner[2], maxCorner[2]]) {
+	const world = ([lx, ly, lz]) => {
 		const sx = lx * stature, sy = ly * stature, sz = lz * stature;
-		const wx = x + sx * Math.cos(yaw) + sz * Math.sin(yaw);
-		const wz = z - sx * Math.sin(yaw) + sz * Math.cos(yaw);
-		min.x = Math.min(min.x, wx); max.x = Math.max(max.x, wx);
-		min.y = Math.min(min.y, y + sy); max.y = Math.max(max.y, y + sy);
-		min.z = Math.min(min.z, wz); max.z = Math.max(max.z, wz);
+		return { x: x + sx * Math.cos(yaw) + sz * Math.sin(yaw), y: y + sy, z: z - sx * Math.sin(yaw) + sz * Math.cos(yaw) };
+	};
+	for (const lx of [minCorner[0], maxCorner[0]]) for (const ly of [minCorner[1], maxCorner[1]]) for (const lz of [minCorner[2], maxCorner[2]]) {
+		const w = world([lx, ly, lz]);
+		for (const a of ["x", "y", "z"]) { min[a] = Math.min(min[a], w[a]); max[a] = Math.max(max[a], w[a]); }
 	}
-	return { min, max };
+	return { min, max, ...proxyFigureCore(posture, bodyHeight, world, stature) };
 }
 
-/** `{ rig, ik, pose, motion }` - all false
- * for a capsule figure, all true for a rigged character. */
+/** The drawn capsules' centre lines as points and [from, to] pairs, the way a rigged body's bones are, and radii: the drawn
+ * radius round each point (the body capsule's, the head sphere's, the neck between them), so the contact and frame-edge checks
+ * read a capsule figure's surface, which the engine knows, and the sight line reads its core as it reads a rig's bones. */
+function proxyFigureCore(posture, bodyHeight, world, stature) {
+	const R = PROXY_BODY_RADIUS, head = bodyHeight + PROXY_HEAD_LIFT, shoulder = bodyHeight - R;
+	// lie: the standing figure turned onto its back, its axis along local -z one radius above the floor (proxy-figure.jsx)
+	const local = posture === "lie" ? p => [p[0], R + p[2], -p[1]] : p => p;
+	const lines = [[[0, R, 0], [0, shoulder, 0]], [[0, shoulder, 0], [0, head, 0]], ...(posture === "sit" ? [[[0, R, 0], [0, R, PROXY_SIT_LEG_REACH - R]]] : [])];
+	// above the shoulder the body capsule's cap and the head sphere are what is drawn round the centre line
+	const radiusAt = p => (p[1] <= shoulder ? R : Math.max(0, Math.sqrt(Math.max(0, R * R - (p[1] - shoulder) ** 2)), Math.sqrt(Math.max(0, PROXY_HEAD_RADIUS ** 2 - (p[1] - head) ** 2))));
+	const points = [], bones = [], radii = [];
+	for (const [a, b] of lines) {
+		const steps = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]) / CORE_STEP_M));
+		for (let i = 0; i <= steps; i++) {
+			const p = a.map((v, k) => v + (i / steps) * (b[k] - v));
+			points.push(world(local(p))); radii.push(radiusAt(p) * stature);
+			if (i) bones.push([points.length - 2, points.length - 1]);
+		}
+	}
+	return { points, bones, radii };
+}
+const CORE_STEP_M = 0.1;
+
+const IMPORTED_OFF = new Set(["ik", "pose"]);
+
+/** `{ rig, ik, pose, motion }` - all false for a capsule figure, all true for a rigged character; an imported
+ * character has no ik or pose. */
 export function characterCapabilities(character) {
-	const rigged = !isProxyFigure(character);
-	return Object.freeze(Object.fromEntries(CHARACTER_CAPABILITIES.map((name) => [name, rigged])));
+	const rigged = !isProxyFigure(character), imported = isImportedModel(character?.model);
+	return Object.freeze(Object.fromEntries(CHARACTER_CAPABILITIES.map((name) => [name, rigged && !(imported && IMPORTED_OFF.has(name))])));
 }
 
 // The noun each refusal names. A feature id not listed here is used verbatim.
@@ -57,20 +84,34 @@ const FEATURE_LABELS = {
 // A character's kind (rig or capsule figure) is fixed at creation; character.update refuses a kind change.
 export const KIND_FIXED_REFUSAL = Object.freeze({
 	en: "A character's kind is chosen when it is created; add a new character instead.",
-	ko: "캐릭터 종류는 만들 때 정합니다. 새 캐릭터를 추가하세요.",
+	ko: "인물 종류는 만들 때 정합니다. 새 인물을 추가하세요.",
 	zh: "角色的类型在创建时确定；请改为添加新角色。",
 });
 
 export function kindRefusal(feature, ko = false, zh = false) {
 	const label = FEATURE_LABELS[feature]?.[ko ? 1 : zh ? 2 : 0] ?? feature;
-	if (ko) return `캡슐 인물은 리그가 없어요 - ${label}는 리그 캐릭터에서만 됩니다.`;
+	if (ko) return `캡슐 인물은 리그가 없어요 - ${label}는 리그 인물에서만 됩니다.`;
 	if (zh) return `胶囊人物没有骨骼 — ${label}仅适用于带骨骼的角色。`;
 	return `Capsule figures have no rig - ${label} works on rigged characters only.`;
 }
 
-/** Throw TARGET_NOT_READY when `character` is a capsule figure. The protocol
+/** Why an imported character refuses `feature` (ik or pose). */
+export function importedRefusal(feature, ko = false, zh = false) {
+	const label = FEATURE_LABELS[feature]?.[ko ? 1 : zh ? 2 : 0] ?? feature;
+	if (ko) return `가져온 인물은 자기 뼈로 컴파일한 테이크만 재생해요 - ${label}는 X Bot과 Y Bot에서만 됩니다.`;
+	if (zh) return `导入的角色只在自己的骨骼上播放编译的动作 — ${label}仅适用于 X Bot 和 Y Bot。`;
+	return `Imported characters play compiled takes on their own bones - ${label} works on the X Bot and Y Bot only.`;
+}
+
+/** The sentence `character` refuses `feature` with (a capsule figure's, or an imported character's), else null. */
+export function capabilityRefusal(character, feature, ko = false, zh = false) {
+	if (isProxyFigure(character)) return kindRefusal(feature, ko, zh);
+	return isImportedModel(character?.model) && IMPORTED_OFF.has(feature) ? importedRefusal(feature, ko, zh) : null;
+}
+
+/** Throw TARGET_NOT_READY when `character` cannot use `feature` (capabilityRefusal). The protocol
  * message is English (the agent reads it); `uiMessage` is the locale's. */
 export function refuseRigOnly(character, feature) {
-	if (!isProxyFigure(character)) return;
-	throw Object.assign(new StudioProtocolError("TARGET_NOT_READY", kindRefusal(feature, false)), { uiMessage: kindRefusal(feature, isKo, isZh) });
+	const message = capabilityRefusal(character, feature);
+	if (message) throw Object.assign(new StudioProtocolError("TARGET_NOT_READY", message), { uiMessage: capabilityRefusal(character, feature, isKo, isZh) });
 }

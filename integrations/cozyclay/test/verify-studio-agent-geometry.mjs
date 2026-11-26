@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Euler, Vector3 } from 'three';
-import { createSceneObject, updateSceneObject } from '../src/scene-objects.js';
+import { createSceneObject } from '../src/scene-objects.js';
 import { createCharacterEntry } from '../src/scenes.js';
 import { createShotAuthoringDocument } from '../src/shot-authoring.js';
 import { validateReceipt, validateStudioCommand } from '../src/studio-agent-protocol.js';
 import { physicsFingerprintInput } from '../src/studio-agent-context.js';
 import { arrangement, frameDraft, placementChecks, framingChecks, createStudioCommandJournal, studioObjectCatalogue } from '../src/studio-agent-commands.js';
 import { createShot } from '../src/cuts.js';
+import { DECK_LIFT_M } from '../src/studio-support-gap.js';
+import { declarations as shotDeclarations } from '../src/commands/shot.js';
 
 // These are the shared domain planners now, not the retired agent executor.
 // Receipt/admission/replay/undo remain exercised through the real bus in the
@@ -52,7 +54,7 @@ test('geometry: bases, yaw, anisotropic extents, between and the scaled authored
   for (const [basis, x, yaw] of [['world', -1.25, 90], ['subject', 1.25, -90], ['shot_camera', -1.25, 90]]) {
     const f = fixture(), plan = f.apply('arrange_objects', { ops: [prop(basis)] });
     near(f.state.objects[0].x, x); near(f.state.objects[0].rot, yaw); near(plan.checks.actualGapM, 0.5);
-    assert.deepEqual({ x: f.state.objects[0].x, y: f.state.objects[0].y, z: f.state.objects[0].z }, { x, y: 0, z: 0 });
+    assert.deepEqual({ x: f.state.objects[0].x, y: f.state.objects[0].y, z: f.state.objects[0].z }, { x, y: DECK_LIFT_M, z: 0 });
   }
   for (const yaw of [90, 180]) {
     const f = fixture(); f.state.characters[0].rot = yaw;
@@ -62,7 +64,7 @@ test('geometry: bases, yaw, anisotropic extents, between and the scaled authored
   }
   const f = fixture(); f.apply('arrange_objects', { ops: [{ ...prop('world'), scale: { x: 2, y: 3, z: 4 }, facing: { yawDeg: 90 } }] });
   near(f.state.objects[0].x, -2.75); assert.equal(f.state.objects[0].scaleY, 3);
-  f.apply('arrange_objects', { ops: [{ op: 'create', source: { kind: 'cube' }, position: { onObject: 'cylinder' } }] }); near(f.state.objects[1].y, 3);
+  f.apply('arrange_objects', { ops: [{ op: 'create', source: { kind: 'cube' }, position: { onObject: 'cylinder' } }] }); near(f.state.objects[1].y, DECK_LIFT_M + 3);
   // An authored seat below the record's top (supportY) is what onObject lands on, scaled.
   const seat = fixture(); seat.state.objects.push({ ...createSceneObject('cylinder'), id: 'seat', height: 1.15, supportY: 0.495, scaleY: 3 });
   seat.apply('arrange_objects', { ops: [{ op: 'create', source: { kind: 'cube' }, position: { onObject: 'seat' } }] }); near(seat.state.objects[1].y, 1.485);
@@ -97,8 +99,31 @@ test('geometry: measured overlaps, bounded avoidance, and hidden-parent exclusio
   }
   const h = fixture(); seed(h, { x: -0.685, scaleX: 0.37, scaleZ: 0.4 }); const placed = h.apply('arrange_objects', { ops: [prop('shot_camera')] });
   const { coverage, overlapIds, maximumFootprintOverlapM } = placed.checks;
-  assert.deepEqual(placementChecks(['cylinder'], h.state, h.ports), { coverage, overlapIds, maximumFootprintOverlapM, supportGapM: { cylinder: 0 }, unsupportedIds: [] });
+  assert.deepEqual(placementChecks(['cylinder'], h.state, h.ports), { coverage, overlapIds, maximumFootprintOverlapM, supportGapM: { cylinder: DECK_LIFT_M }, unsupportedIds: [] });
   assert.deepEqual(placementChecks(['alex'], h.state, h.ports), { coverage, overlapIds: [], maximumFootprintOverlapM: 0, supportGapM: {}, unsupportedIds: [] }, 'a character has no support gap');
+});
+test('geometry: a floor-resting object is lifted off the deck plane; stacked and raised ones keep their y (#1075)', () => {
+  const f = fixture(), bottom = o => Math.min(...boxCorners(o).map(p => p.y));
+  const plan = f.apply('arrange_objects', { ops: [
+    { op: 'create', source: { kind: 'cube' }, name: 'Street', scale: { x: 20, y: 0.05, z: 20 }, position: { world: { x: 0, y: 0, z: 0 } } },
+    { op: 'create', source: { kind: 'cube' }, name: 'Near', position: { world: { x: 30, y: 0.0008, z: 0 } } },
+    { op: 'create', source: { kind: 'cube' }, name: 'Raised', position: { world: { x: 33, y: 0.002, z: 0 } } },
+    { op: 'create', source: { kind: 'cube' }, name: 'Crate', position: { world: { x: 36, y: 0, z: 0 } } },
+    { op: 'create', source: { kind: 'cube' }, name: 'Box', scale: { x: 0.5, y: 0.5, z: 0.5 }, position: { onObject: 'Crate' } },
+    { op: 'create', source: { kind: 'cylinder' }, name: 'Side', position: { relativeTo: 'Crate', basis: 'world', side: 'right', gapM: 0.2, support: 'floor' } },
+    { op: 'create', source: { kind: 'cube' }, name: 'Tilted', rotationDeg: { x: 0, y: 0, z: 20 }, position: { relativeTo: 'Crate', basis: 'world', side: 'left', gapM: 0.5, support: 'floor' } },
+    { op: 'create', source: { kind: 'empty' }, name: 'Rig', position: { world: { x: 40, y: 0, z: 0 } } },
+  ] });
+  const by = n => f.state.objects.find(o => o.name === n);
+  for (const name of ['Street', 'Near', 'Crate', 'Side', 'Tilted']) near(bottom(by(name)), DECK_LIFT_M);
+  near(by('Raised').y, 0.002); near(by('Rig').y, 0);
+  near(by('Box').y, by('Crate').y + by('Crate').supportY * by('Crate').scaleY);
+  assert.deepEqual(plan.warnings.filter(w => w.code === 'CLAMPED'), [], 'the lift is not a clamp of y');
+  assert.deepEqual(plan.warnings.filter(w => w.code === 'FLOOR_LIFT').map(w => w.count), [5]);
+  // Moving a lifted object again is idempotent, and one lift names its object.
+  assert.strictEqual(f.prepare('arrange_objects', { ops: [{ op: 'update', id: by('Crate').id, position: { world: { x: 36, y: 0, z: 0 } } }] }).draft, f.state.objects);
+  const one = fixture().apply('arrange_objects', { ops: [{ op: 'create', source: { kind: 'cube' }, name: 'Solo', position: { world: { x: 0, y: 0, z: 0 } } }] });
+  assert.match(one.warnings.find(w => w.code === 'FLOOR_LIFT').message, /^Solo lifted 3 mm off the deck/);
 });
 test('geometry: placement reports how far each object, a group as one unit, stands off its support', () => {
   const f = fixture(), part = (id, parent, patch) => seed(f, { id, parent, ...patch }), small = s => ({ scaleX: s, scaleY: s, scaleZ: s });
@@ -233,6 +258,11 @@ test('framing: independent filmback inversion, key/lens/aim boundaries and measu
   assert.equal(plan.checks.derivedSize, 'medium shot'); assert.equal(plan.details.created, true); assert.deepEqual(framingChecks(['alex'], f.state, f.ports), plan.checks);
   f.state.camera = null; assert.throws(() => framingChecks(['alex'], f.state, f.ports), error => error.code === 'TARGET_NOT_READY');
   const g = fixture(); g.state.frameCount = 0; g.refuse('frame_shot', { subjectIds: ['alex'], framing }, 'TARGET_NOT_READY');
+  // The empty-timeline refusal names only commands an agent may call: no ui-only shot command.
+  let empty; try { g.prepare('frame_shot', { subjectIds: ['alex'], framing }); } catch (error) { empty = error; }
+  const uiOnly = shotDeclarations.filter(entry => entry.exposure === 'ui-only').map(entry => entry.id);
+  for (const named of empty.message.match(/\b[a-z]+\.[a-zA-Z]+\b/g) ?? []) assert.ok(!uiOnly.includes(named), `the empty-timeline refusal names the ui-only ${named}: ${empty.message}`);
+  assert.match(empty.message, /motion\.compile/, empty.message);
   g.state.frameCount = 144; g.state.shotDocument.shots = [createShot('Later', 60, 100)]; g.refuse('frame_shot', { subjectIds: ['alex'], framing }, 'AMBIGUOUS_TARGET');
   g.state.selectedShotId = g.state.shotDocument.shots[0].id; g.refuse('frame_shot', { subjectIds: ['alex'], framing, keyAtFrame: 101 }, 'INVALID_RANGE');
   const exact = { exact: { position: { x: 3, y: 2, z: 4 }, lookAt: { x: 0, y: 1, z: 0 }, focalMm: 35 } };
@@ -240,6 +270,16 @@ test('framing: independent filmback inversion, key/lens/aim boundaries and measu
   g.refuse('frame_shot', { subjectIds: ['alex'], framing: { intent: { ...framing.intent, focalMm: 1 } }, keyAtFrame: 80 }, 'INVALID_ARGUMENT');
   const fractions = [0, 4].map(z => fixture().prepare('frame_shot', { subjectIds: ['alex'], framing: { exact: { position: { x: 0, y: 1, z: 5 }, lookAt: { x: 0, y: 1, z }, focalMm: 35 } } }).checks.screenFraction);
   near(...fractions);
+});
+// Exact vertical aims retain the existing shot orientation for a stable screen top.
+test('framing: exact vertical aim retains yaw', () => {
+  const f = fixture(), initial = f.apply('frame_shot', { subjectIds: ['alex'], framing });
+  const yaw = initial.details.framing.yaw;
+  for (const [y, targetY, pitch] of [[5, 0, -Math.PI / 2], [-3, 1, Math.PI / 2]]) {
+    const plan = f.apply('frame_shot', { subjectIds: ['alex'], framing: { exact: { position: { x: 0, y, z: 0 }, lookAt: { x: 0, y: targetY, z: 0 }, focalMm: 35 } } });
+    near(plan.details.framing.pitch, pitch); near(plan.details.framing.yaw, yaw);
+    assert.deepEqual(framingChecks(['alex'], f.state, f.ports), plan.checks);
+  }
 });
 test('framing: measured occlusion and camera side instead of an unmeasured warning', () => {
   const exact = position => ({ exact: { position, lookAt: { x: 0, y: 1, z: 0 }, focalMm: 35 } });
@@ -273,4 +313,28 @@ test('shared contract: physical target/IK fingerprint changes, view exclusion an
   input.characters[0].ikRevision++; assert.notDeepEqual(physicsFingerprintInput(input), before);
   const ik = physicsFingerprintInput(input); input.characters[0].position.x = 1; assert.notDeepEqual(physicsFingerprintInput(input), ik);
   assert.equal(validateStudioCommand({ name: 'arrange_objects', args: { ops: [prop('world')] } }).args.collisionPolicy, 'report'); assert.deepEqual(studioObjectCatalogue().imageRefs, []);
+});
+
+test('framing #1042: crew words and defaults land on the first call; a wrong subject says which ids work', () => {
+  const words = validateStudioCommand({ name: 'frame_shot', args: { subjectIds: 'alex', framing: { intent: { size: 'Medium', view: 'side', level: 'eye level' } } } }).args;
+  assert.deepEqual(words.subjectIds, ['alex'], 'a lone id becomes the one-item list');
+  assert.deepEqual(words.framing.intent, { size: 'medium shot', view: 'profile', level: 'eye', side: 'left' }, 'spellings read as the declared words; side defaults');
+  assert.deepEqual(validateStudioCommand({ name: 'frame_shot', args: { subjectIds: ['alex'], framing: { intent: { size: 'wide shot' } } } }).args.framing.intent,
+    { size: 'wide shot', view: 'front', level: 'eye', side: 'left' }, 'size alone is a whole intent');
+  for (const [size, want] of [['CU', 'close-up'], ['close up', 'close-up'], ['MCU', 'medium close-up'], ['wide', 'wide shot'], ['full shot', 'wide shot'], ['medium wide', 'medium-wide shot'], ['establishing', 'extreme wide shot']])
+    assert.equal(validateStudioCommand({ name: 'frame_shot', args: { subjectIds: ['alex'], framing: { intent: { size } } } }).args.framing.intent.size, want, size);
+  assert.throws(() => validateStudioCommand({ name: 'frame_shot', args: { subjectIds: ['alex'], framing: { intent: { size: 'huge' } } } }),
+    error => error.code === 'INVALID_ARGUMENT' && /\$\.args\.framing\.intent\.size: "huge" is not one of: extreme close-up, close-up/.test(error.message) && error.details.rule === 'enum', 'an unknown size lists the allowed ones');
+  assert.deepEqual(validateStudioCommand({ name: 'frame_shot', args: { subjectIds: ['alex', 'blair'], framing: { intent: { size: 'wide shot' } } } }).args.subjectIds,
+    ['alex', 'blair'], 'a group framing keeps every named subject');
+
+  const f = fixture();
+  seed(f, { id: 'table' });
+  assert.throws(() => f.prepare('frame_shot', { subjectIds: ['table'], framing }),
+    error => error.code === 'INVALID_ARGUMENT' && /table is an object; frame_shot frames a character\. Visible character ids: alex\./.test(error.message) && error.details.path === '$.args.subjectIds[]');
+  assert.throws(() => f.prepare('frame_shot', { subjectIds: ['ghost'], framing }), error => error.code === 'STALE_TARGET' && /no character ghost in this scene\. Visible character ids: alex\./.test(error.message));
+  f.state.characters[0].hidden = true;
+  assert.throws(() => f.prepare('frame_shot', { subjectIds: ['alex'], framing }), error => error.code === 'TARGET_NOT_READY' && /alex is hidden.*hidden: false/.test(error.message));
+  const g = fixture(); g.state.camera = null;
+  assert.throws(() => g.prepare('frame_shot', { subjectIds: ['alex'], framing }), error => error.code === 'TARGET_NOT_READY' && /still loading.*send the same frame_shot again/.test(error.message), 'not ready says wait and retry');
 });

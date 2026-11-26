@@ -42,7 +42,7 @@ const shot = async (name) => {
 
 const base = new URL(page.url);
 await navigate(`${base.origin}/favicon.ico`);
-await evaluate(`(() => { localStorage.clear(); localStorage.setItem('cozyclay.locale','en'); localStorage.setItem('cozyclay.project-session.v1', JSON.stringify({ name: 'Rail Lean QA', updatedAt: Date.now() })); localStorage.setItem('cozyclay.scenes.v4', ${JSON.stringify(doc)}); return true; })()`);
+await evaluate(`(() => { localStorage.clear(); localStorage.setItem('cozyclay.shell.agent-pane.v1','folded'); localStorage.setItem('cozyclay.locale','en'); localStorage.setItem('cozyclay.project-session.v1', JSON.stringify({ name: 'Rail Lean QA', updatedAt: Date.now() })); localStorage.setItem('cozyclay.scenes.v4', ${JSON.stringify(doc)}); return true; })()`);
 await navigate(`${base.origin}/app/`);
 await waitFor("hook", () => evaluate("Boolean(window.__cozyclay?.sceneObject) && (window.__cozyclay.objects||[]).length > 100"));
 await waitFor("stage", () => evaluate("Boolean(window.__cclayPropWorld?.['cube'] && window.__cclayPropWorld?.['cylinder'])"));
@@ -183,4 +183,4 @@ assert.match(endHint, /level/i, `the hint says the ends are level: ${endHint}`);
 await shot("rail-lean-end-selected");
 
 console.log("rail lean browser QA: route turns leave roads alone, a bank mark lifts one wheel, Add dot and Bank field work");
-process.exit(0);
+ws.close();

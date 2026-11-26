@@ -7,7 +7,8 @@
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 
-const panel = readFileSync(new URL("../src/workflow/AgentPanel.jsx", import.meta.url), "utf8");
+// The panel with its user message rows, which live in AgentUserBubble.jsx (the edit on the last message).
+const panel = readFileSync(new URL("../src/workflow/AgentPanel.jsx", import.meta.url), "utf8") + readFileSync(new URL("../src/workflow/AgentUserBubble.jsx", import.meta.url), "utf8");
 // Connect a model is pi's own login (#pi-login): the list and the flow live in LoginPanel.jsx and login-client.js.
 const login = readFileSync(new URL("../src/workflow/LoginPanel.jsx", import.meta.url), "utf8");
 const loginClient = readFileSync(new URL("../src/workflow/login-client.js", import.meta.url), "utf8");
@@ -45,10 +46,34 @@ expect("AgentPanel imports its own stylesheet", panel.includes('import "./agent-
 // --- Studio mount -------------------------------------------------------
 // The studio has no room for another top bar button (IA rule R4): the panel is
 // shown from the View ▾ menu, exactly like every other "what is on screen"
-// toggle, and it boots collapsed so the studio still opens on the stage.
+// toggle. It boots open unless the author folded it or the window is narrow (src/shell/agent-pane.js).
 expect("Studio imports the shared AgentPanel", studio.includes('import AgentPanel from "./workflow/AgentPanel.jsx"'));
 expect("Studio mounts AgentPanel beside the authoring workspace", studio.includes("<AgentPanel") && studio.includes("sceneName={scenes.find((entry) => entry.id === activeSceneId)?.name"));
-expect("Studio boots the panel collapsed and mirrors the flag", studio.includes("defaultCollapsed") && studio.includes("onCollapsedChange={setAgentCollapsed}") && studio.includes("useState(true)"));
+expect("Studio boots the panel by the author's stored choice and mirrors the flag", studio.includes("defaultCollapsed") && studio.includes("onCollapsedChange={setAgentCollapsed}") && studio.includes("useState(() => embedMode || playgroundMode || agentPaneFolded())"));
+expect("every fold from the Studio's chrome is remembered", studio.includes("setAgentCollapsed(rememberAgentPane(!enabled))") && studio.includes("setAgentCollapsed(value => rememberAgentPane(!value))"));
+{
+	const { agentPaneFolded, rememberAgentPane } = await import("../src/shell/agent-pane.js");
+	const store = (initial = {}) => { const kept = { ...initial }; return { kept, getItem: (key) => kept[key] ?? null, setItem: (key, value) => { kept[key] = String(value); } }; };
+	const KEY = "cozyclay.shell.agent-pane.v1";
+	expect("nothing stored: the pane is open on a wide window, folded on a narrow one", agentPaneFolded(store(), false) === false && agentPaneFolded(store(), true) === true);
+	expect("a stored fold is kept on a wide window, and a stored unfold too", agentPaneFolded(store({ [KEY]: "folded" }), false) === true && agentPaneFolded(store({ [KEY]: "open" }), false) === false);
+	expect("a narrow window starts folded whatever is stored", agentPaneFolded(store({ [KEY]: "open" }), true) === true && agentPaneFolded(store({ [KEY]: "folded" }), true) === true);
+	expect("an unknown stored value is no choice", agentPaneFolded(store({ [KEY]: "yes" }), false) === false);
+	const kept = store();
+	expect("remembering answers the fold and stores it", rememberAgentPane(true, kept, false) === true && kept.kept[KEY] === "folded" && rememberAgentPane(false, kept, false) === false && kept.kept[KEY] === "open");
+	expect("on a narrow window a fold is answered and not stored", rememberAgentPane(true, kept, true) === true && kept.kept[KEY] === "open");
+	// The playground page shows no pane but shares the address's store and the shortcut.
+	const here = Object.getOwnPropertyDescriptor(globalThis, "location");
+	Object.defineProperty(globalThis, "location", { value: { search: "?embed=playground" }, configurable: true });
+	try { expect("on a playground page a fold is answered and not stored", rememberAgentPane(true, kept, false) === true && kept.kept[KEY] === "open"); }
+	finally { if (here) Object.defineProperty(globalThis, "location", here); else delete globalThis.location; }
+	const blocked = { getItem: () => { throw new Error("blocked"); }, setItem: () => { throw new Error("blocked"); } };
+	const warn = console.warn; console.warn = () => {};
+	try { expect("a blocked store keeps no choice and breaks nothing", agentPaneFolded(blocked, false) === false && rememberAgentPane(true, blocked, false) === true); } finally { console.warn = warn; }
+}
+// The pane the Studio shows from the start was not opened by the author: its composer does not take the keyboard from
+// the stage's shortcuts. Hidden once, the next open focuses the composer as an open always did.
+expect("a pane shown from the start leaves the keyboard with the stage", panel.includes("shownAtStartRef = useRef(embedded && !hidden)") && panel.includes("if (!(embedded || !collapsed) || shownAtStartRef.current) return;") && panel.includes("if (hidden) focusPendingRef.current = shownAtStartRef.current = false;"));
 expect("AgentPanel accepts the host's default/notify pair", panel.includes("defaultCollapsed = false") && panel.includes("onCollapsedChange?.(collapsed)") && panel.includes("useState(defaultCollapsed)"));
 expect("Studio adds NO agent button to the top bar", !studio.includes("agent-topbar-toggle") && !/topbar-action[^"]*agent/i.test(studio));
 expect("the View menu owns the panel toggle", (() => {
@@ -140,8 +165,8 @@ const controls = [
 	["stop control", "agent-stop"],
 	["suggestion chips", "presentation.suggestions"],
 	["paused card", "PausedCard"],
-	["Wait & retry", "Wait &amp; retry"],
-	["Switch model", "Switch model"],
+	["Wait & retry", "<PausedCard resetAt"],
+	["Switch model", "onSwitchModel={switchModel}"],
 	["error Retry", ">Retry<"],
 	["step list Retry", "onRetry={() => runTurn(chat.lastPrompt, \"retry_button\")} />"],
 ];
@@ -169,7 +194,7 @@ expect("the collapsed rail is dock-only", panel.includes("if (collapsed && !embe
 expect("the global shortcut and toggle event are dock-only", (panel.match(/if \(embedded\) return;/g) || []).length >= 3);
 expect("a hidden embedded panel keeps its chat mounted", panel.includes("hidden={embedded && hidden}") && !panel.includes("if (hidden) return null"));
 expect("a hidden panel is removed from layout and focus order", /\.agent-panel\[hidden\]\s*\{[^}]*display:\s*none/.test(css));
-expect("focus never moves into a hidden panel", /if \(hidden\) \{[\s\S]{0,320}composerRef\.current\.blur\(\);[\s\S]{0,40}return;\s*\}\s*\n\s*if \(!\(embedded \|\| !collapsed\)\) return;\s*composerRef\.current\?\.focus\(\)/.test(panel));
+expect("focus never moves into a hidden panel", /if \(hidden\) \{[\s\S]{0,320}composerRef\.current\.blur\(\);[\s\S]{0,40}return;\s*\}\s*\n\s*if \(!\(embedded \|\| !collapsed\) \|\| shownAtStartRef\.current\) return;\s*composerRef\.current\?\.focus\(\)/.test(panel));
 expect("the host is told about dock collapse only", panel.includes("if (embedded) return;\n\t\tonCollapsedChange?.(collapsed);"));
 
 // --- one panel, two presentations (#350) ----------------------------------
@@ -224,7 +249,7 @@ expect("pending pictures are thumbnails above the composer, each with a remove c
 expect("a paste the composer claimed is not also dropped on the canvas", /const onPaste = \(event\) => \{[\s\S]{0,240}if \(event\.defaultPrevented\) return;/.test(builder), "the builder's window paste listener must stand down for a handled paste");
 expect("a refused picture says why instead of vanishing", panel.includes("agent-attachment-notice") && client.includes("ATTACHMENT_MAX_COUNT"));
 expect("the sent bubble keeps the pictures it was sent with", panel.includes("agent-bubble-attachments") && client.includes('kind: "user", id: newId(), text: trimmed, attachFrame: Boolean(options.attachFrame), attachments'));
-expect("sending empties the composer's pictures with its draft", /set\(\{[\s\S]{0,200}draft: "",\n\t\t\t\tpendingAttachments: \[\],/.test(client));
+expect("sending empties the composer's pictures with its draft (a queued message leaves the composer alone)", client.includes('...(options.queued ? {} : { draft: "", pendingAttachments: [] }),'));
 expect("the attachment strip is token-driven", /\.agent-attachment\s*\{[^}]*width: var\(--agent-thumb\)/.test(css) && /\.agent-attachments\s*\{[^}]*gap: var\(--agent-space-2\)/.test(css));
 {
 	const attachments = await import("../src/workflow/attachment-image.js");
@@ -246,7 +271,7 @@ expect("progress animates on the compositor only", /\.agent-job-bar-fill\s*\{[^}
 // --- mock transport ------------------------------------------------------
 expect("mock mode is gated on ?agent=mock", client.includes('params.get("agent") !== "mock"'));
 expect("mock mode reads ?state=", client.includes('params.get("state")'));
-expect("the scripted turn captures then renders", client.includes("capture_blocking_frame") && client.includes("render_from_frame"));
+expect("the scripted turn captures then runs the workflow", client.includes("capture_blocking_frame") && client.includes("run_workflow"));
 expect("the scripted turn emits an image and a done event", client.includes('type: "image"') && client.includes('type: "done"'));
 
 // --- behaviour of the pure helpers --------------------------------------
@@ -280,7 +305,7 @@ expect("the empty ready state offers exactly three suggestion chips", module_.SU
 	expect("the Studio panel drops every Workflow-only affordance", studioPresentation.imageHint === null && studioPresentation.imageEntitlement === false
 		&& studioPresentation.history === true && studioPresentation.persistWidth === false);
 	expect("the dock keeps them", workflow.imageHint === module_.IMAGE_COST_HINT && workflow.imageEntitlement === true && workflow.history === true && workflow.persistWidth === true);
-	expect("steering belongs to the Workflow turn alone", workflow.steer === true && studioPresentation.steer === false);
+	expect("both surfaces queue and steer the same way: no presentation switch for it", !("steer" in workflow) && !("steer" in studioPresentation));
 	expect("Studio History is enabled and backed by the session key", panel.includes("agent-history-popover") && panel.includes("STUDIO_SESSION_STORAGE_KEY") && client.includes('"cozyclay.agent.session.studio"'));
 	expect("Studio restore has a visible fallback notice", panel.includes("Previous conversation could not be restored") && panel.includes("store.restore"));
 	expect("the Studio offers three previs chips of its own", studioPresentation.suggestions.length === 3
@@ -308,9 +333,9 @@ const seen = [];
 await mock.turn({ sessionId: "s", text: "hi", attachFrame: false }, (event) => seen.push(event));
 const types = seen.map((event) => event.type);
 expect("the scripted turn streams text first", types[0] === "text.delta");
-expect("the scripted turn runs capture then render", (() => {
+expect("the scripted turn runs capture then the workflow", (() => {
 	const starts = seen.filter((event) => event.type === "tool.start").map((event) => event.name);
-	return starts[0] === "capture_blocking_frame" && starts[1] === "render_from_frame";
+	return starts[0] === "capture_blocking_frame" && starts[1] === "run_workflow";
 })(), types.join(","));
 expect("every tool.start is answered by a tool.done", seen.filter((event) => event.type === "tool.start").length === seen.filter((event) => event.type === "tool.done").length);
 expect("the scripted turn ends with an image, a quota and done", types.includes("image") && types.includes("quota") && types.at(-1) === "done");
@@ -540,7 +565,27 @@ expect("a stopped turn says so", stoppedTurn.kind === "terminal" && stoppedTurn.
 const failedTurn = phase({ lastTurn: { status: "failed", endedAt: 3500, durationMs: 900, failure: { code: "upstream", status: 400, message: "400 — The requested model is not supported" } } });
 expect("a failed turn names the reason the transport reported", failedTurn.text === "Failed: 400 — The requested model is not supported", failedTurn.text);
 const limitedTurn = phase({ lastTurn: { status: "failed", endedAt: 3500, durationMs: 900, failure: { code: "rate_limit", message: module_.ERROR_COPY.rate_limit } } });
-expect("a usage limit is stated in a few words", limitedTurn.text === "Failed: usage limit reached", limitedTurn.text);
+expect("a usage limit is stated in a few words", limitedTurn.text === "Failed: provider quota reached", limitedTurn.text);
+// #1043: a rate limit is the provider's quota, says how long to wait, and offers another connected provider.
+{
+	expect("the rate-limit copy names the provider's quota, not CozyClay's", /provider's quota/.test(module_.ERROR_COPY.rate_limit) && /not CozyClay's/.test(module_.ERROR_COPY.rate_limit), module_.ERROR_COPY.rate_limit);
+	const providers = [
+		{ id: "google", label: "Google Gemini", signedIn: true, models: [{ key: "google/gemini-x" }, { key: "google/gemini-y" }] },
+		{ id: "anthropic", label: "Anthropic", signedIn: false, models: [{ key: "anthropic/claude-x" }] },
+		{ id: "openai-compatible", label: "OpenAI-compatible", signedIn: true, endpoint: "local", models: [{ key: "openai-compatible/qwen" }] },
+	];
+	const models = [{ id: "google/gemini-x" }, { id: "google/gemini-y" }, { id: "anthropic/claude-x" }, { id: "openai-compatible/qwen" }];
+	const help = await import("../src/workflow/agent-provider-help.js");
+	const cards = readFileSync(new URL("../src/workflow/AgentWaitCards.jsx", import.meta.url), "utf8");
+	const next = help.otherProviderModel(providers, models, "google/gemini-x");
+	expect("the switch skips the limited provider and one without a credential", JSON.stringify(next) === JSON.stringify({ model: "openai-compatible/qwen", provider: "openai-compatible", label: "OpenAI-compatible" }), JSON.stringify(next));
+	expect("no other connected provider: no switch target", help.otherProviderModel(providers.slice(0, 2), models, "google/gemini-x") === null);
+	expect("the card names the provider by its label", help.providerLabel(providers, "google") === "Google Gemini" && help.providerLabel([], "google") === "google");
+	expect("the client keeps the frame's provider on the paused state", client.includes('provider: typeof event.provider === "string" ? event.provider : null'));
+	expect("the paused card offers the other provider by name, and the wait or that none was given", cards.includes("Switch to ${alternative.label}") && cards.includes('ko("Wait & retry"') && cards.includes('"wait time not given"') && panel.includes("alternative={alternative}"));
+	expect("the wait left reads in minutes, then seconds", help.formatWaitLeft("1970-01-01T00:10:00.000Z", 0) === "10 min" && help.formatWaitLeft("1970-01-01T00:00:40.000Z", 0) === "40 s" && help.formatWaitLeft(undefined, 0) === null);
+	expect("every waiting-card failure class has words", ["timeout", "callback_error", "port_busy"].every((reason) => typeof help.SIGN_IN_FAILURE_COPY[reason] === "string"));
+}
 const settled = phase({ lastTurn: { status: "done", endedAt: 3500, durationMs: 12000, failure: null } }, 3500 + module_.ACTIVITY_TERMINAL_MS);
 expect("the terminal state gives way to a quiet Ready", settled.kind === "idle" && settled.text === "Ready" && !settled.ticking, settled.text);
 expect("an idle panel says Ready", phase({}).text === "Ready" && phase({}).phase === "idle");
@@ -575,6 +620,13 @@ const refusedCard = refused.items.find((item) => item.kind === "failure");
 expect("an upstream refusal renders a failure card with the reported detail", refusedCard?.failure.code === "upstream" && refusedCard.failure.message === "429 — usage limit, resets in 42m" && refusedCard.failure.status === 429);
 expect("the failure card offers a retry", refusedCard.failure.recovery.retryAllowed === true);
 expect("a refused turn ends as failed", refused.lastTurn?.status === "failed");
+
+// A second message while the agent still answers: the server says only "busy"; the card says what that means, once.
+const busyTurn = await driveTurn(async (onEvent) => { onEvent({ type: "error", code: "busy", message: "busy" }); onEvent({ type: "done" }); });
+const busyCard = busyTurn.items.find((item) => item.kind === "failure");
+expect("a busy refusal reads as plain English, not \"busy busy\"", busyCard?.failure.message === module_.ERROR_COPY.busy && /still answering/.test(busyCard.failure.message), busyCard?.failure.message);
+expect("the activity line says why in a few words", module_.describeActivity(busyTurn, { now: 3500 }).text === "Failed: agent still answering", module_.describeActivity(busyTurn, { now: 3500 }).text);
+expect("a failure card never repeats its code as its message", panel.includes("(failure.message !== failure.code && failure.message)"));
 
 const attached = await driveTurn(async (onEvent) => {
 	onEvent({ type: "tool.start", callId: "c1", name: "capture_blocking_frame" });
@@ -641,11 +693,11 @@ expect("effort options come from the selected model", panel.includes("effortOpti
 	&& client.includes("entry.defaultEffort && efforts.includes(entry.defaultEffort)"));
 expect("the transport can steer a running turn", client.includes("async steer(turnId, body)") && client.includes("/agent/turn/${encodeURIComponent(turnId)}/steer"));
 expect("the store steers instead of starting a second turn", client.includes("async steer(text, options = {})") && client.includes("if (!state.streaming || !wireTurnId"));
-expect("a refused steer names the code and keeps the draft", client.includes("export const STEER_ERROR_COPY") && client.includes("STEER_UNSUPPORTED")
+expect("a refused steer names the code and the row stays queued", client.includes("export const STEER_ERROR_COPY") && client.includes("STEER_UNSUPPORTED")
 	&& client.includes("NO_ACTIVE_TURN") && panel.includes("setSteerNotice(result.message"));
-expect("Send becomes Steer while a steerable turn runs, and Stop stays reachable", panel.includes('className="agent-send agent-steer"') && panel.includes(">Steer</button>")
+expect("Send queues while a turn runs, and Stop stays reachable", panel.includes('className="agent-send agent-queue-add"') && panel.includes("onClick={queueDraft}")
 	&& panel.includes('className="agent-send stop agent-stop"'));
-expect("only the Workflow surface offers Steer", panel.includes("presentation.steer &&") && panel.includes("if (streaming) { if (presentation.steer) steerTurn(draft); return; }"));
+expect("Enter queues on every surface while a turn runs", panel.includes("if (streaming) { queueDraft(); return; }") && !panel.includes("presentation.steer"));
 expect("a provider key is a way in, not only the ChatGPT sign-in", panel.includes("status?.signedIn || status?.providersConfigured > 0"));
 expect("the scripted transport answers the grouped list and the steer route", client.includes("const MOCK_PROVIDER_MODELS") && client.includes("cozyclay.mock.agent.last-steer"));
 expect("the notice line is token-driven", /\.agent-toast\s*\{[^}]*padding: var\(--agent-space-3\) var\(--agent-space-4\)/.test(css)
@@ -666,8 +718,8 @@ expect("preferredModel falls back to nothing rather than a guess", module_.prefe
 	await assert.rejects(() => mock.steer("mock-turn-404", { text: "too late" }), (error) => error.status === 409 && error.code === "NO_ACTIVE_TURN");
 	expect("the scripted steer refuses a turn that is not running", true);
 	await assert.rejects(() => module_.createMockTransport({ state: "ready", surface: "studio" }).steer("any", { text: "nope" }),
-		(error) => error.status === 409 && error.code === "STEER_UNSUPPORTED");
-	expect("the scripted Studio surface refuses steering outright", true);
+		(error) => error.status === 409 && error.code === "NO_ACTIVE_TURN");
+	expect("the scripted Studio surface refuses a steer only when no turn runs, like the Workflow one", true);
 	expect("a scripted session reports how many provider keys it has", Number.isInteger((await mock.status()).providersConfigured)
 		&& (await module_.createMockTransport({ state: "signed-out" }).status()).providersConfigured === 0);
 }
@@ -923,7 +975,7 @@ expect("no timer drives the auth transition", !/set(Interval|Timeout)\([^)]*(sig
 	const { transformWithOxc } = await import("vite");
 	const React = await import("react");
 	const { renderToStaticMarkup } = await import("react-dom/server");
-	const scope = { React, ...(await import("react-icons/fi")), ...(await import("../src/workflow/agent-client.js")) };
+	const scope = { React, ...(await import("react-icons/fi")), ...(await import("../src/workflow/agent-client.js")), ko: (await import("../src/locale.js")).ko };
 	const names = Object.keys(scope).filter((name) => /^[A-Za-z_$][\w$]*$/.test(name) && name !== "default");
 	const cards = parseSync("AgentPanel.jsx", panel).program.body
 		.filter((node) => node.type === "FunctionDeclaration" && ["StatusDot", "JobCard", "ReceiptCard"].includes(node.id.name))
@@ -1093,20 +1145,26 @@ expect("no timer drives the auth transition", !/set(Interval|Timeout)\([^)]*(sig
 	expect("the server's own refusal is not \"offline\"", !module_.agentServerUnavailable(await reason(failing(new Response("{}", { status: 500 })))) && !module_.agentServerUnavailable({ status: 401 }));
 	expect("the panel probes into an offline state and retries it", panel.includes('setAuthState("offline")') && /\}, \[applyModelList, probe, sessionState, transport\]\);/.test(panel) && panel.includes("<OfflineCard probing={probing} onRetry={retryServer} />"));
 	expect("offline hides the sign-in card and the login list", !/authState === "offline"[^\n]*agent-signin/.test(panel) && panel.includes('keysOpen && authState !== "offline" && <LoginPanel'));
-	expect("a failed ChatGPT sign-in shows its reason under the button", /agent-signin" onClick=\{signIn\}>Sign in with ChatGPT<\/button>\n\t+\{signInError && <p className="agent-key-error agent-signin-error" role="alert">/.test(panel));
+	// #1044: the reason (a start that failed, or how the sidecar's wait ended) sits above the button that tries again.
+	expect("a failed ChatGPT sign-in shows its reason and tries again in place", /\{\(signInError \|\| SIGN_IN_FAILURE_COPY\[account\?\.failure\]\) && <p className="agent-key-error agent-signin-error" role="alert"[^\n]*\n\t+<button type="button" className="agent-primary-button agent-signin" onClick=\{signIn\}>\{signInError \|\| SIGN_IN_FAILURE_COPY\[account\?\.failure\] \? "Try again: sign in with ChatGPT" : "Sign in with ChatGPT"\}/.test(panel));
+	expect("the ChatGPT waiting card says what to do, when it stops waiting, and can be cancelled", readFileSync(new URL("../src/workflow/AgentWaitCards.jsx", import.meta.url), "utf8").includes("data-agent-signin-wait") && panel.includes("<SigningInCard account={account} onCancel={cancelSignIn}") && panel.includes('connectFinished("cancelled", "user_closed")'));
 	expect("the offline card is token-driven", /\.agent-offline-icon \{[^}]*color: var\(--agent-text-muted\)/.test(css));
 	const { parseSync } = await import("rolldown/experimental");
 	const { transformWithOxc } = await import("vite");
 	const React = await import("react");
 	const { renderToStaticMarkup } = await import("react-dom/server");
-	const { FiPower, FiRotateCw } = await import("react-icons/fi");
-	const build = (koImpl) => {
-		const scope = { React, FiPower, FiRotateCw, ko: koImpl };
-		const source = parseSync("AgentPanel.jsx", panel).program.body.find((node) => node.type === "FunctionDeclaration" && node.id.name === "OfflineCard");
-		return { scope, source: panel.slice(source.start, source.end) };
+	const { FiDownload, FiPower, FiRotateCw } = await import("react-icons/fi");
+	// The card lives in its own module; hosted (an https page, no agent server to start) reads differently from self-served.
+	const cardFile = readFileSync(new URL("../src/workflow/AgentOfflineCard.jsx", import.meta.url), "utf8");
+	// the link the card ships, read from the file: a copy of it here would pass whatever the card links to
+	const installUrl = /^const INSTALL_URL = "([^"]+)";$/m.exec(cardFile)?.[1];
+	const build = (koImpl, hosted) => {
+		const scope = { React, FiDownload, FiPower, FiRotateCw, ko: koImpl, hostedPage: () => hosted, INSTALL_URL: installUrl, AgentHostedDemos: () => React.createElement("div", { "data-fid": "agent_demos" }) };
+		const source = parseSync("AgentOfflineCard.jsx", cardFile).program.body.map((node) => node.declaration ?? node).find((node) => node.type === "FunctionDeclaration" && node.id.name === "OfflineCard");
+		return { scope, source: cardFile.slice(source.start, source.end) };
 	};
-	const render = async (koImpl, props) => {
-		const { scope, source } = build(koImpl);
+	const render = async (koImpl, props, hosted = false) => {
+		const { scope, source } = build(koImpl, hosted);
 		const { code } = await transformWithOxc(`function card() {\n${source}\nreturn OfflineCard;\n}`, "card.jsx", { lang: "jsx", jsx: { runtime: "classic" } });
 		const OfflineCard = new Function(...Object.keys(scope), `${code}\nreturn card();`)(...Object.values(scope));
 		return renderToStaticMarkup(React.createElement(OfflineCard, props));
@@ -1120,6 +1178,44 @@ expect("no timer drives the auth transition", !/set(Interval|Timeout)\([^)]*(sig
 	expect("offline: Retry is busy while it re-probes", busy.includes("disabled") && busy.includes('aria-busy="true"') && busy.includes("Checking…"), busy);
 	const korean = await render((_english, koText) => koText, { probing: false, onRetry() {} });
 	expect("offline: the card reads in Korean under the Korean locale", korean.includes("에이전트 서버가 실행 중이 아니에요") && korean.includes("다시 확인"), korean);
+	expect("the panel imports the card, and the card decides hosted by the page's protocol or ?try", panel.includes('import { OfflineCard } from "./AgentOfflineCard.jsx";') && cardFile.includes('globalThis.location?.protocol === "https:" || new URLSearchParams(globalThis.location?.search ?? "").has("try")'));
+	const hosted = await render((english) => english, { probing: false, onRetry() {} }, true);
+	expect("hosted: the title offers a look at the agent, not a server that is down", hosted.includes("<h3>See what the agent does</h3>") && !hosted.includes("not running"), hosted);
+	expect("hosted: the ready-made requests come before the way to use it for real", hosted.indexOf('data-fid="agent_demos"') > 0 && hosted.indexOf('data-fid="agent_demos"') < hosted.indexOf("Install CozyClay</a>") && hosted.includes("These are ready-made results"), hosted);
+	// #1183: ?from=studio tells the landing page the visitor came from the Studio, so the command it copies says so
+	expect("hosted: one Install button that opens the landing page's install steps and says it came from the Studio, with no Retry that could only fail", hosted.includes('href="https://cozyclay.org/?from=studio#install"') && hosted.includes("Install CozyClay</a>") && hosted.includes("agent-primary-button") && !hosted.includes("Retry") && !hosted.includes("<code>") && hosted.includes('data-agent-offline="hosted"'), hosted);
+	const hostedKo = await render((_english, koText) => koText, { probing: false, onRetry() {} }, true);
+	expect("hosted: the card reads in Korean under the Korean locale", hostedKo.includes("에이전트가 하는 일 보기") && hostedKo.includes("CozyClay 설치"), hostedKo);
+	// The demos: a walk and a flip from the sample motions, a street of eight buildings, and a chair to sit on.
+	const demos = readFileSync(new URL("../src/workflow/AgentHostedDemos.jsx", import.meta.url), "utf8");
+	expect("the demos run the same commands the agent would: motion.compile, object.add, object.update", demos.includes('app.bus.run("motion.compile"') && demos.includes('app.bus.run("object.add", { kind: "cube"') && demos.includes('app.bus.run("object.update"') && demos.includes('sampleMotionSpec(demo.motion, who)'));
+	expect("a second press does not build a set twice", demos.includes("if (ids.has(name)) continue;"));
+	const { demoChair, demoSitSpec, demoStreet } = await import("../src/workflow/agent-demo-set.js");
+	const street = demoStreet({ x: 0, z: 0, rot: 0 });
+	expect("the street is eight buildings with distinct names, four a side", street.length === 8 && new Set(street.map((b) => b.name)).size === 8 && street.filter((b) => b.x > 0).length === 4 && street.filter((b) => b.x < 0).length === 4, JSON.stringify(street));
+	expect("the way the character walks in stays clear: no building within 4 m of the centre line, none in front of it", street.every((b) => Math.abs(b.x) - b.scaleX / 2 >= 4 && b.z <= 0), JSON.stringify(street));
+	// The chair: two boxes beside the character, clear of the way the walk comes in, and a take that sits on the seat.
+	const [seat, back] = demoChair({ x: 0, z: 0, rot: 0 });
+	expect("the chair is a seat with a back standing behind its rear edge, taller than it", seat.name === "Chair seat" && back.name === "Chair back" && back.x === seat.x && Math.abs((back.z + back.scaleZ / 2) - (seat.z - seat.scaleZ / 2)) < 1e-9 && back.scaleY > seat.scaleY, JSON.stringify([seat, back]));
+	expect("the chair stands beside the walk's centre line, not on it", Math.abs(seat.x) - seat.scaleX / 2 >= 0.7 && street.every((b) => Math.abs(b.x) - b.scaleX / 2 > Math.abs(seat.x) + seat.scaleX / 2), JSON.stringify(seat));
+	const sit = demoSitSpec({ x: 0, z: 0, rot: 0 }, "cube-1", "cube-2", 0.1);
+	expect("the sit take stands in front of the seat, then sits on it and stays", sit.use[0].skill === "standIdle" && Math.abs(sit.use[0].args.at[0] - seat.x) < 1e-9 && sit.use[0].args.at[1] > seat.z + seat.scaleZ / 2 && sit.use.slice(1).every((use) => use.skill === "sitInSeat" && use.args.seat === "cube-1" && use.args.seatBack === "cube-2") && sit.use[2].f0 > sit.use[1].f0, JSON.stringify(sit));
+	expect("the demo builds the chair, then installs the sit take on its seat with the rig's ankle height", demos.includes('await build(demoChair(who))') && demos.includes('demoSitSpec(who, ids.get("Chair seat"), ids.get("Chair back"), rig.restWorldPos[rig.index.LeftFoot][1])'));
+	// The sit take compiles QA-clean on both rigs wherever the character stands and faces (the bar the sample motions hold).
+	const { compileSpec } = await import("../src/motion3/pipeline.js"), { motionScene } = await import("../src/motion3/scene.js"), { skeletonFor } = await import("../src/motion3/rigs/index.js");
+	const { createSceneObject, updateSceneObject } = await import("../src/scene-objects.js");
+	for (const rigId of ["y-bot-tpose", "x-bot-tpose"]) {
+		const sk = skeletonFor(rigId), bad = [];
+		for (const place of [{ x: 0, z: 0, rot: 0 }, { x: 0.4, z: -0.3, rot: 30 }, { x: -1.2, z: 2, rot: 90 }, { x: 2, z: 1, rot: 180 }, { x: 0, z: 0, rot: -135 }]) {
+			let rows = [];
+			for (const { name, x, z, ...patch } of demoChair(place)) { const row = createSceneObject("cube", rows, { x, z }); rows = updateSceneObject([...rows, row], row.id, { x, z, name, ...patch }); }
+			const r = compileSpec(demoSitSpec(place, rows[0].id, rows[1].id, sk.restWorldPos[sk.index.LeftFoot][1]), { sk, scene: motionScene(rows) });
+			if (!r.qa.ok) bad.push(`${JSON.stringify(place)}: ${r.qa.groups.map((g) => `${g.kind} ${g.subject}`).join("; ")}`);
+		}
+		expect(`${rigId}: the sit take is QA-clean at 5 placements`, bad.length === 0, bad.join(" | "));
+	}
+	const turned = demoStreet({ x: 2, z: 1, rot: 90 });
+	expect("the street turns and moves with the character", turned.every((b, i) => Math.abs((b.x - 2) - street[i].z) < 0.01 && Math.abs((b.z - 1) + street[i].x) < 0.01 && b.rot === 90), JSON.stringify(turned));
 }
 
 // The model-connect funnel (PR E): one attempt is one connect_started and one connect_finished, the
@@ -1183,6 +1279,20 @@ expect("no timer drives the auth transition", !/set(Interval|Timeout)\([^)]*(sig
 		const keyed = sent.splice(0).filter((row) => row.event === "agent:connect_finished").map((row) => `${row.props.outcome}:${row.props.step}`);
 		expect("connect: with another provider ready, a pending ChatGPT sign-in stays open; ok waits for ChatGPT itself, an ended unsigned one is abandoned",
 			stillOpen === 0 && JSON.stringify(keyed) === JSON.stringify(["ok:done", "abandoned:waiting"]), JSON.stringify({ stillOpen, keyed }));
+		// #1044: why an attempt did not connect, a class only, on failed / cancelled / abandoned; never on ok.
+		connectStarted("openai-codex", "chatgpt"); connectAuthState("signing-in", { signedIn: false, pending: true });
+		connectAuthState("signed-out", { signedIn: false, failure: "timeout" });
+		connectStarted("openai-codex", "chatgpt"); connectAuthState("signing-in", { signedIn: false, pending: true });
+		connectAuthState("signed-out", { signedIn: false, failure: "callback_error" });
+		connectStarted("openai-codex", "chatgpt"); connectFinished("failed", "port_busy");
+		connectStarted("anthropic-subscription", "oauth"); connectStep("waiting"); connectFinished("cancelled", "user_closed");
+		connectStarted("anthropic-subscription", "oauth"); connectStep("waiting"); connectFinished("failed", "a message, not a class");
+		connectStarted("anthropic-subscription", "oauth"); connectFinished("ok", "timeout");
+		const reasons = sent.splice(0).filter((row) => row.event === "agent:connect_finished").map((row) => `${row.props.outcome}:${row.props.step}:${row.props.reason ?? "-"}`);
+		expect("connect: a failed or closed wait names its class (timeout, callback_error, port_busy, user_closed, other), ok none",
+			JSON.stringify(reasons) === JSON.stringify(["failed:waiting:timeout", "failed:waiting:callback_error", "failed:list:port_busy", "cancelled:waiting:user_closed", "failed:waiting:other", "ok:done:-"]), JSON.stringify(reasons));
+		const sanitizedReason = sanitizeProps("agent:connect_finished", { provider: "openai-codex", method: "chatgpt", outcome: "failed", step: "waiting", duration: "lt10s", reason: "timeout" });
+		expect("connect: the reason survives the closed schema", sanitizedReason.reason === "timeout" && !Object.hasOwn(sanitizeProps("agent:connect_finished", { reason: "EADDRINUSE 127.0.0.1:1455" }), "reason"), JSON.stringify(sanitizedReason));
 		// Caps: connect_opened 5, model_changed 10 per session; after_failure follows the last turn.
 		for (let i = 0; i < 9; i += 1) connectOpened("menu");
 		noteTurnOutcome("failed"); modelChanged("anthropic/claude-x");
@@ -1197,8 +1307,8 @@ expect("no timer drives the auth transition", !/set(Interval|Timeout)\([^)]*(sig
 		expect("prompt_sent: every send path names its via, the chip and the draft are noted, and the panel stages before it sends",
 			["\"retry_button\")", "\"regenerate\")", "\"supervisor\")"].every((via) => panelSource.includes(via)) && panelSource.includes("noteChipDraft(); store.setDraft(chip)")
 			&& panelSource.includes("noteDraftInput(); store.setDraft(event.target.value)") && /stagePrompt\(text, [^\n]*\n\s*return store\.send\(text/.test(panelSource));
-		expect("connect: the four openers and the ChatGPT attempt are wired", login.includes("connectStarted(provider.id, method.type)") && login.includes('connectFinished("cancelled")') && login.includes('connectFinished("abandoned")')
-			&& panelSource.includes('connectOpened("menu")') && panelSource.includes('openProviderKeys("signed_out")') && panelSource.includes('openProviderKeys("failure_card")') && panelSource.includes('connectStarted("openai-codex", "chatgpt")') && panelSource.includes("connectAuthState(authState, account)") && panelSource.includes("if (result.ok) noteDraftConsumed();"));
+		expect("connect: the four openers and the ChatGPT attempt are wired", login.includes("connectStarted(provider.id, method.type)") && login.includes('connectFinished("cancelled", "user_closed")') && login.includes('connectFinished("abandoned", "user_closed")')
+			&& panelSource.includes('connectOpened("menu")') && panelSource.includes('openProviderKeys("signed_out")') && panelSource.includes('openProviderKeys("failure_card")') && panelSource.includes('connectStarted("openai-codex", "chatgpt")') && panelSource.includes("connectAuthState(authState, account)") && panelSource.includes("store.clearAttachments(); noteDraftConsumed();"));
 	} finally {
 		restore(); friction.reset();
 		if (saved) Object.defineProperty(globalThis, "localStorage", saved); else delete globalThis.localStorage;

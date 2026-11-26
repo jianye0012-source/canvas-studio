@@ -75,11 +75,11 @@ class Gateway {
   mcpServers() {
     const command = path.join(this.root, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node');
     const script = path.join(this.root, 'launcher', 'mcp-stdio.mjs');
-    return Object.fromEntries(['canvas', 'director'].map(scope => [`canvas-studio-${scope}`, { command, args: [script, this.mcpConfigFile, scope] }]));
+    return { 'canvas-studio-canvas': { command, args: [script, this.mcpConfigFile, 'canvas'] } };
   }
   async testMcp(scope) {
     const config = this.mcpServers()[`canvas-studio-${scope}`];
-    if (!config || !['canvas', 'director'].includes(scope)) throw new Error('MCP 类型无效');
+    if (!config || scope !== 'canvas') throw new Error('MCP 类型无效');
     const sdk = name => import(pathToFileURL(path.join(this.root, 'integrations/cozyclay/mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/client', name)));
     const [{ Client }, { StdioClientTransport }] = await Promise.all([sdk('index.js'), sdk('stdio.js')]);
     const client = new Client({ name: 'canvas-studio-connection-check', version: '1' });
@@ -88,7 +88,7 @@ class Gateway {
     try {
       await client.connect(transport, options);
       const { tools } = await client.listTools({}, options);
-      const result = await client.callTool({ name: scope === 'canvas' ? 'canvas_studio_list_canvases' : 'canvas_studio_director_list_workspaces', arguments: {} }, undefined, options);
+      const result = await client.callTool({ name: 'canvas_studio_list_canvases', arguments: {} }, undefined, options);
       if (result.isError) throw new Error(result.content?.[0]?.text || '无法列出工作区');
       const workspaces = JSON.parse(result.content?.[0]?.text || 'null');
       if (!Array.isArray(workspaces) || !tools.length) throw new Error('MCP 返回了无效的工具或工作区列表');
@@ -142,9 +142,8 @@ class Gateway {
   async handle(req, res) {
     if (req.headers.host !== this.host || !this.validOrigin(req) || req.headers['sec-fetch-site'] === 'cross-site') return json(res, 403, { msg: '仅允许本机工作台访问' });
     const url = new URL(req.url, this.origin);
-    if (/^\/mcp\/(canvas|director)$/.test(url.pathname)) {
+    if (url.pathname === '/mcp/canvas') {
       if (!this.mcpToken || !jsonEqual(req.headers.authorization, `Bearer ${this.mcpToken}`)) return json(res, 401, { msg: '需要本整合包的 MCP 连接凭据' });
-      if (url.pathname === '/mcp/director') { req.headers.authorization = `Bearer ${this.providerToken}`; return this.proxy.web(req, res, { target: `http://127.0.0.1:${this.cozyPort}` }); }
       const { studioMcpHttp } = await import(pathToFileURL(path.join(this.root, 'integrations/cozyclay/mcp/studio-http.mjs')));
       return studioMcpHttp(req, res, { name: 'canvas-studio-canvas', version: '1.3.0', tools: () => [...this.bridge.tools(), ...this.skillTools()], call: (name, args, signal) => name.startsWith('canvas_studio_skill_') ? this.skillCall(name, args, signal) : this.bridge.call(name, args, signal) });
     }
@@ -240,10 +239,9 @@ class Gateway {
     if (url.pathname === '/local/mcp/config' && req.method === 'GET') {
       const mcpServers = this.mcpServers();
       const instructions = Object.fromEntries(Object.entries(mcpServers).map(([name, config]) => {
-        const tool = name.endsWith('-canvas') ? 'canvas_studio_list_canvases' : 'canvas_studio_director_list_workspaces';
-        return [name, `请用当前 AI 客户端支持的官方方式安装以下 Canvas Studio 本机 MCP（stdio），只合并所列条目，保留已有连接器。沿用配置中的完整路径和参数。如需信任或重开客户端，请提示我完成。接通后实际调用只读工具 ${tool}，告诉我返回的工作区。若列表为空，提示我打开对应的画布或导演台。若工具未加载，请区分等待信任、配置未生效和服务无法启动。\n\n${JSON.stringify({ mcpServers: { [name]: config } }, null, 2)}`];
+        return [name, `请用当前 AI 客户端支持的官方方式安装以下 Canvas Studio 本机 MCP（stdio），只合并所列条目，保留已有连接器。沿用配置中的完整路径和参数。如需信任或重开客户端，请提示我完成。接通后实际调用只读工具 canvas_studio_list_canvases，告诉我返回的工作区。若列表为空，提示我打开对应的画布。若工具未加载，请区分等待信任、配置未生效和服务无法启动。\n\n${JSON.stringify({ mcpServers: { [name]: config } }, null, 2)}`];
       }));
-      return json(res, 200, { mcpServers, instructions, endpoints: { canvas: this.origin + '/mcp/canvas', director: this.origin + '/mcp/director' }, token: this.mcpToken, canvases: this.bridge.workspaces() });
+      return json(res, 200, { mcpServers, instructions, endpoints: { canvas: this.origin + '/mcp/canvas' }, token: this.mcpToken, canvases: this.bridge.workspaces() });
     }
     if (url.pathname === '/local/mcp/test' && req.method === 'POST') return json(res, 200, await this.testMcp((await bodyJson(req, 1024)).scope));
     if (url.pathname.startsWith('/local/agent/')) return this.bridge.handle(req, res, url.pathname.slice('/local/agent'.length), () => bodyJson(req, 20 * 1024 * 1024));

@@ -53,7 +53,7 @@ try {
 	await send("Page.enable"); await send("Runtime.enable");
 	await send("Runtime.addBinding", { name: "__qaRecord" });
 	await send("Fetch.enable", { patterns: [{ urlPattern: "*/src/analytics.js*", requestStage: "Response" }] });
-	await send("Page.addScriptToEvaluateOnNewDocument", { source: `if (window === window.top) { localStorage.clear(); localStorage.setItem('cozyclay.locale', 'en');
+	await send("Page.addScriptToEvaluateOnNewDocument", { source: `if (window === window.top) { localStorage.clear(); localStorage.setItem('cozyclay.shell.agent-pane.v1','folded'); localStorage.setItem('cozyclay.locale', 'en');
 		localStorage.setItem('cozyclay.project-session.v1', JSON.stringify({ name: 'QA', updatedAt: Date.now() })); localStorage.setItem(${JSON.stringify(SCENES_STORAGE_KEY)}, ${JSON.stringify(JSON.stringify(scene))}); }
 		let beforeSend; window.__qaPosthog = { init(_key, options) { beforeSend = options.before_send; }, register() {}, opt_in_capturing() {}, opt_out_capturing() {},
 			has_opted_out_capturing: () => false, get_distinct_id: () => 'internal-qa-p2a', get_session_id: () => '0192f0d6-3a4b-7c2d-8e9f-abcdefabcdef',
@@ -66,13 +66,13 @@ try {
 	const play = await centre("[data-fid='tl_play']");
 	for (let i = 0; i < 4; i += 1) { await press(play); await sleep(120); }
 	await sleep(1300);
-	// 2. one click on a disabled export entry (no shots: the keyframe pack cannot export)
+	// 2. one click on a disabled export entry (no shots: the depth video cannot export)
 	await press(await centre("[data-testid=menu-file]"));
 	await waitFor("!!document.querySelector('#export-menu-trigger')", "File menu");
 	await press(await centre("#export-menu-trigger"));
-	await waitFor("!!document.querySelector('[data-testid=export-keyframe-pack]')", "Export menu");
-	const entry = await centre("[data-testid=export-keyframe-pack]");
-	assert.equal(entry.disabled, true, "the keyframe pack entry is natively disabled with no shots");
+	await waitFor("!!document.querySelector('[data-testid=export-depth-video]')", "Export menu");
+	const entry = await centre("[data-testid=export-depth-video]");
+	assert.equal(entry.disabled, true, "the depth video entry is natively disabled with no shots");
 	await press(entry);
 	await sleep(700);
 	await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
@@ -89,9 +89,9 @@ try {
 	for (const record of clicks) console.log(`  ${show(record)}`);
 	console.log(`--- events from four clicks into the composer: ${composer.length}`);
 	assert.ok(clicks.some((r) => r.event === "ui:rage_click" && r.properties.control === "tl_play" && r.properties.clicks === "4-5"), "Play rage click");
-	assert.ok(clicks.some((r) => r.event === "ui:dead_click" && r.properties.control === "export_keyframe_pack" && r.properties.reason === "aria_disabled"), "the disabled entry is a dead click");
+	assert.ok(clicks.some((r) => r.event === "ui:dead_click" && r.properties.control === "export_depth_video" && r.properties.reason === "aria_disabled"), "the disabled entry is a dead click");
 	assert.equal(composer.length, 0, "the composer emits nothing");
-	assert.ok(!JSON.stringify(clicks).match(/"x"|"y"|Play|Keyframe/), "no coordinates or labels");
+	assert.ok(!JSON.stringify(clicks).match(/"x"|"y"|Play|Depth/), "no coordinates or labels");
 	assert.deepEqual(errors, [], "no uncaught page errors");
 	console.log("PASS qa-click-friction-browser: rage click on Play, dead click on a disabled export entry, nothing from the composer");
 } finally {

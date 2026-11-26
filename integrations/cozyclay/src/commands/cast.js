@@ -5,39 +5,43 @@ import { studioActionDeclaration } from "../studio-actions.js";
 import { characterOf, fail, changedIds, checkPoseBones } from "./shared.js";
 import { elementSetSchema, registerElementSet } from './elements.js';
 import './elements/character.js';
-import { createCharacterEntry, CHARACTER_KIND_IDS, POSTURES, PROXY_FIGURE_MODEL, isProxyFigure } from '../scenes.js';
+import { createCharacterEntry, NEW_CHARACTER_MODEL, POSTURES, PROXY_FIGURE_MODEL, isProxyFigure } from '../scenes.js';
+import { importedRigOf, isImportedModel } from '../character-rig.js';
 import { KIND_FIXED_REFUSAL } from '../character-kind.js';
 import { track } from '../analytics.js';
-import { DEFAULT_POSE } from '../poses.js';
 import { createStableItemId } from '../stable-items.js';
 import { STUDIO_TOOL_SCHEMAS, StudioSchemas } from '../studio-agent-protocol.js';
+import { characterName } from '../character-name.js';
 
 const id = StudioSchemas.TargetGuard.properties.targetId;
 const input = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
 const record = { type: 'object', properties: {}, additionalProperties: true };
 // A capsule figure is cast by model id; its posture is the one body choice it
 // has. A patched posture outside POSTURES normalizes to "stand" (createCharacterEntry).
-const newCharacter = { ...record, properties: { model: { type: 'string', enum: [...CHARACTER_KIND_IDS] }, posture: { type: 'string', enum: [...POSTURES] } }, required: [] };
+const newCharacter = { ...record, properties: { model: { type: 'string', description: `${NEW_CHARACTER_MODEL} (the default), ${PROXY_FIGURE_MODEL} or the model id of a rig imported into this scene. A new rig character is of model ${NEW_CHARACTER_MODEL}, drawn in the figure look the Studio was started with: y-bot-tpose is given ${NEW_CHARACTER_MODEL}.` }, posture: { type: 'string', enum: [...POSTURES] },
+	x: { type: 'number', description: 'floor position, metres (position { x, z } is read the same)' }, z: { type: 'number' }, rot: { type: 'number', description: 'yaw, degrees (yawDeg too)' } }, required: [] };
 const characterPatch = { ...record, properties: { posture: { type: 'string', description: `One of ${POSTURES.join(', ')}; anything else stands.` } }, required: [] };
 const mutation = (id, label, schema, exposure = 'open') => ({ id, label, description: label, kind: 'mutation', undoDomain: 'cast', input: schema, exposure });
 
 const semantic = [
 	mutation('character.set', 'Set character fields', elementSetSchema('character')),
-	mutation('character.add', 'Add character', input({ character: newCharacter })),
+	{ ...mutation('character.add', 'Add character', input({ character: newCharacter })), description: `Add character. A new rig character is of model ${NEW_CHARACTER_MODEL}, drawn in the figure look the Studio was started with.` },
 	mutation('character.remove', 'Remove character', input({ characterId: id })),
 	mutation('character.update', 'Update character', input({ characterId: id, patch: characterPatch })),
 	studioActionDeclaration('character.move'),
 	mutation('character.setPose', 'Set character pose', input({ characterId: id, pose: { oneOf: [id, record, { type: 'null' }] }, clearMotion: { type: 'boolean' } }, ['characterId', 'pose'])),
 	
 	mutation('characters.arrange', 'Arrange characters', STUDIO_TOOL_SCHEMAS.arrange_characters),
-	mutation('cast.replace', 'Replace cast', input({ characters: { type: 'array', items: record, minItems: 1 } }), 'ui-only'),
-	mutation('cast.setCustomPoses', 'Set pose library', input({ poses: { type: 'array', items: record } }), 'ui-only'),
-	mutation('cast.savePose', 'Save pose', input({ pose: record, characterId: id, clearMotion: { type: 'boolean' } }, ['pose']), 'ui-only'),
-	mutation('cast.removePose', 'Remove saved pose', input({ id }), 'ui-only'),
-	mutation('cast.showExtras', 'Show extra subjects', input({ show: { type: 'boolean' } }), 'ui-only'),
+	// An empty cast is a legal stage (character.remove may empty it too); the UI replaces the cast with [] when the
+	// last character goes or an empty scene loads, and a minItems refusal there was thrown uncaught (#1040).
+	mutation('cast.replace', 'Replace cast', input({ characters: { type: 'array', items: record } }), 'ui-only'),
 	mutation('cast.setLayer', 'Set character layer', input({ characterId: id, layer: record }), 'ui-only'),
 ];
-export const declarations = Object.freeze([...semantic, ...["character.addWaypoint", "character.moveWaypoint", "character.removeWaypoint", "character.clearWaypoints"].map(studioActionDeclaration)]);
+// "Apply as walk" on a route sketch chip (workflow/ContextChips.jsx): the character's whole root path in one
+// undo entry, written through the waypoint actions below (each pin is a nested character.addWaypoint).
+const walkPin = input({ frame: { type: 'integer', minimum: 1 }, x: { type: 'number' }, z: { type: 'number' } });
+const applyWalk = mutation('character.applyWalk', 'Apply route as walk', input({ characterId: id, pins: { type: 'array', items: walkPin, minItems: 1, maxItems: 32 } }), 'ui-only');
+export const declarations = Object.freeze([...semantic, ...["character.addWaypoint", "character.moveWaypoint", "character.removeWaypoint", "character.clearWaypoints"].map(studioActionDeclaration), applyWalk]);
 
 export function register(registry, ports) {
 	const owner = () => ports.storeDomain('cast');
@@ -59,8 +63,17 @@ export function register(registry, ports) {
 		if (object.attach) fail('INVALID_ARGUMENT', 'A character cannot be grouped under an object that a character carries.');
 	};
 	const methods = {
-		'character.add': ({ character: value }) => {
-			const row = createCharacterEntry({ ...value, id: value.id ?? createStableItemId('character') }, owner().read().length);
+		'character.add': ({ character: sent }) => {
+			// position { x, z } and yawDeg were dropped without a word and the character stood at the origin (agent runs, 2026-10-30)
+			const { position, yawDeg, ...value } = sent;
+			if (position && typeof position === 'object') { if (Number.isFinite(position.x) && value.x === undefined) value.x = position.x; if (Number.isFinite(position.z) && value.z === undefined) value.z = position.z; }
+			if (Number.isFinite(yawDeg) && value.rot === undefined) value.rot = yawDeg;
+			// A new rig character is of NEW_CHARACTER_MODEL (the rig figure): without a model, or asking for the old Y Bot body.
+			// Y Bot rows still load (CHARACTER_KIND_IDS); an imported rig id takes its rig from a cast member that has it.
+			const model = !value.model || value.model === 'y-bot-tpose' ? NEW_CHARACTER_MODEL : value.model;
+			const imported = isImportedModel(model) ? importedRigOf(owner().read().find(row => row.model === model)) : null;
+			if (model !== NEW_CHARACTER_MODEL && model !== PROXY_FIGURE_MODEL && !imported) fail('INVALID_ARGUMENT', `A new character's model is ${NEW_CHARACTER_MODEL}, ${PROXY_FIGURE_MODEL} or the model id of a rig imported into this scene; ${model} is none of these.`);
+			const row = createCharacterEntry({ ...value, ...imported, model, id: value.id ?? createStableItemId('character') }, owner().read().length);
 			if (owner().read().some(entry => entry.id === row.id)) fail('INVALID_ARGUMENT', 'Character id already exists.');
 			owner().write(rows => [...rows, row]);
 		},
@@ -76,19 +89,7 @@ export function register(registry, ports) {
 		'character.setPose': ({ characterId, pose: value, clearMotion }) => { character(characterId); owner().applyPose(characterId, pose(value), clearMotion); },
 		
 		'cast.replace': ({ characters }) => owner().write(characters),
-		'cast.setCustomPoses': ({ poses }) => { for (const entry of poses) checkPoseBones(entry?.bones); owner().writeState(before => ({ ...before, customPoses: poses })); },
-		'cast.savePose': ({ pose, characterId, clearMotion }) => {
-			checkPoseBones(pose?.bones);
-			if (characterId) character(characterId);
-			owner().writeState(before => ({ ...before, customPoses: [...before.customPoses.filter(entry => entry.id !== pose.id), pose] }));
-			if (characterId) owner().applyPose(characterId, pose, clearMotion);
-		},
-		'cast.removePose': ({ id }) => owner().writeState(before => ({
-			characters: before.characters.map(entry => entry.pose?.id === id ? { ...entry, pose: DEFAULT_POSE } : entry),
-			customPoses: before.customPoses.filter(entry => entry.id !== id),
-		})),
 
-		'cast.showExtras': ({ show }) => owner().showExtras(show),
 		'cast.setLayer': ({ characterId, layer }) => patch(characterId, { layer: { ...character(characterId).layer, ...layer } }),
 	};
 	registerElementSet({ register(entry) {
@@ -118,7 +119,7 @@ export function register(registry, ports) {
 		available: state => state.characters.length > 0 || "There are no characters in this scene; add one with arrange_characters.",
 		run: args => {
 			const character = characterOf(ports, args.characterId);
-			return { affectedIds: [character.id], summary: run(args, character.subject || character.id) };
+			return { affectedIds: [character.id], summary: run(args, characterName(character)) };
 		} });
 	const pin = waypoint => `frame ${waypoint.frame} (x ${waypoint.x}, z ${waypoint.z})`;
 	const warned = warnings => warnings.length ? `; warning: ${warnings[0]}` : "";
@@ -140,4 +141,9 @@ export function register(registry, ports) {
 		const count = ports.clearCharacterWaypoints(characterId);
 		return count ? `Cleared ${name}'s root path (${count} waypoint${count === 1 ? "" : "s"}).` : `${name} has no root waypoints; nothing changed.`;
 	});
+	registry.register({ ...applyWalk, available: mounted, run({ characterId, pins }, context) {
+		context.run("character.clearWaypoints", { characterId });
+		for (const pin of pins) context.run("character.addWaypoint", { characterId, position: { x: pin.x, z: pin.z }, frame: pin.frame });
+		return { affectedIds: [characterId], summary: `Walked the sketched route: ${pins.length} root waypoint${pins.length === 1 ? "" : "s"} to frame ${pins.at(-1).frame}.` };
+	} });
 }

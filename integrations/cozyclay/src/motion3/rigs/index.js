@@ -1,14 +1,55 @@
-// Bind skeletons of the bodies a take can be compiled for (tools/motion3/extract-rig.mjs).
+// Bind skeletons of the bodies a take can be compiled for (tools/motion3/extract-rig.mjs), and rigs registered at run
+// time (an adapted skeleton: adapt.js adaptRig).
 import xBot from "./x-bot-tpose.json" with { type: "json" };
 import yBot from "./y-bot-tpose.json" with { type: "json" };
 import { createSkeleton } from "../compiler/skeleton.js";
+import { registerBody } from "../body.js";
+import { refitBody } from "./adapt-body.js";
 
-const RIGS = { "x-bot-tpose": xBot, "y-bot-tpose": yBot };
+const RIGS = { "x-bot-tpose": xBot, "y-bot-tpose": yBot }, SHIPPED = new Set(Object.keys(RIGS));
 const cache = new Map();
+let reference = null;
 
 /** Skeleton for a character model id, or null for a body motion3 cannot drive. */
 export function skeletonFor(model) {
 	if (!RIGS[model]) return null;
 	if (!cache.has(model)) cache.set(model, createSkeleton(RIGS[model]));
 	return cache.get(model);
+}
+
+/**
+ * The rig of model `model` as a body `size` times its own (a character's scale times its look's body, figure.js
+ * bodyScale), as { id, rig } for a compile job (compile-job.js rigs, rigs/posted.js), or null for a body motion3 cannot
+ * drive. Every length is times `size`: the bones, the landmarks, the sole, and the proportions to the X Bot the compiler
+ * reads in place of its constants (landmarks.scale, rigs/adapt-measure.js); the collision body is refitted to the bones
+ * (registerRig). The id names the size, so one size is registered once.
+ */
+export function sizedRig(model, size) {
+	const rig = RIGS[model];
+	if (!rig) return null;
+	const id = `${model}@${Math.round(size * 1e6) / 1e6}`, s = v => v * size, L = rig.landmarks, was = L.scale ?? {};
+	const bones = rig.bones.map(b => ({ ...b, localPos: b.localPos.map(s), worldPos: b.worldPos.map(s) }));
+	const landmarks = { ...L, mouth: L.mouth.map(s), headJoint: L.headJoint?.map(s), headTop: L.headTop?.map(s), headEllipsoid: { centre: L.headEllipsoid.centre.map(s), radii: L.headEllipsoid.radii.map(s) },
+		sole: { ...L.sole, ball: s(L.sole?.ball ?? 0), tip: s(L.sole?.tip ?? 0), ...(L.sole?.heel ? { heel: L.sole.heel.map(s) } : {}) },
+		scale: Object.fromEntries(["foot", "hand", "arm", "hips", "girth"].map(part => [part, (was[part] ?? 1) * size])) };
+	return { id, rig: { ...rig, model: id, bones, landmarks, ...(rig.tips ? { tips: Object.fromEntries(Object.entries(rig.tips).map(([k, v]) => [k, Array.isArray(v) ? v.map(s) : v])) } : {}) } };
+}
+
+/**
+ * Makes rig JSON `rig` (x-bot-tpose.json's shape, e.g. adaptRig's rig) character model `id`: skeletonFor(id) answers its
+ * skeleton (model `id`) from now on, and its collision body is the X Bot's fitted body refitted to its bones
+ * (adapt-body.js). Registering an id again replaces the rig, its skeleton and its body; a shipped rig's id is refused.
+ */
+export function registerRig(id, rig) {
+	if (typeof id !== "string" || !id) throw new Error("registerRig: id must be a non-empty string");
+	if (SHIPPED.has(id)) throw new Error(`registerRig: "${id}" is a shipped rig (${[...SHIPPED].join(", ")}); register the adapted rig under an id of its own`);
+	if (!Array.isArray(rig?.bones) || !rig.landmarks) throw new Error(`registerRig: rig "${id}" needs bones and landmarks (x-bot-tpose.json's shape)`);
+	const entry = { ...rig, model: id }, sk = createSkeleton(entry);
+	RIGS[id] = entry;
+	cache.set(id, sk);
+	reference ??= createSkeleton(xBot);
+	// the body belongs to this skeleton: one retired by a later registerRig keeps its own (body.js registerBody)
+	// a rig without toe, finger and head-top joints (sk.markers: a lowvis rig) gets no collision body: the X Bot's fit is
+	// a grid per X Bot bone, and the refit needs every one of them. bodyFor(sk) is then null and the skin fixes do nothing.
+	if (!sk.markers) registerBody(sk, fileFit => refitBody(sk, reference, fileFit("x-bot-tpose")));
 }

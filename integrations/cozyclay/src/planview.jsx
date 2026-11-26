@@ -3,15 +3,16 @@ import { useFrame } from "@react-three/fiber";
 import { Line, Text } from "@react-three/drei";
 import * as THREE from "three";
 import { aimAt } from "./controls.jsx";
-import { PLAN_LAYER } from "./dualview.jsx";
+import { PLAN_LAYER } from "./dualview.jsx"; import { createFloorRaycastTools, floorPointAt } from "./floor-raycast.js";
 import { EMPTY_MARKER_SIZE, isEmptyObject, objectSize } from "./scene-objects.js";
 import { displayObjectLabel } from "./object-catalog.jsx";
 import { ko } from "./locale.js";
 import { isProxyFigure } from "./scenes.js";
 import { prepareRailBend } from "./camera-follow.js";
 import { MARK_GAP, MAX_PATH_MARKS, MAX_PATH_POINTS, nearestPathFraction, pathCurve, pathMarkFractions, pathPointAtFraction } from "./object-path.js";
+import { WORLD } from "./world-scale.js"; import { travelPoints, usePlanNavigation } from "./plan-navigation.js"; import { castAimPoint } from "./camera-direction.js";
 
-const ROOM_LIMIT = 240; // stay on the open stage (matches scene-objects' clamp)
+const ROOM_LIMIT = WORLD.position; // stay on the open stage (matches scene-objects' clamp)
 const ACTOR_LIMIT = 4; // matches the Subject sliders' range
 const PUCK_R = 0.34;
 const GRAB_R = 1.0; // the pick radius, well beyond the drawn disc
@@ -38,7 +39,6 @@ const handleAt = (e) => {
 	const distance = e.handleDist ?? HANDLE_DIST;
 	return { x: e.x + distance * Math.sin(e.yaw), z: e.z + distance * Math.cos(e.yaw) };
 };
-const near = (ax, az, bx, bz, r) => (ax - bx) ** 2 + (az - bz) ** 2 < r * r;
 const insideFootprint = (point, entity, padding = 0.2) => {
 	const dx = point.x - entity.x;
 	const dz = point.z - entity.z;
@@ -215,7 +215,6 @@ function EmptyPlanMarker({ object, selected, dragging, turning }) {
 }
 
 function SceneObjectFootprint({ object, selected, dragging, turning }) {
-	if (isEmptyObject(object)) return <EmptyPlanMarker object={object} selected={selected} dragging={dragging} turning={turning} />;
 	const { width, height, depth } = objectSize(object);
 	const objectLabel = displayObjectLabel(object.name).slice(0, 8);
 	const handleDist = depth / 2 + 0.65;
@@ -229,6 +228,7 @@ function SceneObjectFootprint({ object, selected, dragging, turning }) {
 		const z = depth / 2;
 		return [[-x, capY, -z], [x, capY, -z], [x, capY, z], [-x, capY, z], [-x, capY, -z]];
 	}, [width, depth, capY]);
+	if (isEmptyObject(object)) return <EmptyPlanMarker object={object} selected={selected} dragging={dragging} turning={turning} />;
 	return (
 		<group position={[object.x, 0, object.z]} rotation={[0, rotation, 0]}>
 			{selected ? (
@@ -287,7 +287,7 @@ function directionTriangle(from, to, distance = 0.26) {
 	return geometry;
 }
 
-/** ARDY movement endpoints shown while composing a camera rail. The direct
+/** Subject track endpoints shown while composing a camera rail. The direct
  * start-to-end vector gives the operator one unambiguous travel direction. */
 function SubjectMovementGuide({ track }) {
 	const guide = useMemo(() => {
@@ -501,7 +501,7 @@ function WaypointPath({ waypoints, start, activeWaypointId }) {
  * reports moves that still hit it, so a fast drag off the edge silently strands
  * the puck.
  */
-export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, characters = [], characterPlacements = [], onMoveCharacter, onCharacterGestureStart, onWaypointGestureStart, onCameraGestureStart, pathStart = null, waypoints, activeWaypointId, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects = [], selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, cameraRailPoints = null, railDraw = false, onRailStroke, pathDraw = false, onPathStroke, objectPath = null, objectPathSelectedIndex = null, onObjectPathPointSelect, onObjectPathChange, onObjectPathMarkInsert, onObjectPathGestureStart, onObjectPathGestureEnd, subjectTrack = null, onCameraChange, keyLight = null, minimal = false }) {
+export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, characters = [], characterPlacements = [], onMoveCharacter, onCharacterGestureStart, onWaypointGestureStart, onCameraGestureStart, pathStart = null, waypoints, activeWaypointId, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects = [], selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, cameraRailPoints = null, railDraw = false, onRailStroke, pathDraw = false, onPathStroke, objectPath = null, objectPathSelectedIndex = null, onObjectPathPointSelect, onObjectPathChange, onObjectPathMarkInsert, onObjectPathGestureStart, onObjectPathGestureEnd, subjectTrack = null, onCameraChange, keyLight = null, minimal = false, planZoom = 1, onPlanZoom, planOpen = false, cast = null }) {
 	characters = characters.map(entry => {
 		const placement = isProxyFigure(entry) && characterPlacements.find(view => view.id === entry.id);
 		return placement ? { ...entry, x: placement.position[0], z: placement.position[2], rot: placement.rot } : entry;
@@ -519,15 +519,13 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 	const dragRef = useRef(null);
 	// Numbered waypoints are direct-manipulation handles. Empty floor presses
 	// intentionally do nothing; root keyframes are authored in the timeline.
-	const tools = useMemo(
-		() => ({
-			raycaster: new THREE.Raycaster(),
-			plane: new THREE.Plane(new THREE.Vector3(0, 1, 0), 0),
-			pointer: new THREE.Vector2(),
-			hit: new THREE.Vector3(),
-		}),
-		[],
-	);
+	const tools = useMemo(() => createFloorRaycastTools(), []);
+	// The view's pan and zoom (plan-navigation.js). Coming up for a drawing it
+	// frames what this board draws: the cast, the camera and the drawn rail, and
+	// off the minimal board also the props, the routes and where each body of
+	// the cast is over the timeline (its take moves it, or what carries it).
+	const castTravel = () => (cast ? travelPoints(cast.characters.filter((entry) => !entry.hidden).map((entry) => entry.id), cast.frameCount, (id, frame) => castAimPoint(id, frame, cast)) : []);
+	const isPanMove = usePlanNavigation({ hostRef, planCamRef, planZoom, onPlanZoom, open: planOpen, content: () => (minimal ? { targets: targets().filter((entry) => !entry.objectId), rail: cameraRailPoints } : { targets: targets(), waypoints: latest.current.waypoints, track: subjectTrack, travel: castTravel(), rail: cameraRailPoints, objects: latest.current.sceneObjects }) });
 
 	// The overlay belongs to the plan camera alone. Without this the pucks would
 	// be drawn flat across the floor of the shot — and into exported frames.
@@ -599,18 +597,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 		const snap = (v, limit) => THREE.MathUtils.clamp(Math.round(v / 0.05) * 0.05, -limit, limit);
 
 		/** pointer -> a point on the floor, seen through the plan camera */
-		const toFloor = (event) => {
-			const cam = planCamRef.current;
-			if (!cam) return null;
-			const r = host.getBoundingClientRect();
-			if (r.width < 2 || r.height < 2) return null;
-			tools.pointer.set(
-				((event.clientX - r.left) / r.width) * 2 - 1,
-				-((event.clientY - r.top) / r.height) * 2 + 1,
-			);
-			tools.raycaster.setFromCamera(tools.pointer, cam);
-			return tools.raycaster.ray.intersectPlane(tools.plane, tools.hit) ? tools.hit : null;
-		};
+		const toFloor = (event) => floorPointAt(event, host, planCamRef.current, tools);
 
 		// A generous nearest-point hit target makes the numbered roots draggable
 		// directly, without requiring a prior timeline selection/focus step.
@@ -757,7 +744,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 
 		const onMove = (event) => {
 			const grip = dragRef.current;
-			if (!grip) return;
+			if (!grip || isPanMove(event)) return;
 			const p = toFloor(event);
 			if (!p) return;
 
@@ -873,9 +860,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 			if (token != null) latest.current.onObjectMoveEnd?.(token, { commit });
 		};
 
-		const onUp = () => {
-			closeDrag(true);
-		};
+		const onUp = () => closeDrag(true);
 
 		const onCancel = () => closeDrag(true);
 
@@ -929,7 +914,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 			window.removeEventListener("keydown", onEscape, true);
 			closeDrag(true);
 		};
-	}, [hostRef, planCamRef, shotCamRef, tools, look]);
+	}, [hostRef, planCamRef, shotCamRef, tools, look, isPanMove]);
 
 	const state = (id) => ({ dragging: drag?.id === id && drag.mode === "move", turning: drag?.id === id && drag.mode === "turn" });
 

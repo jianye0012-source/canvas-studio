@@ -2,8 +2,10 @@ import { summariseCanvasResult } from "./agent-tools.mjs";
 import { createReasoningFrames } from "./turn-frames.mjs";
 import { sanitizeUpstreamDetail } from "./agent-routes.mjs";
 import { budgetStudioRequest } from "./studio-context-budget.mjs";
-import { createRetryingStream } from "./agent-stream.mjs";
+import { createRetryingStream, retryAfterMs } from "./agent-stream.mjs";
 import { NETWORK_CODES, frameCodeOf } from "./agent-failure-codes.mjs";
+import { withAnthropicCacheBreakpoints } from "./anthropic-cache.mjs";
+import { createSteerInbox } from "./steer-inbox.mjs";
 
 const DEFAULT_MODEL = "gpt-6-astra";
 
@@ -16,7 +18,10 @@ const RETRY_MAX_DELAY_MS = 20000;
 const MAX_STUDIO_CONTINUATIONS = 6;
 
 const AUTH_ERROR_PATTERN = /\b(401|403)\b|unauthorized|forbidden/i;
-const RATE_LIMIT_PATTERN = /\b429\b|rate.?limit|too many requests/i;
+// "usage limit", "quota", "resource exhausted": a provider's quota refusal that names no status, e.g. pi-ai's Codex
+// adapter, which turns a 429 into "You have hit your ChatGPT usage limit (plus plan). Try again in ~38 min." (#1043:
+// it read as upstream, so the panel never showed the quota card).
+const RATE_LIMIT_PATTERN = /\b429\b|rate.?limit|too many requests|usage limit|quota|resource.?exhausted/i;
 const OVERLOAD_PATTERN = /\b529\b|overloaded/i;
 // Checked after the three above: a request that never got an HTTP answer, when only pi-ai's folded string survives.
 const NETWORK_PATTERN = /fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up|network error/i;
@@ -46,8 +51,11 @@ export function classifyProviderError(message, errorCode) {
 	return NETWORK_PATTERN.test(message) ? "network" : "upstream";
 }
 
+// 400/404/413/422 ride along so a request the provider refused as malformed (a schema it rejects, a model it does not
+// serve, a prompt over its limit) reads as invalid_request, not as the provider's trouble (#1043: every one of them was
+// "upstream", the fallback below).
 function extractStatus(message) {
-	const match = /\b(401|403|429|5\d\d)\b/.exec(message);
+	const match = /\b(400|401|403|404|413|422|429|5\d\d)\b/.exec(message);
 	return match ? Number(match[1]) : undefined;
 }
 
@@ -206,31 +214,7 @@ function studioContextDiet({ messages, systemPrompt }) {
 	};
 }
 
-/** Anthropic prompt-cache breakpoints on the stable prefix (#716): pi-ai's
- * anthropic-messages builder already marks the system blocks, the last tool
- * and the last user block by default; this only fills a missing mark on the
- * last system block and the last tool, never past the API's 4 breakpoints,
- * and never on tools for a model whose compat declares them unsupported. */
-export function withAnthropicCacheBreakpoints(payload, model) {
-	if (!payload || typeof payload !== "object") return undefined;
-	const marked = (block) => Boolean(block?.cache_control);
-	const system = Array.isArray(payload.system) ? payload.system : [];
-	const tools = Array.isArray(payload.tools) ? payload.tools : [];
-	const messageBlocks = (Array.isArray(payload.messages) ? payload.messages : []).flatMap((message) => Array.isArray(message?.content) ? message.content : []);
-	let count = [...system, ...tools, ...messageBlocks].filter(marked).length;
-	const cacheControl = { type: "ephemeral" };
-	let next = payload;
-	if (system.length && !marked(system.at(-1)) && count < 4) {
-		next = { ...next, system: [...system.slice(0, -1), { ...system.at(-1), cache_control: cacheControl }] };
-		count += 1;
-	}
-	// pi-ai 1.4 appends a defer_loading placeholder tool; the API rejects cache_control on deferred tools.
-	const lastTool = tools.findLastIndex((tool) => !tool?.defer_loading);
-	if (lastTool !== -1 && !marked(tools[lastTool]) && model?.compat?.supportsCacheControlOnTools !== false && count < 4) {
-		next = { ...next, tools: tools.map((tool, index) => index === lastTool ? { ...tool, cache_control: cacheControl } : tool) };
-	}
-	return next === payload ? undefined : next;
-}
+export { withAnthropicCacheBreakpoints };
 
 function studioObservationMessage(observation) {
 	return {
@@ -251,7 +235,7 @@ function studioObservationMessage(observation) {
  * and tool declarations ride in its system messages), its model and thinking
  * level, and its steering queue. Each turn is one `agent.prompt()`.
  */
-export function createAgentRunner({ models: suppliedModels, sessionStore, tools = [], systemPrompt = "", clock = () => performance.now(), fauxProvider, onQuota, codexBaseUrl, cliproxyBaseUrl, auth, credentials, keys, env } = {}) {
+export function createAgentRunner({ models: suppliedModels, sessionStore, tools = [], systemPrompt = "", clock = () => performance.now(), fauxProvider, codexBaseUrl, cliproxyBaseUrl, auth, credentials, keys, env } = {}) {
 	const openSessions = new Map();
 	let models = suppliedModels;
 	let piModules;
@@ -369,12 +353,15 @@ export function createAgentRunner({ models: suppliedModels, sessionStore, tools 
 		};
 
 		// Every finished provider request counts, failed attempts included (agent-stream.mjs retries in place).
+		// On the Studio surface, a request that reported a prompt also tells the panel its context: that prompt (input + cache read + cache write,
+		// this request only, never the turn's sum) against the model's catalog window (src/workflow/agent-context-meter.js).
 		const countAttempt = (message) => {
-			const usage = state.active?.usage;
-			if (!usage) return;
-			usage.requests += 1;
+			const usage = state.active?.usage; if (!usage) return;
+			usage.requests += 1; const prompt = ["input", "cacheRead", "cacheWrite"].reduce((sum, key) => sum + (Number.isFinite(message?.usage?.[key]) ? message.usage[key] : 0), 0);
 			for (const key of ["input", "output", "cacheRead", "cacheWrite"]) if (Number.isFinite(message?.usage?.[key])) usage[key] += message.usage[key];
 			if (Number.isFinite(message?.usage?.cost?.total)) state.active.cost = (state.active.cost ?? 0) + message.usage.cost.total;
+			// held until the agent's message_end (or the turn's end): the stream finishes before the agent has handed on its last text deltas
+			if (prompt > 0 && state.lastInput?.surface === "studio") state.active.pendingContext = { type: "context", tokens: prompt, window: state.currentModel?.contextWindow > 0 ? state.currentModel.contextWindow : null };
 		};
 
 		// A Codex 401 earns one forced credential refresh per turn and one more try of the same request: completed tools
@@ -390,16 +377,18 @@ export function createAgentRunner({ models: suppliedModels, sessionStore, tools 
 		// Studio only, on the provider view (studioContextDiet, then studio-context-budget.mjs): the stored transcript and the
 		// persisted history keep every context, result, script and image whole. The prompt is the leading system message.
 		const studioView = async (messages) => {
-			if (state.lastInput?.surface !== "studio") return messages;
+			// input.contextView "plain": an append-only view, no diet and no budget, for a caller that keeps its own context (the v4 pi turn).
+			if (state.lastInput?.surface !== "studio" || state.lastInput?.contextView === "plain") return messages;
 			const head = messages[0]?.role === "system" ? messages[0] : null;
 			const prompt = typeof head?.content === "string" ? head.content : (head?.content ?? []).map((part) => part?.text ?? "").join("");
-			const view = budgetStudioRequest(studioContextDiet({ messages: head ? messages.slice(1) : messages, systemPrompt: prompt }));
+			const view = budgetStudioRequest({ ...studioContextDiet({ messages: head ? messages.slice(1) : messages, systemPrompt: prompt }), tools: state.agent?.state.tools });
 			return head ? [{ ...head, content: view.systemPrompt }, ...view.messages] : view.messages;
 		};
 
 		const ensureAgent = async (input) => {
 			const { pi, models: registry } = await ensureModels();
-			const activePrompt = input.systemPrompt || (input.surface === "studio" ? await (await import("./studio-motion-reference.mjs")).studioSystemPrompt() : systemPrompt);
+			// Studio: the motion engine and whether this session has the motion tool decide the prompt, once, when the Agent is made (motion-door.mjs).
+			const activePrompt = input.systemPrompt || (input.surface === "studio" ? await (await import("./studio-motion-reference.mjs")).studioSystemPrompt({ engine: (await import("./motion-engine.mjs")).motionEngine(env), motion: Boolean(input.motionTool) }) : systemPrompt);
 			const { resolveModel, resolveEffort } = await import("./providers.mjs");
 			const requested = input.model || DEFAULT_MODEL;
 			const slash = requested.indexOf("/");
@@ -414,6 +403,27 @@ export function createAgentRunner({ models: suppliedModels, sessionStore, tools 
 			state.registry = registry;
 			if (!state.agent) {
 				const restored = sessionStore?.read?.(sessionId);
+				const continueStudioTurn = ({ message, toolResults }, signal) => {
+					const pendingSteps = state.lastInput?.pendingStudioSteps;
+					if (!pendingSteps || !state.active || state.active.abortRequested || signal?.aborted) return;
+					const truncated = message.stopReason === "length";
+					const edits = toolResults.filter(result => result.details?.authored === true ||
+						result.details?.calls?.some?.(call => call.ok && Number.isSafeInteger(call.revision?.after) && call.revision.after !== call.revision.before)).length;
+					state.active.sceneEdits = (state.active.sceneEdits || 0) + edits;
+					const steps = pendingSteps();
+					if (!truncated && !(message.stopReason === "stop" && !toolResults.length && steps.length)) return;
+					const progress = JSON.stringify([state.active.sceneEdits, steps]);
+					if (state.active.continued >= MAX_STUDIO_CONTINUATIONS || state.active.lastContinuationProgress === progress) return { action: "end" };
+					state.active.continued = (state.active.continued || 0) + 1;
+					state.active.lastContinuationProgress = progress;
+					if (truncated && toolResults.length) return; // Pi already schedules a retry from the failed tool results.
+					const reason = truncated ? "The previous response reached its output limit." : "The current plan still has unfinished steps.";
+					const unfinished = steps.length ? ` Unfinished steps: ${steps.join(" / ")}.` : "";
+					state.agent.followUp({
+						role: "user", studioContinuation: true, timestamp: Date.now(),
+						content: [{ type: "text", text: `${reason}${unfinished} Continue the original task from the existing scene and tool results. Verify what already landed before editing. Complete only the remaining work, update the plan when each step is verified, and report anything that still requires the user's action.` }],
+					});
+				};
 				state.agent = new pi.Agent({
 					initialState: { systemPrompt: activePrompt, model: selected.model, thinkingLevel: thinkingLevel ?? "off", tools: await adapters(input), messages: restored?.history ?? [] },
 					streamFn: createRetryingStream({ ai: pi.ai, models: registry, refreshAuth, onAttempt: (message) => { countAttempt(message); emitQuota(state.active?.queue, state.lastInput); } }),
@@ -421,32 +431,22 @@ export function createAgentRunner({ models: suppliedModels, sessionStore, tools 
 					// keeps the output limit this request really sent, for a turn that runs out of it (finish)
 					onPayload: (payload, model) => { if (state.active) state.active.maxTokens = payload?.max_tokens ?? payload?.max_completion_tokens ?? payload?.max_output_tokens; return model?.api === "anthropic-messages" ? withAnthropicCacheBreakpoints(payload, model) : undefined; },
 					onResponse: (response) => { if (state.active && response?.headers) state.active.lastResponseHeaders = response.headers; },
-					finishTurn: ({ message, toolResults }, signal) => {
-						const pendingSteps = state.lastInput?.pendingStudioSteps;
-						if (!pendingSteps || !state.active || state.active.abortRequested || signal?.aborted) return;
-						const truncated = message.stopReason === "length";
-						const edits = toolResults.filter(result => result.details?.authored === true ||
-							result.details?.calls?.some?.(call => call.ok && Number.isSafeInteger(call.revision?.after) && call.revision.after !== call.revision.before)).length;
-						state.active.sceneEdits = (state.active.sceneEdits || 0) + edits;
-						const steps = pendingSteps();
-						if (!truncated && !(message.stopReason === "stop" && !toolResults.length && steps.length)) return;
-						const progress = JSON.stringify([state.active.sceneEdits, steps]);
-						if (state.active.continued >= MAX_STUDIO_CONTINUATIONS || state.active.lastContinuationProgress === progress) return { action: "end" };
-						state.active.continued = (state.active.continued || 0) + 1;
-						state.active.lastContinuationProgress = progress;
-						if (truncated && toolResults.length) return; // Pi already schedules a retry from the failed tool results.
-						const reason = truncated ? "The previous response reached its output limit." : "The current plan still has unfinished steps.";
-						const unfinished = steps.length ? ` Unfinished steps: ${steps.join(" / ")}.` : "";
-						state.agent.followUp({
-							role: "user", studioContinuation: true, timestamp: Date.now(),
-							content: [{ type: "text", text: `${reason}${unfinished} Continue the original task from the existing scene and tool results. Verify what already landed before editing. Complete only the remaining work, update the plan when each step is verified, and report anything that still requires the user's action.` }],
-						});
-					},
 					sessionId,
 					// pi-agent-core's Agent attributes requests to pi (OpenRouter, NVIDIA NIM and OpenCode headers); these are
 					// CozyClay's requests, and pi 0.99 sent no attribution, so none is sent.
 					identity: { attribution: null },
 					toolExecution: "sequential",
+					// Work a tool left running (input.unfinished, motion-door.mjs): a run that would end first hands its result to the model as a message.
+					// Canvas Studio: then continue a studio turn whose plan still has unfinished steps (continueStudioTurn).
+					finishTurn: async (turn, signal) => {
+						const unfinished = state.lastInput?.unfinished;
+						if (typeof unfinished === "function" && !turn.toolResults.length) {
+							const failed = turn.message.stopReason === "error" || turn.message.stopReason === "aborted" || Boolean(state.lastInput?.signal?.aborted);
+							const text = await unfinished({ failed });
+							if (text && !failed && !state.lastInput?.signal?.aborted) { state.agent.followUp({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() }); return undefined; }
+						}
+						return continueStudioTurn(turn, signal);
+					},
 					steeringMode: "one-at-a-time",
 					maxRetryDelayMs: RETRY_MAX_DELAY_MS,
 					...(codexBaseUrl ? { transport: "sse" } : {}),
@@ -527,17 +527,23 @@ export function createAgentRunner({ models: suppliedModels, sessionStore, tools 
 					const code = status === "aborted" ? "aborted" : truncated || outOfTokens ? "truncated" : incomplete ? "tool_failed" : classified.code;
 					const detail = sanitizeUpstreamDetail(JSON.stringify({ message: rawMessage }));
 					const fallback = code === "aborted" ? "The turn was aborted." : code === "truncated" ? "The model stream ended before a terminal response event." : "The model or live editor could not complete this turn.";
-					queue.push({ type: "error", code, message: outOfTokens || incomplete || detail || fallback, ...(classified.status ? { status: classified.status } : {}) });
+					// A rate limit names its provider and, when the provider said, how long to wait (#1043): the panel's paused card.
+					const wait = code === "rate_limit" ? retryAfterMs(last) : 0, limited = code === "rate_limit" ? { provider: state.provider, ...(wait > 0 ? { retryAfterMs: wait, resetAt: new Date(Date.now() + wait).toISOString() } : {}) } : {};
+					queue.push({ type: "error", code, message: outOfTokens || incomplete || detail || fallback, ...(classified.status ? { status: classified.status } : {}), ...limited });
 				}
-				queue.push({ type: "done", usage: { ...state.active.usage }, ...(state.lastInput?.reportCost ? { cost: state.active.cost ?? 0 } : {}) });
+				// a steer the run ended before reading is taken back out of its queue and reported, before done (steer-inbox.mjs)
+				state.active.inbox.close(); if (state.active.pendingContext) queue.push(state.active.pendingContext); queue.push({ type: "done", usage: { ...state.active.usage }, ...(state.lastInput?.reportCost ? { cost: state.active.cost ?? 0 } : {}) });
 				queue.close();
 			};
+			// eventAt: any event of the run, a model still streaming among them (the main turn's no-progress guard, studio-task-routes.mjs)
 			return state.agent.subscribe((event) => {
-				if (event.type === "message_update") {
+				if (state.active) state.active.eventAt = clock(); if (event.type === "message_update") {
 					reasoning.onMessageEvent(event.assistantMessageEvent);
 					if (event.assistantMessageEvent?.type === "text_delta") pushFrame({ type: "text.delta", text: event.assistantMessageEvent.delta });
-				} else if (event.type === "tool_execution_start") startTool(event);
-				else if (event.type === "tool_execution_end") endTool(event);
+				// After a Stop, pi 1.6 still starts and ends each remaining tool call of the message ("Operation aborted", never
+				// run): no row for a call that did not run. Its end is dropped by endTool (abortedCalls).
+				} else if (event.type === "tool_execution_start") { if (!state.agent?.signal?.aborted) startTool(event); }
+				else if (event.type === "tool_execution_end") endTool(event); else if (event.type === "message_end" && state.active?.pendingContext) { pushFrame(state.active.pendingContext); state.active.pendingContext = null; }
 				else if (event.type === "agent_end") finish(event);
 			});
 		};
@@ -551,27 +557,29 @@ export function createAgentRunner({ models: suppliedModels, sessionStore, tools 
 			const queue = new FrameQueue();
 			// Studio never sends a quota frame at all (unchanged, #379): mark it sent
 			// up front so `pushFrame`'s gate never holds Studio's first frame.
-			state.active = { queue, quotaSent: input.surface === "studio", pendingFrames: [], authRetried: false, abortRequested: false, abortedCalls: new Set(), lastResponseHeaders: null, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, requests: 0 } };
+			// inbox: what the user sends while this run goes (steer); each message is reported received or dropped by its id
+			const inbox = createSteerInbox({ received: id => queue.push({ type: "steer.received", id }), dropped: id => queue.push({ type: "steer.dropped", id }) });
+			state.active = { queue, inbox, quotaSent: input.surface === "studio", pendingFrames: [], authRetried: false, abortRequested: false, abortedCalls: new Set(), lastResponseHeaders: null, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, requests: 0 } };
 			state.lastInput = input;
 			const controller = input.signal ? null : new AbortController();
 			const signal = input.signal || controller.signal;
 			state.lastInput.signal = signal;
-			// The caller's own signal (a Stop, a disconnect, a deadline) aborts the turn exactly like session.abort() does.
-			const cancel = () => { if (state.active) state.active.abortRequested = true; state.agent?.abort(); };
+			// The caller's own signal (a Stop, a disconnect, a deadline) aborts the turn exactly like session.abort() does. A
+			// steer still unread is taken back first (dropped): a loop stopped during a tool would read it as it winds down.
+			const cancel = () => { if (state.active) state.active.abortRequested = true; inbox.close(); state.agent?.abort(); };
 			const run = (async () => {
 				let removeEventListeners;
 				try {
-					await ensureAgent(input);
+					await ensureAgent(input); inbox.attach(state.agent);
 					// Keep the transcript, but replace per-turn tool closures (admission,
 					// workspace and cancellation). Auth retry reuses these same bindings.
 					// The Tasks switch swaps the whole tool set inside one session; the
 					// Agent declares the change to the model in a system message.
 					if (input.tools !== undefined) state.agent.state.tools = await adapters(input);
 					removeEventListeners = mapEvents(queue);
-					// Compose and deliver once; agent-stream.mjs retries provider calls in place without
-					// repeating attachments, captures or completed tool executions.
-					let prompts;
-					if (input.surface === "studio") {
+					// Compose and deliver once; agent-stream.mjs retries provider calls in place, repeating no attachment, capture or finished tool.
+					// input.review: the turn's review of its own edits (studio-review.mjs).
+					let prompts; if (input.review) prompts = [{ role: "user", content: input.review }]; else if (input.surface === "studio") {
 						const studioContext = typeof input.studioContextText === "string" ? input.studioContextText : `<studio-context>\n${input.contextText || ""}\n</studio-context>`;
 						const attachments = Array.isArray(input.attachments) ? input.attachments : [];
 						if (input.frameObservation) {
@@ -604,6 +612,8 @@ export function createAgentRunner({ models: suppliedModels, sessionStore, tools 
 					}
 					const now = Date.now();
 					prompts = prompts.map((message) => ({ timestamp: now, ...message }));
+					// input.note: what this message replaces, ahead of its studio context, so the panel's bubble never shows it (session-rewind.mjs editNote)
+					if (input.note && input.surface === "studio" && !input.review && Array.isArray(prompts[0]?.content)) prompts[0] = { ...prompts[0], content: [{ type: "text", text: input.note }, ...prompts[0].content] };
 					signal.addEventListener("abort", cancel, { once: true });
 					// The seam that lets the browser see codex quota headers before the
 					// response body is read (#379, F2 pass 5 finding 4): `codexResponseObserver`
@@ -618,11 +628,13 @@ export function createAgentRunner({ models: suppliedModels, sessionStore, tools 
 						return prompted;
 					});
 				} catch (error) {
-					if (!queue.closed) { queue.push(errorFrame(error, signal.aborted)); queue.push({ type: "done" }); queue.close(); }
+					if (!queue.closed) { inbox.close(); queue.push(errorFrame(error, signal.aborted)); queue.push({ type: "done" }); queue.close(); }
 				} finally {
-					signal.removeEventListener("abort", cancel);
+					signal.removeEventListener("abort", cancel); inbox.close();
 					if (state.active?.continued) state.agent?.clearFollowUpQueue();
 					removeEventListeners?.();
+					// However the run ended (a loop that threw never reaches finishTurn), work a tool left running stops here, inside the turn.
+					try { await input.unfinished?.({ failed: true }); } catch { /* the run's own outcome stands */ }
 				}
 			})();
 			try { yield* queue; } finally { await run; state.active = null; }
@@ -630,7 +642,9 @@ export function createAgentRunner({ models: suppliedModels, sessionStore, tools 
 
 		const publicSession = {
 			start,
-			steer: async (text, images = []) => state.agent?.steer({ role: "user", content: [{ type: "text", text }, ...images], timestamp: Date.now() }),
+			// A message for the running turn, read between its steps (steer-inbox.mjs); false when no turn runs. id: the
+			// caller's, named again in the turn's steer.received or steer.dropped frame.
+			steer: async (text, images = [], id = null) => state.active?.inbox.steer(text, images, id) ?? false,
 			abort: async (reason, { quiet = false } = {}) => {
 				// Set synchronously, before the run winds down: any `persist` that runs
 				// after this point — for the turn that is active right now — must
@@ -641,12 +655,12 @@ export function createAgentRunner({ models: suppliedModels, sessionStore, tools 
 				// settled tool outcome to show instead (a Studio Stop that the motion
 				// runtime acknowledged) and is only using this abort to stop the model
 				// from being prompted again.
-				if (state.active) { state.active.abortRequested = true; if (quiet) state.active.quietAbort = true; }
+				if (state.active) { state.active.abortRequested = true; if (quiet) state.active.quietAbort = true; state.active.inbox.close(); } // as cancel above
 				if (!state.agent?.state.isStreaming) return { ok: false, reason };
 				state.agent.abort();
 				return { ok: true };
 			},
-			snapshot: async () => (state.agent ? { streaming: state.agent.state.isStreaming, pendingToolCalls: [...state.agent.state.pendingToolCalls], messages: conversation().length } : null),
+			snapshot: async () => (state.agent ? { streaming: state.agent.state.isStreaming, pendingToolCalls: [...state.agent.state.pendingToolCalls], messages: conversation().length, eventAt: state.active?.eventAt ?? null } : null),
 			close: async () => { for (const unsubscribe of state.unsubscribers.splice(0)) unsubscribe(); state.agent?.abort(); await state.agent?.waitForIdle(); },
 		};
 		state.public = publicSession;

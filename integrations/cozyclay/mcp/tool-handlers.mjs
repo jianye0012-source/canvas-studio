@@ -48,7 +48,8 @@ import {
 	slateLine,
 } from "../src/shot.js";
 import {
-	CHARACTER_KIND_IDS,
+	NEW_CHARACTER_MODEL,
+	PROXY_FIGURE_MODEL,
 	POSTURES,
 	activeScene,
 	isProxyFigure,
@@ -70,9 +71,9 @@ import {
 	updateSceneObject,
 } from "../src/scene-objects.js";
 import { classifyMove, captureFraming, moveSlate } from "../src/camera-move.js";
-import { DEFAULT_PREVIS_MODE, PREVIS_MODES, createProjectDocument, readProjectDocument } from "../src/project.js";
-import { kindRefusal } from "../src/character-kind.js";
-import { documentWithCamera, splitSavedCamera } from "./project-camera.mjs";
+import { readProjectDocument } from "../src/project.js";
+import { characterName, promptDescription } from "../src/character-name.js";
+import { splitSavedCamera, serializeSavedProject } from "./project-camera.mjs";
 
 /** The authoring state. One scene document, one camera, one project name. */
 export const state = {
@@ -80,8 +81,6 @@ export const state = {
 	// studio's new project starts empty, and a connected editor reports its own.
 	doc: createSceneDocument({ seedCharacter: true }),
 	name: "Untitled",
-	/** the project's previs mode ("storyboard" | "animation"); the live editor reports it with every describe */
-	previsMode: DEFAULT_PREVIS_MODE,
 	camera: { x: 0, y: 1.6, z: 4.5, focalMm: 35 },
 	timeline: { currentFrame: 0, frameCount: 360, fps: 24 },
 	/** which character the camera frames against; null means the first of the cast */
@@ -212,7 +211,7 @@ const executeStudioCommand = async ({ action, args, expectedRevision, commandId,
 		commandId: commandId ?? randomUUID(),
 		host: Object.fromEntries(STUDIO_IDENTITY_KEYS.map((key) => [key, context.host[key]])),
 		expectedRevision: expectedRevision ?? inspectedRevision,
-	}, workspaceHandle, { timeoutMs: timeoutMs ?? (declared?.timeoutMs === undefined ? undefined : Math.min(MAX_COMMAND_TIMEOUT_MS, declared.timeoutMs + (declared.generation ? 5000 : 0))) });
+	}, workspaceHandle, { timeoutMs: timeoutMs ?? (declared?.timeoutMs === undefined ? undefined : Math.min(MAX_COMMAND_TIMEOUT_MS, declared.timeoutMs)) });
 	return receipt;
 };
 // A refusal is the editor's receipt: its code and recovery are the answer.
@@ -222,34 +221,13 @@ const studioResult = (...receipts) => ({
 });
 const runStudioCommand = async options => studioResult(await executeStudioCommand(options));
 
-// The tool list is fixed when the server starts, so a tool the project's mode
-// or the target's kind cannot run answers a structured refusal instead of acting.
-const refusal = (code, reason) => ({ content: [{ type: "text", text: JSON.stringify({ ok: false, code, reason }) }], isError: true });
-
-/** NOT_IN_MODE in a storyboard project; TARGET_NOT_READY when `feature` is given
- * and the target (`characterId`, else the active character) is a capsule figure.
- * Null when the tool may run. `context` is the connected editor's Studio context;
- * without one the in-memory project answers. */
-const previsRefusal = (toolName, { feature, context, characterId } = {}) => {
-	if ((context ? context.scene?.previsMode : state.previsMode) === "storyboard") {
-		return refusal("NOT_IN_MODE", `This project is a Storyboard - ${toolName} is available in Animation projects.`);
-	}
-	if (!feature) return null;
-	const proxy = context
-		? context.entities?.find((entity) => entity.id === (characterId ?? context.activeCharacterId))?.characterKind === "proxy"
-		: isProxyFigure(findCharacter(characterId ?? state.focus));
-	return proxy ? refusal("TARGET_NOT_READY", kindRefusal(feature)) : null;
-};
-
 const scene = () => activeScene(state.doc.scenes, state.doc.activeSceneId);
 const stage = () => scene().stage;
 
-/** The cast of the active scene. A v3 stage carries an unbounded `characters`
- * list, so "character A/B" is simply index 0/1 of this array. */
+/** The active scene's unbounded cast, addressed by stable character IDs. */
 const cast = () => stage().characters;
 
-/** Resolve a character by id, by the A/B/C letter the studio labels them with,
- * or by 1-based slot. Returns null when nothing matches. */
+/** Stable IDs are primary; old letter and slot inputs resolve only at this boundary. */
 const findCharacter = (ref) => {
 	const list = cast();
 	if (ref === undefined || ref === null || ref === "") return list[0] ?? null;
@@ -269,13 +247,12 @@ const liveCharacterId = async ref => {
 	return findCharacter(ref)?.id ?? ref;
 };
 
-/** The studio labels the cast A, B, C… by position. */
-const letterFor = (character) => String.fromCharCode(65 + cast().indexOf(character));
+const labelFor = (character) => `Character ${cast().indexOf(character) + 1}`;
 
 /** What to say when a character reference does not resolve. */
 const castHint = () =>
 	`Cast: ${cast()
-		.map((c, i) => `${String.fromCharCode(65 + i)}=${c.id}`)
+		.map((c, i) => `Character ${i + 1}=${c.id}`)
 		.join(", ")}`;
 
 const filmback = () => ({
@@ -338,7 +315,6 @@ const applyLiveDescription = (description) => {
 		if (!parsed.document) throw new Error("Live editor returned an invalid scene document.");
 		state.doc = parsed.document;
 	}
-	if (PREVIS_MODES.includes(description.previsMode)) state.previsMode = description.previsMode;
 	const sc = scene();
 	if (typeof description.sceneName === "string" && description.sceneName) sc.name = description.sceneName;
 	if (description.camera && typeof description.camera === "object") {
@@ -490,7 +466,6 @@ function sceneReport({ characterCursor = 0, objectCursor = 0, limit = 50 } = {})
 	const lines = [
 		`Project: ${state.name}`,
 		`Scene: ${sc.name}  (${state.doc.scenes.length} scene${state.doc.scenes.length === 1 ? "" : "s"} in project)`,
-		`previsMode: ${state.previsMode}`,
 		"",
 		"CAMERA",
 		`  position   x ${round(state.camera.x)}  y ${round(state.camera.y)}  z ${round(state.camera.z)}`,
@@ -503,9 +478,9 @@ function sceneReport({ characterCursor = 0, objectCursor = 0, limit = 50 } = {})
 	];
 	const framed = findCharacter(state.focus) ?? st.characters[0];
 	for (const [offset, c] of characterPage.entries()) {
-		const letter = String.fromCharCode(65 + characterCursor + offset);
+		const label = `Character ${characterCursor + offset + 1}`;
 		lines.push(
-			`  ${letter} ${c.id}  "${c.subject}"  at x ${round(c.x)}, z ${round(c.z)}, ` +
+			`  ${label} ${c.id}  "${characterName(c)}"  at x ${round(c.x)}, z ${round(c.z)}, ` +
 				`facing ${round(c.rot, 1)}deg  [${c.model}]` +
 				`${c.pose ? " posed" : ""}${c.hidden ? " hidden" : ""}` +
 				`${c === framed ? "  <- framed" : ""}`,
@@ -902,7 +877,8 @@ export const createToolHandlers = ({ projectRootPromise } = {}) => {
 				title: "Add a character to the cast",
 				description:
 					"Unlike place_character, add_character adds a new cast member instead of changing an existing one. " +
-					"The cast is unbounded — each one gets its own letter (A, B, C…), position and prompt description. " +
+					"The cast is unbounded; each member gets a stable character ID, a numbered display label, a position and a prompt description. " +
+					"A new rig character is of model x-bot-tpose, drawn in the figure look the Studio was started with. " +
 					'model "proxy-figure" adds a capsule figure: a rigless stand-in for blocking that holds a posture (stand, sit or lie) ' +
 					"and refuses motion, takes, IK and posing with TARGET_NOT_READY.",
 				inputSchema: {
@@ -910,10 +886,11 @@ export const createToolHandlers = ({ projectRootPromise } = {}) => {
 					x: z.number().default(0).describe("floor position x in metres"),
 					z: z.number().default(0).describe("floor position z in metres"),
 					facing: z.number().default(0).describe("yaw in degrees; 0 faces the default camera"),
+					// an older caller's "y-bot-tpose" becomes the rig figure (x-bot-tpose), as the editor's character.add maps it
 					model: z
-						.enum(CHARACTER_KIND_IDS)
+						.preprocess((value) => (value === "y-bot-tpose" ? NEW_CHARACTER_MODEL : value), z.enum([NEW_CHARACTER_MODEL, PROXY_FIGURE_MODEL]))
 						.optional()
-						.describe('which mannequin to use; "proxy-figure" is a rigless capsule figure for blocking'),
+						.describe('the body: "x-bot-tpose" is the rig figure (the default), "proxy-figure" a rigless capsule figure for blocking'),
 					posture: z
 						.enum(POSTURES)
 						.optional()
@@ -932,15 +909,10 @@ export const createToolHandlers = ({ projectRootPromise } = {}) => {
 				}
 				const st = stage();
 				const index = st.characters.length;
-				// The default scene already owns "char-a", and createCharacterEntry only
-				// falls back to `char-<n>` when no id is supplied, so pick the first id
-				// the cast is not already using instead of assuming a naming scheme.
-				const taken = new Set(st.characters.map((c) => c.id));
-				let id = `char-${String.fromCharCode(97 + index)}`;
-				for (let n = index + 1; taken.has(id); n += 1) id = `char-${n}`;
-				const entry = createCharacterEntry({ id, subject: desc, x, z: zPos, rot: facing, model, posture }, index);
+				const id = `character-${randomUUID()}`;
+				const entry = createCharacterEntry({ id, subject: desc, x, z: zPos, rot: facing, model: model ?? NEW_CHARACTER_MODEL, posture }, index);
 				st.characters = [...st.characters, entry];
-				return text(`Added ${String.fromCharCode(65 + index)} (${entry.id}).\n\n${sceneReport()}`);
+				return text(`Added Character ${index + 1} (${entry.id}).\n\n${sceneReport()}`);
 			},
 		),
 
@@ -954,8 +926,8 @@ export const createToolHandlers = ({ projectRootPromise } = {}) => {
 				inputSchema: {
 					character: z
 						.string()
-						.default("A")
-						.describe('which character — a letter ("A"), a slot number ("2") or an id ("char-a")'),
+						.optional()
+						.describe('stable character ID; when omitted, the first cast member'),
 					x: z.number().optional().describe("floor position x in metres"),
 					z: z.number().optional().describe("floor position z in metres"),
 					y: z
@@ -986,7 +958,7 @@ export const createToolHandlers = ({ projectRootPromise } = {}) => {
 				if (facing !== undefined) target.rot = facing;
 				if (desc !== undefined) target.subject = desc;
 				if (hidden !== undefined) target.hidden = hidden;
-				return text(`Character ${letterFor(target)} updated.\n\n${sceneReport()}`);
+				return text(`${labelFor(target)} updated.\n\n${sceneReport()}`);
 			},
 		),
 
@@ -994,9 +966,9 @@ export const createToolHandlers = ({ projectRootPromise } = {}) => {
 			"remove_character",
 			{
 				title: "Remove a character",
-				description: "Take a character out of the cast. The last remaining character cannot be removed.",
+				description: "Take a character out of the cast. The last character can go too: an empty cast is a legal stage.",
 				inputSchema: {
-					character: z.string().describe('which character — letter, slot number or id'),
+					character: z.string().describe('stable character ID'),
 				},
 			},
 			async ({ character, ...admission }) => {
@@ -1012,13 +984,13 @@ export const createToolHandlers = ({ projectRootPromise } = {}) => {
 				const st = stage();
 				const target = findCharacter(character);
 				if (!target) return text(`No character "${character}". ${castHint()}`);
-				const letter = letterFor(target);
+				const label = labelFor(target);
 				st.characters = st.characters.filter((c) => c !== target);
 				if (state.focus && !findCharacter(state.focus)) {
 					state.focus = null;
 					state.focusLocked = false;
 				}
-				return text(`Removed ${letter}.\n\n${sceneReport()}`);
+				return text(`Removed ${label}.\n\n${sceneReport()}`);
 			},
 		),
 
@@ -1030,7 +1002,7 @@ export const createToolHandlers = ({ projectRootPromise } = {}) => {
 					"Pick which character the shot is measured against. describe_shot, frame_shot and " +
 					"render_prompt all frame this character. Defaults to the first of the cast.",
 				inputSchema: {
-					character: z.string().describe('which character — letter, slot number or id'),
+					character: z.string().describe('stable character ID'),
 				},
 			},
 			async ({ character }) => {
@@ -1043,7 +1015,7 @@ export const createToolHandlers = ({ projectRootPromise } = {}) => {
 				if (!target) return text(`No character "${character}". ${castHint()}`);
 				state.focus = target.id;
 				state.focusLocked = true;
-				return text(`Framing ${letterFor(target)} "${target.subject}".\n\n${shotReport()}`);
+				return text(`Framing ${labelFor(target)} "${characterName(target)}".\n\n${shotReport()}`);
 			},
 		),
 
@@ -1404,7 +1376,7 @@ export const createToolHandlers = ({ projectRootPromise } = {}) => {
 				if (clay !== undefined) patch.clay = clay;
 				if (hidden !== undefined) patch.hidden = hidden;
 				if (opacity !== undefined) patch.opacity = opacity;
-				sc.objects = updateSceneObject(sc.objects, id, patch);
+				sc.objects = updateSceneObject(sc.objects, id, travelPath === undefined ? patch : { ...patch, path: travelPath });
 				return text(`Updated ${id}.\n\n${sceneReport()}`);
 			},
 		),
@@ -1480,7 +1452,7 @@ export const createToolHandlers = ({ projectRootPromise } = {}) => {
 			{
 				title: "Render the AI prompt for this shot",
 				description:
-					"Turn the current camera, cast and set into a prompt for an AI image or video model. " +
+					"Turn the current camera and cast into a prompt for an AI image or video model. " +
 					"The prompt carries the real framing — shot size, lens, angle and level — so the " +
 					"generated frame matches the blocking.",
 				inputSchema: {
@@ -1497,17 +1469,18 @@ export const createToolHandlers = ({ projectRootPromise } = {}) => {
 						.describe('the real setting, e.g. "a rain-slicked Seoul side street at night"'),
 					style: z
 						.string()
-						.default("cinematic film still, natural light")
-						.describe('look and grade, e.g. "shot on 35mm film, warm practical light"'),
+						.default("")
+						.describe('look and grade, e.g. "shot on 35mm film, warm practical light"; leave it out to add none'),
 					camera_move: z
 						.string()
 						.default(CAMERA_MOVES[0])
 						.describe(`camera move. Known: ${CAMERA_MOVES.filter((m) => m !== "Custom…").join(", ")}`),
-					pose_phrase: z.string().default("").describe("what character A is doing"),
-					pose2_phrase: z.string().default("").describe("what character B is doing"),
+					pose_phrase: z.string().default("").describe("what the framed character is doing"),
+					pose2_phrase: z.string().default("").describe("what the next visible character in cast order is doing"),
+					pose_phrases: z.record(z.string(), z.string()).default({}).describe("pose phrases keyed by stable character ID, for every described cast member"),
 				},
 			},
-			async ({ mode, model, environment, style, camera_move, pose_phrase, pose2_phrase }) => {
+			async ({ mode, model, environment, style, camera_move, pose_phrase, pose2_phrase, pose_phrases = {} }) => {
 				if (liveHub?.connected) {
 					try {
 						await refreshLiveDescription();
@@ -1517,24 +1490,21 @@ export const createToolHandlers = ({ projectRootPromise } = {}) => {
 				}
 				const st = stage();
 				const known = CAMERA_MOVES.includes(camera_move);
-				// composePrompt frames two subjects: the one the camera is on, then the
-				// next visible member of the cast.
+				// The prompt describes the framed character first (even when hidden), then every
+				// other visible character in cast order. ID-keyed poses win; the old two fields remain boundary defaults.
 				const framed = findCharacter(state.focus) ?? st.characters[0];
-				const other = st.characters.find((c) => c !== framed && !c.hidden) ?? null;
+				const described = [framed, ...st.characters.filter((c) => c !== framed && !c.hidden)].filter(Boolean);
 				const prompt = composePrompt({
 					mode,
 					model: modelById(model) ?? undefined,
 					shot: currentShot(),
-					subject: framed?.subject ?? "",
-					subject2: other?.subject ?? null,
-					posePhrase: pose_phrase,
-					pose2Phrase: other ? pose2_phrase : "",
+					subjects: described.map((c, i) => ({ description: promptDescription(c.subject), posePhrase: (Object.hasOwn(pose_phrases, c.id) ? pose_phrases[c.id] : undefined) ?? [pose_phrase, pose2_phrase][i] ?? "" })),
 					environment,
 					style,
 					cameraMove: known ? camera_move : "Custom…",
 					customMove: known ? "" : camera_move,
 					hasCharSheet: st.hasCharSheet === true,
-					hasEnvSheet: false,
+					hasEnvSheet: false, aspect: st.shotAspect,
 				});
 				return text(`${slateLine(currentShot())}\n\n${prompt}`);
 			},
@@ -1555,9 +1525,6 @@ export const createToolHandlers = ({ projectRootPromise } = {}) => {
 				} catch (error) {
 					return liveError(error);
 				}
-				// describe carries the editor's previsMode into state.
-				const refused = previsRefusal("mark_camera_move");
-				if (refused) return refused;
 				state.markedFraming = framing();
 				return text(`Marked A position: ${slateLine(currentShot())}\n\nNow move the camera, then call describe_camera_move.`);
 			},
@@ -1713,7 +1680,6 @@ export const createToolHandlers = ({ projectRootPromise } = {}) => {
 				}
 				state.doc = nextDocument;
 				Object.assign(state.camera, savedCamera);
-				state.previsMode = result.project.previsMode ?? DEFAULT_PREVIS_MODE;
 				state.name = result.project.name;
 				Object.assign(state, { focus: null, focusLocked: false, markedFraming: null });
 				return text(`Opened ${full}.\n\n${sceneReport()}`);
@@ -1750,10 +1716,8 @@ export const createToolHandlers = ({ projectRootPromise } = {}) => {
 				} catch (error) {
 					return text(`Could not write project: ${error.message}`);
 				}
-				const project = createProjectDocument({
-					scenesDocument: documentWithCamera(state.doc, state.camera),
-					workspaceLayout: null,
-					customPoses: [],
+				const project = serializeSavedProject({
+					document: state.doc, camera: state.camera,
 					name: state.name,
 				});
 				try {
@@ -1777,7 +1741,7 @@ export const createToolHandlers = ({ projectRootPromise } = {}) => {
 					);
 					try {
 						await requirePrivateProjectInode(file);
-						await file.writeFile(JSON.stringify(project, null, "\t"), "utf8");
+						await file.writeFile(project, "utf8");
 					} finally {
 						await file.close();
 					}
@@ -1805,7 +1769,7 @@ export const createToolHandlers = ({ projectRootPromise } = {}) => {
 				title: "List Studio commands",
 				description:
 					"List every command the connected editor registers, for studio_run: id, label, kind (mutation, transient, job, document), " +
-					"exposure, whether it is available now (the reason when not), and timeoutMs or generation where declared. The list carries " +
+					"exposure, whether it is available now (the reason when not), and timeoutMs where declared. The list carries " +
 					"no schemas; pass ids to read those commands' full declarations, description and input schema included.",
 				inputSchema: {
 					ids: z.array(z.string().min(1).max(120)).min(1).max(32).optional().describe("command ids whose full declarations to read"),

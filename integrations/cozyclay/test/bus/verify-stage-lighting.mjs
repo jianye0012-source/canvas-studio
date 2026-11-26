@@ -9,13 +9,17 @@ import { ShaderChunk } from 'three';
 import { installSoftShadows } from '../../src/soft-shadows.js';
 
 const STUDIO = { preset: 'studio', sky: null, skyTop: null, ambient: 1, hemiSky: '#ffffff', hemiGround: '#5a5d64', fill: 1, fog: 0, exposure: 1, shadowSoftness: 0, envLight: 0, ao: 0, hdr: null, hdrRotation: 0, hdrIntensity: 1, hdrBackground: true };
-const STUDIO_KEY = { x: 6, y: 9, z: 4, intensity: 1.12, warmth: 0.5, color: null };
+// The studio look's key is the new-project default: a neutral sun (brightness 0.9, warmth 0).
+const STUDIO_KEY = { x: 6, y: 9, z: 4, intensity: 0.9, warmth: 0, color: null };
 
 // Normalization: an old stage (no lighting, no key colour) gets the studio look.
 const legacy = createSceneStage({ keyLight: { x: 6, y: 9, z: 4, intensity: 1.12, warmth: 0.5 } });
 assert.deepEqual(legacy.lighting, STUDIO);
-assert.deepEqual(legacy.keyLight, STUDIO_KEY);
+// ...but keeps the key it was saved with (only a stage with no key takes the new default).
+assert.deepEqual(legacy.keyLight, { ...STUDIO_KEY, intensity: 1.12, warmth: 0.5 });
 assert.deepEqual(createSceneStage(null).lighting, STUDIO);
+assert.deepEqual(createSceneStage(null).keyLight, STUDIO_KEY);
+assert.deepEqual(createKeyLight(null), STUDIO_KEY);
 assert.deepEqual(normalizeLighting({ preset: 'noon', sky: 'blue', skyTop: '#12345', ambient: 9, fill: -1, fog: 2, exposure: 0, shadowSoftness: 'soft', hemiSky: null }),
   { ...STUDIO, ambient: 3, fill: 0, fog: 1, exposure: 0.2 }, 'bad values clamp or fall back to studio');
 assert.deepEqual(normalizeLighting({ preset: 'night', sky: '#0B1426', exposure: 1.4 }), { ...STUDIO, preset: 'night', sky: '#0B1426', exposure: 1.4 }, 'valid values survive as given');
@@ -24,17 +28,32 @@ assert.equal(createKeyLight({ color: 'cyan' }).color, null);
 assert.deepEqual(createSceneStage(createSceneStage({ lighting: { preset: 'golden', fog: 0.3 } })).lighting, createSceneStage({ lighting: { preset: 'golden', fog: 0.3 } }).lighting, 'normalization is idempotent');
 console.log('PASS lighting normalization: studio default for old stages, clamps, colour validation, idempotent');
 
-// The studio look renders the tuned rig: the exact numbers StageLights and the canvas used before.
-const studio = stageLook({ lighting: null, keyLight: STUDIO_KEY });
+// The studio look renders the tuned rig: the exact numbers StageLights and the canvas used before,
+// measured at the reference key (1.12) the fill and rim scale from.
+const REFERENCE_KEY = { ...STUDIO_KEY, intensity: 1.12, warmth: 0.5 };
+const studio = stageLook({ lighting: null, keyLight: REFERENCE_KEY });
 assert.deepEqual({ sky: studio.sky, skyTop: studio.skyTop, fog: studio.fog, captureFog: studio.captureFog, hemi: studio.hemi, ambient: studio.ambient, exposure: studio.exposure, shadowRadius: studio.shadowRadius, shadowNormalBias: studio.shadowNormalBias, lightDeck: studio.lightDeck },
   { sky: '#232428', skyTop: null, fog: { color: '#232428', near: 18, far: 54 }, captureFog: null, hemi: { sky: '#ffffff', ground: '#5a5d64', intensity: 0.9 }, ambient: 0.18, exposure: 1, shadowRadius: 1, shadowNormalBias: 0.02, lightDeck: false });
 assert.ok(Math.abs(studio.fill - 0.36) < 1e-12 && Math.abs(studio.rim - 0.22) < 1e-12);
-const lightTheme = stageLook({ lighting: STUDIO, keyLight: STUDIO_KEY, theme: 'light' });
+// the themed ambients are the values at full lift (a key at or above the reference); the default key (0.9) sits a little under it
+const lightTheme = stageLook({ lighting: STUDIO, keyLight: REFERENCE_KEY, theme: 'light' });
 assert.deepEqual([lightTheme.sky, lightTheme.hemi.ground, lightTheme.ambient, lightTheme.lightDeck], ['#e7e8eb', '#d6d8de', 0.32, true]);
-const grid = stageLook({ lighting: STUDIO, keyLight: STUDIO_KEY, grid: true, theme: 'light' });
+const grid = stageLook({ lighting: STUDIO, keyLight: REFERENCE_KEY, grid: true, theme: 'dark' });
 assert.deepEqual([grid.sky, grid.fog, grid.hemi.ground, grid.ambient], ['#232428', { color: '#232428', near: 30, far: 54 }, '#3a3d42', 0.34]);
+assert.deepEqual(stageLook({ lighting: STUDIO, keyLight: REFERENCE_KEY, grid: true, theme: 'light' }), lightTheme, 'reference grid uses the full light studio look');
+assert.deepEqual(stageLook({ lighting: null, keyLight: REFERENCE_KEY, grid: true, theme: 'light' }), lightTheme, 'legacy stages follow the light theme with a saved grid preference');
+for (const lighting of [{ ...STUDIO, sky: '#18223f' }, { ...STUDIO, hdr: 'builtin:studio-softbox', hdrBackground: true }]) {
+  assert.deepEqual(stageLook({ lighting, keyLight: STUDIO_KEY, grid: true, theme: 'light' }), stageLook({ lighting, keyLight: STUDIO_KEY, grid: true, theme: 'dark' }), 'authored sky and HDR backdrop render independently of the UI theme');
+}
 assert.deepEqual(hazeRange(0), { near: 55, far: 95 }, 'no haze keeps the export horizon');
 assert.deepEqual(hazeRange(1), { near: 2, far: 14 });
+// Haze pulls the range in evenly, and a look with a sky of its own shows on screen the range its export uses.
+assert.deepEqual([hazeRange(0.5).near, hazeRange(0.5).far], [28.5, 54.5]);
+{
+  const far = stageLook({ lighting: { ...STUDIO, sky: '#18223f' }, keyLight: STUDIO_KEY }), hazed = stageLook({ lighting: { ...STUDIO, sky: '#18223f', fog: 0.5 }, keyLight: STUDIO_KEY });
+  assert.deepEqual([far.fog.near, far.fog.far, far.captureFog], [55, 95, null], 'an authored sky without haze fades into the export horizon on screen too');
+  assert.deepEqual([hazed.fog.near, hazed.fog.far, hazed.captureFog], [28.5, 54.5, { near: 28.5, far: 54.5 }], 'haze gives the screen and the export one range');
+}
 console.log('PASS studio look equals the tuned rig under both themes and the grid view');
 
 // Recipes: complete, and each preset writes what its name promises.
@@ -61,7 +80,7 @@ const moved = createSceneStage({ keyLight: { x: -3, y: 5, z: 7, intensity: 2, wa
 const kept = applyLightingRecipe(moved, 'night', ['keyLight.position', 'lighting.exposure']);
 assert.deepEqual([kept.keyLight.x, kept.keyLight.y, kept.keyLight.z, kept.lighting.exposure], [-3, 5, 7, 1.6], 'keep holds the listed paths back');
 assert.equal(kept.keyLight.intensity, night.keyLight.intensity);
-assert.equal(applyLightingRecipe(moved, 'studio').keyLight.warmth, 0.5, 'studio resets warmth to the tuned white');
+assert.equal(applyLightingRecipe(moved, 'studio').keyLight.warmth, 0, 'studio resets warmth to the neutral default (0)');
 assert.throws(() => applyLightingRecipe(base, 'disco'), /Unknown lighting preset/);
 console.log('PASS recipes: all presets, studio exact, night/golden/stage/overcast promises, keep');
 

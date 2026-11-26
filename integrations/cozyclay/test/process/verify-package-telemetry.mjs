@@ -26,8 +26,8 @@ const signatureModule = join(packageRoot, "bin", "package-signature.mjs");
 writeFileSync(
 	signatureModule,
 	readFileSync(signatureModule, "utf8").replace(
-		/export const PACKAGE_SIGNATURE_PUBLIC_KEY = "[^"]+";/,
-		`export const PACKAGE_SIGNATURE_PUBLIC_KEY = ${JSON.stringify(publicDer)};`,
+		/const PACKAGE_SIGNATURE_PUBLIC_KEY = "[^"]+";/,
+		`const PACKAGE_SIGNATURE_PUBLIC_KEY = ${JSON.stringify(publicDer)};`,
 	),
 );
 const packageMetadata = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
@@ -35,7 +35,7 @@ const markerPayload = JSON.stringify({
 	distribution: "npm",
 	package: "cozyclay",
 	version: packageMetadata.version,
-	repository: "NomaDamas/CozyClay",
+	repository: "HaD0Yun/CozyClay",
 	content_sha256: computePackageDigest(packageRoot),
 });
 writeFileSync(join(packageRoot, "dist", "cozyclay-package.json"), JSON.stringify({
@@ -140,6 +140,23 @@ try {
 	const sourceStatus = await sourceCommand("telemetry", "status");
 	assert.equal(sourceStatus.code, 0);
 	assert.match(sourceStatus.output, /Telemetry: on/);
+
+	for (const [source, expected] of [["unlisted-source", null], ["installer", "installer"]]) {
+		const config = join(stateRoot, source);
+		const fresh = launch(await freePort(), ["--via", source], { XDG_CONFIG_HOME: config });
+		try {
+			const ready = await fresh.output.waitFor(/CozyClay is running at (http:\/\/[^\s]+)/);
+			const html = await (await fetch(new URL("/app/", ready[1]))).text();
+			const runtime = JSON.parse(html.match(/window\.__COZYCLAY_RUNTIME__ = (\{.*?\});/)[1]);
+			assert.equal(runtime.firstLaunch, true);
+			assert.equal(runtime.firstLaunchHeardFrom, expected, `--via ${source} first-launch attribution`);
+			const persisted = JSON.parse(readFileSync(join(config, "cozyclay", "state.json"), "utf8"));
+			assert.equal(persisted.telemetryFirstLaunchHeardFrom ?? null, expected);
+			assert.equal(fresh.output.all().includes(`ignoring --via ${source}`), expected === null);
+		} finally {
+			await terminateOwned(fresh.child);
+		}
+	}
 
 	const port = await freePort();
 	// A copied landing command answers the first-launch source without a TTY prompt (#466).

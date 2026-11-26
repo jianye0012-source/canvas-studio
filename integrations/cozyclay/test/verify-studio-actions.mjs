@@ -6,7 +6,6 @@ import { STUDIO_ACTIONS, STUDIO_ACTION_IDS, STUDIO_ACTION_KINDS, studioActionDec
 import { validateStudioCommand, validateStudioSchema } from "../src/studio-agent-protocol.js";
 import * as studioActions from "../src/studio-actions.js";
 import { FK_TRACKS, IK_TRACKS } from "../src/motion/ik.js";
-import { FINGER_TRACK_IDS } from "../src/motion/fingers.js";
 import { SCENE_ATTACH_BONES } from "../src/scene-objects.js";
 import { GUIDE_MODES } from "../src/shot-guides.js";
 import { IMAGE_MODELS } from "../src/shot.js";
@@ -14,17 +13,17 @@ import { IMAGE_MODELS } from "../src/shot.js";
 const code = expected => error => error?.code === expected;
 
 /* The first batch is declared once, as data. */
-const firstBatch = ["shot.create", "shot.createStill", "shot.setCaption", "shot.setCastOverride", "shot.setHold", "shot.split", "shot.duplicate", "shot.remove", "shot.setRange", "shot.reorder", "object.duplicate"];
+const firstBatch = ["shot.create", "shot.split", "shot.duplicate", "shot.remove", "shot.setRange", "shot.reorder", "object.duplicate"];
 const castActions = ["character.move"];
 const waypointActions = ["character.addWaypoint", "character.moveWaypoint", "character.removeWaypoint", "character.clearWaypoints"];
 const ikKeyActions = ["character.setIkKey", "character.removeIkKey", "character.clearIkKeys"];
 const attachActions = ["object.attach", "object.detach"];
 const railActions = ["shot.setCameraRail", "shot.clearCameraRail", "shot.setCameraMode"];
 const shotNameActions = ["shot.rename"];
-const viewActions = ["view.setPartColours", "view.setGuideMode", "view.setInset", "view.setGhosts"];
+const viewActions = ["view.setPartColours", "view.setGuideMode", "view.setInset", "view.setGhosts", "view.frame"];
 const exportActions = ["export.shotVideo"];
 const sceneActions = ["scene.create", "scene.duplicate", "scene.rename", "scene.delete", "scene.switch"];
-const projectActions = ["project.save", "project.exportAsAnimation"];
+const projectActions = ["project.save"];
 const assetActions = ["asset.import"];
 const aiActions = ["ai.prepareShot"];
 assert.deepEqual([...STUDIO_ACTION_IDS].sort(), [...firstBatch, ...castActions, ...waypointActions, ...ikKeyActions, ...attachActions, ...railActions, ...shotNameActions, ...viewActions, ...exportActions, ...sceneActions, ...projectActions, ...assetActions, ...aiActions].sort());
@@ -73,6 +72,7 @@ for (const id of ikKeyActions) {
 	assert.ok(studioActionDeclaration(id).input.required.includes("characterId"), id);
 }
 // The JSON form of a key names exactly the tracks the IK layer keys.
+const FINGER_TRACK_IDS = ["left", "right"].flatMap(side => ["Thumb", "Index", "Middle", "Ring", "Pinky"].flatMap(name => [1, 2, 3].map(joint => `${side}${name}${joint}`)));
 assert.deepEqual([...studioActions.STUDIO_IK_CHAIN_TRACKS], IK_TRACKS.map(track => track.id));
 assert.deepEqual([...studioActions.STUDIO_IK_JOINT_TRACKS], [...FK_TRACKS.map(track => track.id), ...FINGER_TRACK_IDS]);
 const setIkKey = studioActionDeclaration("character.setIkKey").input;
@@ -125,6 +125,9 @@ assert.equal(exportVideo.undoDomain, undefined);
 assert.equal(exportVideo.timeoutMs, 300_000);
 assert.deepEqual(exportVideo.input.required, []);
 assert.deepEqual(validateStudioSchema(exportVideo.input, { shotId: "shot-1" }), { shotId: "shot-1" });
+assert.deepEqual(validateStudioSchema(exportVideo.input, { output: { width: 736, height: 416 } }), { output: { width: 736, height: 416 } }, "an export can name its pixel size");
+assert.throws(() => validateStudioSchema(exportVideo.input, { output: { width: 736 } }), code("INVALID_ARGUMENT"), "a size names both sides");
+assert.throws(() => validateStudioSchema(exportVideo.input, { output: { width: 32, height: 18 } }), code("INVALID_ARGUMENT"), "too small to encode");
 // Scenes are project-level document work: outside the undo history, each
 // addressed by the scene id the context's host carries.
 for (const id of sceneActions) {
@@ -149,8 +152,12 @@ assert.deepEqual([...importAsset.input.properties.placeAs.enum], ["cutout", "bac
 for (const source of ["data:image/png;base64,AAAA", "https://example.test/poster.png", "http://127.0.0.1:5180/chair.glb"]) validateStudioSchema(importAsset.input, { source, name: "poster.png", placeAs: "cutout" });
 for (const source of ["/Users/me/poster.png", "file:///tmp/poster.png", "ftp://example.test/poster.png"]) assert.throws(() => validateStudioSchema(importAsset.input, { source, name: "poster.png", placeAs: "cutout" }), code("INVALID_ARGUMENT"), source);
 // The Send-to-AI package is a job that answers with its prompt: no external
-// call, no motion generation, nothing authored. Its model is one the Studio
-// writes image prompts for.
+// call, nothing authored. Its model is one the Studio writes image prompts for.
+// 3.x has no motion generation backend, so no description is defined against one;
+// each states its own constraint instead.
+for (const action of STUDIO_ACTIONS) assert.doesNotMatch(action.description ?? "", /motion generation/, `${action.id} is described against a retired motion generation`);
+assert.match(studioActionDeclaration("export.shotVideo").description, /One export at a time \(a second one is refused while one runs\)/);
+assert.match(studioActionDeclaration("ai.prepareShot").description, /Changes nothing in the scene; only a given mode or model becomes the Studio's choice\./);
 const prepareShot = studioActionDeclaration("ai.prepareShot");
 assert.equal(prepareShot.kind, "job");
 assert.equal(prepareShot.generation, undefined);
@@ -243,4 +250,8 @@ await assert.rejects(brokenJob.run("export.shotVideo", {}), /affectedIds/, "a se
 assert.deepEqual(validateStudioCommand({ name: "run_action", args: { action: "shot.split", args: { shotId: "shot-1" } } }).args, { action: "shot.split", args: { shotId: "shot-1" } });
 assert.equal(validateStudioCommand({ name: "inspect_studio", args: { scope: "actions" } }).args.scope, "actions");
 
+// #1042: an unknown action id names the nearest declared ones and carries its rule for telemetry.
+assert.throws(() => studioActionDeclaration("shot.setCameraRale"), error => error.code === "INVALID_ARGUMENT" && /Did you mean shot\.setCameraRail/.test(error.message)
+	&& error.details.rule === "unknown_action" && error.details.path === "$.action");
+assert.throws(() => studioActionDeclaration("frame_shot"), error => /Tool names \(frame_shot, arrange_objects, \.\.\.\) are not action ids/.test(error.message));
 console.log(`studio actions verified: ${STUDIO_ACTIONS.length} declared`);

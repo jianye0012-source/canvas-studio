@@ -4,6 +4,9 @@ import { useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { SkeletonUtils } from "three/examples/jsm/Addons.js";
 import { ProxyFigure } from "./proxy-figure.jsx";
+import { CharacterLoadBoundary } from "./character-load-boundary.js";
+import { ImportedCharacter } from "./imported-character.jsx";
+import { isImportedCharacter } from "./character-rig.js";
 import { isProxyFigure } from "./scenes.js";
 import { applyPartColours } from "./part-colours.js";
 import { applyHipsOffset, applyPose, primeBindPose } from "./poses.js";
@@ -14,8 +17,16 @@ import { shotAtFrame } from "./cuts.js";
 import { sampleAt } from "./sample-at.js";
 
 // Memoized: unchanged cast members skip re-rendering on every playhead tick.
-export const Character = memo(function Character(props) {
-	return isProxyFigure(props) ? <ProxyFigure {...props} /> : <RiggedCharacter {...props} />;
+export const Character = memo(function Character({ character, ...props }) {
+	// an imported character (character-import.js) plays on its own file's bones
+	if (isImportedCharacter(character)) return <ImportedCharacter {...props} character={character} />;
+	if (isProxyFigure(props)) return <ProxyFigure {...props} />;
+	// a model file that fails to load falls back to the proxy figure instead of crashing the stage
+	return (
+		<CharacterLoadBoundary key={props.url} url={props.url} fallback={<ProxyFigure {...props} />} onLoadFailure={() => useFBX.clear(props.url)}>
+			<RiggedCharacter {...props} />
+		</CharacterLoadBoundary>
+	);
 });
 
 export const PlaybackCharacter = memo(function PlaybackCharacter({
@@ -32,6 +43,7 @@ export const PlaybackCharacter = memo(function PlaybackCharacter({
 	return (
 		<Character
 			{...props}
+			character={entry}
 			position={[placement.x, entry.y ?? 0, placement.z]}
 			rot={placement.rot}
 			pose={clip ? null : (placement.pose ?? props.pose)}

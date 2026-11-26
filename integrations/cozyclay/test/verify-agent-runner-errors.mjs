@@ -11,10 +11,12 @@ import { zstdDecompressSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai/providers/faux";
+import { fauxProvider, fauxAssistantMessage, fauxText, fauxThinking } from "@earendil-works/pi-ai/providers/faux";
 import { fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createAgentRunner, classifyError, classifyProviderError } from "../bin/agent/agent-runner.mjs";
-import { retryHintMs } from "../bin/agent/agent-stream.mjs";
+import { headerRetryAfterMs, retryAfterMs, retryKind } from "../bin/agent/agent-stream.mjs";
+import { failureCodeOf } from "../bin/agent/agent-failure-codes.mjs";
+import * as piAi from "@earendil-works/pi-ai";
 import { createSessionStore, transcriptFromHistory } from "../bin/agent/session-store.mjs";
 import { createModels as createAgentModels, loadProvider } from "../bin/agent/providers.mjs";
 
@@ -99,8 +101,12 @@ function errorMessage(text) {
 			const request = received.at(-1);
 			assert.equal(request.path, "/codex/responses");
 			assert.equal(request.body.model, model);
-			console.log("runner-effort-wire", JSON.stringify({ label, model, effort, reasoning: request.body.reasoning ?? null }));
-			expect(label, expectedEffort === undefined ? !Object.hasOwn(request.body, "reasoning") : request.body.reasoning?.effort === expectedEffort, JSON.stringify(request.body.reasoning));
+			// A model that takes its effort mid-conversation gets it in configuration_update items of the input (the last
+			// one is this request's), beside a fixed reasoning.effort; any other model gets it as reasoning.effort.
+			const updates = (Array.isArray(request.body.input) ? request.body.input : []).filter((item) => item?.type === "configuration_update");
+			const wire = updates.length ? updates.at(-1).reasoning?.effort : request.body.reasoning?.effort;
+			console.log("runner-effort-wire", JSON.stringify({ label, model, effort, reasoning: request.body.reasoning ?? null, updates: updates.length, wire: wire ?? null }));
+			expect(label, expectedEffort === undefined ? !Object.hasOwn(request.body, "reasoning") && !updates.length : wire === expectedEffort, JSON.stringify({ reasoning: request.body.reasoning, updates }));
 		};
 		const freshCases = [
 			["gpt-6-astra", "none", undefined],
@@ -133,6 +139,48 @@ function errorMessage(text) {
 	}
 }
 
+// --- #1043: a failed answer's Retry-After header reaches the retry and the rate-limit frame (real Codex adapter) ---
+// pi-ai drops a failed response's headers; agent-stream's per-request fetch keeps the wait. The Codex adapter also turns
+// a 429 into "You have hit your ChatGPT usage limit", with no status: it must still read as a rate limit.
+{
+	const replies = [];
+	let served = 0;
+	const fixture = createServer(async (req, res) => {
+		req.resume(); await once(req, "end");
+		served += 1;
+		const reply = replies.shift();
+		if (reply) { res.writeHead(429, { "content-type": "application/json", ...reply }); res.end(JSON.stringify({ error: { code: "usage_limit_reached", plan_type: "plus", message: "" } })); return; }
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		res.end(`data: ${JSON.stringify({ type: "response.completed", response: { status: "completed" } })}\n\n`);
+	});
+	const listening = once(fixture, "listening", { signal: AbortSignal.timeout(5000) });
+	fixture.listen(0, "127.0.0.1"); await listening;
+	const codexBaseUrl = `http://127.0.0.1:${fixture.address().port}`;
+	const token = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "runner-retry-after-fixture" } })).toString("base64url")}.e30`;
+	const auth = { readStored: () => ({ access_token: token, refresh_token: "fixture-refresh", expires_at: Date.now() + 3600000 }) };
+	let runner;
+	try {
+		const models = await createAgentModels({ auth, keys: { readKeys: () => ({}) }, env: {}, codexBaseUrl });
+		runner = createAgentRunner({ models, codexBaseUrl });
+		const turn = async (name) => collect(await runner.openSession(name), { text: "hello", model: "openai-codex/gpt-6-astra", signal: AbortSignal.timeout(8000) });
+
+		replies.push({ "retry-after": "600" });
+		let frames = await turn("retry-after-long");
+		let error = frames.find((frame) => frame.type === "error");
+		expect("a 10-minute Retry-After ends the turn at once, one request", served === 1, `served=${served}`);
+		expect("it reads as the provider's rate limit with the header's wait", error?.code === "rate_limit" && error.provider === "openai-codex" && error.retryAfterMs === 600_000 && Date.parse(error.resetAt) > Date.now() + 590_000, JSON.stringify(error));
+
+		served = 0;
+		replies.push({ "retry-after-ms": "60" });
+		frames = await turn("retry-after-short");
+		expect("a short Retry-After is waited out once and the turn completes", served === 2 && frames.every((frame) => frame.type !== "error") && frames.at(-1)?.type === "done", JSON.stringify({ served, frames }));
+	} finally {
+		await runner?.close();
+		const closed = once(fixture, "close", { signal: AbortSignal.timeout(5000) });
+		fixture.close(); fixture.closeAllConnections(); await closed;
+	}
+}
+
 // --- 429 twice then success: pi's own retry (maxRetries:2) absorbs both, one turn ---
 {
 	const models = createModels();
@@ -148,17 +196,129 @@ function errorMessage(text) {
 	expect("the surviving text reached the panel", frames.some((f) => f.type === "text.delta" && f.text) || frames.some((f) => f.type === "text.delta"), JSON.stringify(frames));
 }
 
-// --- a provider's own wait hint sets the backoff, capped at 20 s (#975) ---
+// --- a provider's own wait hint, read from the message (#975) ---
 {
-	const hint = (text) => retryHintMs({ errorMessage: text });
+	const hint = (text) => retryAfterMs({ errorMessage: text });
 	assert.equal(hint("429 Too Many Requests. Please retry after 8 seconds."), 8000);
 	assert.equal(hint("Rate limit reached. Please try again in 2.5s."), 2500);
 	assert.equal(hint("overloaded, retry in 750ms"), 750);
-	assert.equal(hint("try again in 600 seconds"), 20_000, "a long hint is capped");
+	assert.equal(hint("try again in 600 seconds"), 600_000, "a long hint is read uncapped");
 	assert.equal(hint("500 overloaded"), 0, "no hint: pi-ai's backoff alone");
 	assert.equal(hint("request 429 failed after 3 retries"), 0, "a count is not a wait");
-	assert.equal(retryHintMs(undefined), 0);
-	console.log("PASS retry hint: seconds and milliseconds, capped, none without a unit");
+	assert.equal(retryAfterMs(undefined), 0);
+	console.log("PASS retry hint: seconds and milliseconds, none without a unit");
+}
+
+// --- #1043: what is retried, and how a final provider failure is labelled ---
+{
+	const failed = (text) => ({ stopReason: "error", errorMessage: text });
+	const kind = (text) => retryKind(piAi, failed(text));
+	const gemini429 = 'got status: 429 Too Many Requests. {"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details. Please retry in 37.5s.","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"37s"}]}}';
+	assert.equal(kind("503 Service Unavailable"), "transient");
+	assert.equal(kind("Provider stopped with: MALFORMED_FUNCTION_CALL"), "resample", "a Gemini malformed call is sampled again");
+	assert.equal(kind("Provider stopped with: UNEXPECTED_TOOL_CALL"), "resample");
+	assert.equal(kind("Provider stopped with: SAFETY"), null, "a content block stays final");
+	assert.equal(kind(gemini429), "quota_wait", "a per-minute quota that names its wait is waited out once");
+	assert.equal(kind("429 You exceeded your current quota, please check your plan and billing details."), null, "a quota without a wait is final");
+	assert.equal(kind("429 quota exceeded. Please retry in 3600s."), null, "a wait past a minute is final");
+	assert.equal(kind("400 INVALID_ARGUMENT"), null);
+	assert.equal(retryKind(piAi, { stopReason: "stop" }), null);
+	assert.equal(retryAfterMs(failed(gemini429)), 37_500, "the message's own wait, uncapped");
+	assert.equal(retryAfterMs(failed('{"retryDelay":"12s"}')), 12_000, "Gemini's RetryInfo alone");
+	// pi-ai's Codex adapter turns a 429 into this sentence: no status, a wait in minutes.
+	const codexLimit = "You have hit your ChatGPT usage limit (plus plan). Try again in ~38 min.";
+	assert.equal(retryAfterMs(failed(codexLimit)), 38 * 60_000, "a wait in minutes");
+	assert.equal(retryAfterMs(failed("Rate limit reached. Try again in 2 hours.")), 2 * 3_600_000, "a wait in hours");
+	assert.equal(kind(codexLimit), null, "a usage limit an hour away is final at once");
+	assert.equal(kind("429 Too Many Requests. Please retry after 300 seconds."), null, "a rate limit that asks for minutes is final, not retried for a minute");
+	assert.equal(kind("Rate limit reached. Please try again in 2.5s."), "transient", "a short rate limit is still retried");
+	// 408 / 5xx statuses pi-ai's word list misses, read only where the status is folded in.
+	for (const text of ["522: <html>origin timed out</html>", "OpenAI API error (530): <html>", "got status: 521 Web Server Is Down.", "408 Request Timeout"]) {
+		assert.equal(kind(text), "transient", text);
+	}
+	for (const text of ["501 Not Implemented", "422: {\"error\":\"bad tool schema\"}", "Request body 523 bytes too large", "Claude Code turn failed (error_during_execution)",
+		// a number inside an earlier parenthesis is no status
+		"400 requested 9000 tokens (512 in the messages, 8488 in the completion)", "Context window exceeded (512 tokens over)", "Image too large (523 KB)"]) {
+		assert.equal(kind(text), null, text);
+	}
+	// A failed response's own Retry-After header (kept by agent-stream's fetch) wins over the text.
+	assert.equal(retryAfterMs({ ...failed("429 Too Many Requests"), serverRetryAfterMs: 4000 }), 4000);
+	assert.equal(headerRetryAfterMs(new Headers({ "retry-after": "12" })), 12_000);
+	assert.equal(headerRetryAfterMs(new Headers({ "retry-after-ms": "250", "retry-after": "12" })), 250);
+	assert.ok(Math.abs(headerRetryAfterMs(new Headers({ "retry-after": new Date(Date.now() + 90_000).toUTCString() })) - 90_000) <= 1000, "an HTTP date");
+	assert.equal(headerRetryAfterMs(new Headers({ "retry-after": "soon" })), undefined);
+	assert.equal(headerRetryAfterMs(new Headers()), undefined);
+	console.log("PASS retry classification: transient, Gemini resample, short quota wait, minute waits, 5xx statuses, final");
+
+	// A 4xx folded into the message rides on the frame, so the turn reads as invalid_request, not upstream.
+	for (const [text, expected] of [
+		['{"error":{"code":400,"message":"Invalid JSON payload","status":"INVALID_ARGUMENT"}}', "invalid_request"],
+		["404 model not found", "invalid_request"],
+		["413 Request Entity Too Large", "invalid_request"],
+		["502 Bad Gateway", "upstream"],
+		["Provider stopped with: SAFETY", "upstream"],
+		["429 Too Many Requests", "rate_limited"],
+		["You have hit your ChatGPT usage limit (plus plan). Try again in ~38 min.", "rate_limited"],
+		["RESOURCE_EXHAUSTED: quota exceeded for model", "rate_limited"],
+	]) {
+		const { code, status } = classifyError({ message: text });
+		expect(`"${text.slice(0, 32)}" -> ${expected}`, failureCodeOf({ code, ...(status ? { status } : {}) }) === expected, JSON.stringify({ code, status }));
+	}
+}
+
+async function scriptedTurn(name, steps) {
+	const models = createModels();
+	const faux = fauxProvider({ provider: "faux", models: [{ id: "scripted", name: "Scripted", input: ["text", "image"] }] });
+	models.setProvider(faux.provider);
+	const calls = installScripts(faux, steps);
+	const runner = createAgentRunner({ models, tools: [] });
+	const session = await runner.openSession(name, { surface: "workflow" });
+	const frames = await collect(session, { text: "hi", model: "faux/scripted" });
+	await runner.close();
+	return { frames, calls };
+}
+
+// --- a Gemini MALFORMED_FUNCTION_CALL is sampled again instead of ending the turn as upstream (#1043) ---
+{
+	const { frames, calls } = await scriptedTurn("errors-resample", [errorMessage("Provider stopped with: MALFORMED_FUNCTION_CALL"), fauxAssistantMessage([fauxText("resampled")])]);
+	expect("a malformed Gemini call is retried and the turn completes", calls.length === 2 && frames.every((f) => f.type !== "error"), JSON.stringify(frames));
+}
+
+// --- a stream that drops after its reasoning only is retried; the answer arrives once (#1043) ---
+{
+	const { frames, calls } = await scriptedTurn("errors-midstream-thinking", [
+		fauxAssistantMessage([fauxThinking("planning the shot")], { stopReason: "error", errorMessage: "terminated" }),
+		fauxAssistantMessage([fauxText("after the drop")]),
+	]);
+	const text = frames.filter((f) => f.type === "text.delta").map((f) => f.text).join("");
+	expect("a drop after reasoning alone is retried", calls.length === 2 && frames.every((f) => f.type !== "error") && text === "after the drop", JSON.stringify({ calls: calls.length, frames }));
+}
+
+// --- a drop after the answer started is not retried: the panel never sees an answer twice ---
+{
+	const { frames, calls } = await scriptedTurn("errors-midstream-text", [
+		fauxAssistantMessage([fauxText("half an answer")], { stopReason: "error", errorMessage: "terminated" }),
+		fauxAssistantMessage([fauxText("second answer")]),
+	]);
+	expect("a drop after answer text ends the turn", calls.length === 1 && frames.some((f) => f.type === "error"), JSON.stringify({ calls: calls.length }));
+}
+
+// --- a final rate limit names its provider and the provider's wait (#1043) ---
+{
+	const quota = "429 You exceeded your current quota, please check your plan and billing details. Please retry in 0.05s.";
+	const started = Date.now();
+	const { frames, calls } = await scriptedTurn("errors-quota", [errorMessage(quota), errorMessage(quota), fauxAssistantMessage([fauxText("never")])]);
+	const error = frames.find((f) => f.type === "error");
+	expect("a short quota wait is taken once, then the turn fails as rate_limit", calls.length === 2 && error?.code === "rate_limit", JSON.stringify({ calls: calls.length, error }));
+	expect("the rate_limit frame names the provider and when to retry", error?.provider === "faux" && error?.retryAfterMs === 50 && Date.parse(error?.resetAt) >= started, JSON.stringify(error));
+	const plain = (await scriptedTurn("errors-quota-plain", [errorMessage("429 quota exceeded, check billing"), fauxAssistantMessage([fauxText("never")])])).frames.find((f) => f.type === "error");
+	expect("a rate limit without a wait carries no reset time", plain?.code === "rate_limit" && plain.provider === "faux" && !("resetAt" in plain), JSON.stringify(plain));
+}
+
+// --- a rate limit with no wait keeps three retries; the fourth is for overloads (#1043) ---
+{
+	const { frames, calls } = await scriptedTurn("errors-429-budget", Array.from({ length: 6 }, () => errorMessage("429 Too Many Requests")));
+	expect("a plain 429 is tried 4 times, then the quota card", calls.length === 4 && frames.find((f) => f.type === "error")?.code === "rate_limit", JSON.stringify({ calls: calls.length }));
 }
 
 // --- one session whose tool set changes between turns (the Studio Tasks switch) still runs ---
@@ -190,24 +350,24 @@ for (const token of ["AIza-secret-0123456789abcdefghijk", "sk-or-secret", "sk-an
 	expect(`provider key material (${token.split("secret")[0]}) is redacted from the runner error frame`, !!error && !error.message.includes("AIza") && !error.message.includes("secret"), JSON.stringify(error));
 }
 
-// --- 529 four times: retries exhausted (maxRetries:3 = 4 attempts total, #975) -> error{code:'overloaded'} ---
+// --- 529 five times: retries exhausted (maxRetries:4 = 5 attempts total, #975, #1043) -> error{code:'overloaded'} ---
 {
 	const sessionsDir = mkdtempSync(join(tmpdir(), "cozyclay-agent-runner-errors-overloaded-store-"));
 	const sessionStore = createSessionStore(sessionsDir);
 	const models = createModels();
 	const faux = fauxProvider({ provider: "faux", models: [{ id: "scripted", name: "Scripted", input: ["text", "image"] }] });
 	models.setProvider(faux.provider);
-	const calls = installScripts(faux, [errorMessage("500 overloaded"), errorMessage("500 overloaded"), errorMessage("500 overloaded"), errorMessage("500 overloaded"), fauxAssistantMessage([fauxText("recovered after overload")])]);
+	const calls = installScripts(faux, [...Array.from({ length: 5 }, () => errorMessage("500 overloaded")), fauxAssistantMessage([fauxText("recovered after overload")])]);
 	const runner = createAgentRunner({ models, tools: [], sessionStore });
 	const session = await runner.openSession("errors-529", { surface: "workflow" });
 	const frames = await collect(session, { text: "hi", model: "faux/scripted" });
 	const firstHistory = sessionStore.read("errors-529")?.history || [];
 	console.log("16a-overloaded-store-roles", JSON.stringify(firstHistory.map((message) => message.role)));
 	const error = frames.find((f) => f.type === "error");
-	expect("529 four times exhausts retries with one error frame", !!error, JSON.stringify(frames));
+	expect("529 five times exhausts retries with one error frame", !!error, JSON.stringify(frames));
 	expect("the error frame carries code:'overloaded'", error?.code === "overloaded", JSON.stringify(error));
 	expect("a done frame follows the error frame", frames.at(-1)?.type === "done", JSON.stringify(frames));
-	expect("the model was called exactly 4 times", calls.length === 4, `calls.length=${calls.length}`);
+	expect("the model was called exactly 5 times", calls.length === 5, `calls.length=${calls.length}`);
 	expect("overloaded failures keep model history limited to the user message", JSON.stringify(firstHistory.map((message) => message.role)) === "[\"user\"]", JSON.stringify(firstHistory));
 	const firstSession = sessionStore.read("errors-529");
 	expect("overloaded failure is persisted separately with code and message", firstSession?.turnErrors?.length === 1 && firstSession.turnErrors[0].code === error.code && firstSession.turnErrors[0].message === error.message, JSON.stringify(firstSession?.turnErrors));
@@ -602,6 +762,8 @@ for (const scenario of ["progressive", "no-edit"]) {
 // once it fires; before the pi-tools.mjs fix this never resolves that way
 // because `signal` is actually the harness's `onUpdate` callback (a
 // function), so `ctx.signal.aborted` throws / never becomes true.
+// Each message names a second call after the slow one: a Stop during the first leaves it unrun, and pi 1.6 still ends
+// it with a start and an "Operation aborted" end. The panel must get no row for a call that never ran.
 {
 	const observed = [];
 	let started;
@@ -626,7 +788,7 @@ for (const scenario of ["progressive", "no-edit"]) {
 	const models = createModels();
 	const faux = fauxProvider({ provider: "faux", models: [{ id: "scripted", name: "Scripted", input: ["text", "image"] }] });
 	models.setProvider(faux.provider);
-	installScripts(faux, [1, 2].map((turn) => fauxAssistantMessage([fauxToolCall("slow_tool", {}, { id: `slow-${turn}` })], { stopReason: "toolUse" })));
+	installScripts(faux, [1, 2].map((turn) => fauxAssistantMessage([fauxToolCall("slow_tool", {}, { id: `slow-${turn}` }), fauxToolCall("slow_tool", {}, { id: `unrun-${turn}` })], { stopReason: "toolUse" })));
 	const runner = createAgentRunner({ models });
 	const session = await runner.openSession("errors-tool-abort", { surface: "workflow" });
 	let previousSignal;
@@ -642,12 +804,13 @@ for (const scenario of ["progressive", "no-edit"]) {
 			assert.equal(signal.aborted, true);
 			assert.equal(frames.at(-1)?.type, "done", JSON.stringify(frames));
 			assert.ok(frames.some((frame) => frame.type === "error" && frame.code === "aborted"), JSON.stringify(frames));
+			assert.deepEqual(frames.filter((frame) => frame.type === "tool.start" || frame.type === "tool.done").map((frame) => `${frame.type} ${frame.callId}`), [`tool.start slow-${turn}`], "only the call that ran has a row; the call after the Stop has none");
 			previousSignal = signal;
 		}
 	} finally { await runner.close(); }
 	console.log("two-turn tool abort bindings", JSON.stringify(observed));
 	assert.deepEqual(observed, [{ turn: 1, aborted: true }, { turn: 2, aborted: true }], "each turn's slow-tool closure observes that turn's abort");
-	console.log("PASS both turns' tool handlers receive pi's real harness abort signal and complete with done");
+	console.log("PASS both turns' tool handlers receive pi's real harness abort signal and complete with done; the call after the Stop is never shown");
 }
 
 // --- abort persistence: the real session store never gets the cancelled

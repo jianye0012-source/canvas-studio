@@ -66,18 +66,11 @@ const { pathToFileURL } = require('node:url');
     list=await stdio.listTools(); assert.ok(list.tools.some(t=>t.name==='canvas_studio_get_canvas_summary'));
     const generatedText=await stdio.callTool({name:'canvas_studio_generate_text',arguments:{prompt:'通过 MCP 生成一段文案',sourceNodeIds:[],skillIds:[skill.id]}}); assert.ok(!generatedText.isError,JSON.stringify(generatedText)); assert.equal(requests.length,5); assert.ok(JSON.stringify(requests[4]).includes('SKILL_SENTINEL'));
     const summary=await stdio.callTool({name:'canvas_studio_get_canvas_summary',arguments:{}}); assert.ok(!summary.isError,JSON.stringify(summary)); assert.ok(JSON.stringify(summary).includes('文件夹循环验收'));
-    // Use the actual UI to open the director and verify its separate MCP surface.
+    // Use the actual UI to open the director; it no longer has a separate MCP surface (removed with the 3.3.2 upgrade).
     await page.getByLabel('导演台',{exact:true}).click(); await page.mouse.click(950,460);
     await page.getByRole('button',{name:'打开导演台',exact:true}).last().click();
     const frame = page.frameLocator('iframe[title="3D导演台"]'); await frame.locator('.canvas-return-bar').waitFor();
-    await frame.locator('.topbar-mcp[data-state="connected"]').waitFor({timeout:30000});
-    const director=await httpClient('director'); const tools=await director.listTools(); assert.ok(tools.tools.every(t=>t.name.startsWith('canvas_studio_director_')));
-    const workspaces=await director.callTool({name:'canvas_studio_director_list_workspaces',arguments:{}}); assert.ok(!workspaces.isError); assert.ok(JSON.parse(workspaces.content[0].text).length);
-    const placed=await director.callTool({name:'canvas_studio_director_place_object',arguments:{kind:'cube',name:'MCP白模验证',x:1,z:1}}); assert.ok(!placed.isError,JSON.stringify(placed));
-    const exportName='mcp-proof-'+Date.now()+'.cclayproject'; const savedProject=await director.callTool({name:'canvas_studio_director_save_project',arguments:{path:exportName,name:'MCP保存验证'}}); assert.ok(JSON.stringify(savedProject).includes('Saved'),JSON.stringify(savedProject)); const diskProject=JSON.parse(await fs.readFile(path.join(runtime.dataDir,exportName),'utf8')); assert.ok(JSON.stringify(diskProject).includes('MCP白模验证')); await fs.unlink(path.join(runtime.dataDir,exportName));
-    const refused=await director.callTool({name:'canvas_studio_director_save_project',arguments:{path:'../out-of-data.cclayproject'}}); assert.ok(JSON.stringify(refused).includes('configured project root'));
-    const scene=await director.callTool({name:'canvas_studio_director_describe_scene',arguments:{}}); assert.ok(!scene.isError,JSON.stringify(scene));
-    await frame.getByRole('button',{name:'导演台 MCP',exact:true}).click(); await frame.getByRole('dialog').waitFor(); assert.ok((await frame.getByLabel('导演台 MCP 配置').inputValue()).includes('canvas-studio-director')); await frame.getByRole('button',{name:'关闭',exact:true}).click();
+    await frame.locator('.canvas-return-bar').getByText('已连接画布',{exact:true}).waitFor({timeout:30000});
     const input=frame.locator('input[type=file][accept*="video"]').first(); if(!await input.count()) await frame.locator('.agent-rail-toggle').click();
     await input.setInputFiles(path.join(root,'work/video-fixture/h264-10bit.mp4'));
     await frame.locator('.agent-attachments img').first().waitFor({state:'attached',timeout:30000}); assert.ok((await frame.locator('.agent-attachments img').first().getAttribute('alt')).includes('9 frames'));
@@ -89,8 +82,8 @@ const { pathToFileURL } = require('node:url');
     const failed=await context.request.post(runtime.url+'/local/media/video-sheet',{data:Buffer.from('invalid h264'),headers:{'content-type':'application/octet-stream'}}); assert.equal(failed.status(),500); assert.ok((await failed.json()).msg.includes('无法解码'));
     assert.equal((await fs.readdir(path.join(runtime.dataDir,'tmp'))).some(n=>n.startsWith('video-')),false);
     await page.screenshot({path:path.join(root,'outputs/MCP与导演台预览.png')});
-    await fs.writeFile(path.join(root,'work/workspace-proof.json'),JSON.stringify({requests:requests.length,skills:true,pausedAndReloaded:true,completedFiles:2,httpMcp:true,stdioMcp:true,directorTools:tools.tools.length,videoProfiles:['H264 8-bit 420','H264 10-bit 444'],errors},null,2));
-    assert.deepEqual(errors,[]); console.log('PASS folder workflow pause/reload, per-file two-step outputs, Skill injection, HTTP+stdio generic MCP, director tools, H264 profiles and corrupt-video errors');
+    await fs.writeFile(path.join(root,'work/workspace-proof.json'),JSON.stringify({requests:requests.length,skills:true,pausedAndReloaded:true,completedFiles:2,httpMcp:true,stdioMcp:true,videoProfiles:['H264 8-bit 420','H264 10-bit 444'],errors},null,2));
+    assert.deepEqual(errors,[]); console.log('PASS folder workflow pause/reload, per-file two-step outputs, Skill injection, HTTP+stdio generic MCP, director open, H264 profiles and corrupt-video errors');
   } catch(error) { await page.screenshot({path:path.join(root,'work/workspace-failure.png')}).catch(()=>{}); console.error('requests',requests.length); throw error; }
   finally { if(original)await page.evaluate(config=>fetch('/local/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(config)}),original).catch(()=>{}); for(const c of clients)await c.close().catch(()=>{}); await browser.close(); await new Promise(resolve=>mock.close(resolve)); }
 })().catch(e=>{console.error(e);process.exit(1)});

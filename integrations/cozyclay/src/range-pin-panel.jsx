@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ko } from "./locale.js";
 import "./range-pin-panel.css";
 
-export const RANGE_PIN_TRACKS = Object.freeze(["leftHand", "rightHand", "leftFoot", "rightFoot"]);
+const RANGE_PIN_TRACKS = Object.freeze(["leftHand", "rightHand", "leftFoot", "rightFoot"]);
 
 const PARTS = Object.freeze([
 	{ id: "leftHand", label: "Left Hand", ko: "왼손", zh: "左手", color: "var(--range-pin-hand)" },
@@ -56,7 +56,7 @@ function freshDraft(frame, fps) {
 	};
 }
 
-function draftFromPin(pin, fps) {
+function draftFromPin(pin) {
 	return {
 		id: pin.id,
 		track: pin.track,
@@ -151,7 +151,7 @@ export function RangePinPanel({
 		if (selectedPin) {
 			setEditingId(selectedPin.id);
 			setReplaceConfirmed(false);
-			const next = draftFromPin(selectedPin, fps);
+			const next = draftFromPin(selectedPin);
 			setDraft(next);
 			return;
 		}
@@ -193,7 +193,7 @@ export function RangePinPanel({
 	};
 
 	const editPin = (pin) => {
-		const next = draftFromPin(pin, fps);
+		const next = draftFromPin(pin);
 		setEditingId(pin.id);
 		setReplaceConfirmed(false);
 		onSelectPin?.(pin.id);

@@ -4,7 +4,7 @@ import { StdioServerTransport } from '../integrations/cozyclay/mcp/node_modules/
 import { ListToolsRequestSchema, CallToolRequestSchema } from '../integrations/cozyclay/mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js';
 
 const [configPath, scope] = process.argv.slice(2);
-if (!configPath || !['canvas', 'director'].includes(scope)) throw new Error('需要本整合包 MCP 配置文件与 canvas/director 类型');
+if (!configPath || scope !== 'canvas') throw new Error('需要本整合包 MCP 配置文件与 canvas 类型');
 async function request(method, params, signal) {
   const config = JSON.parse(await readFile(configPath, 'utf8'));
   const url = new URL(config.url);

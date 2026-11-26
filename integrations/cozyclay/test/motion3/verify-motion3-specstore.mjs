@@ -2,11 +2,13 @@
 // Lane D2 (motion API v3.1, C7): specId, the spec store (LRU of 64), base + patch requests,
 // delta against the base's QA, the exact errors, motion.qa's specId and motion.report paging of
 // a cut output, end to end through the command registry.
+import "../lowvis/block-figure.mjs"; // the rig's own body: scale 1 of the block figure (figure.js: the launch names the look)
 import { createStudioAppActions } from "../../src/commands/index.js";
 import { SCENE_OBJECTS, CHARACTER } from "./fixtures/cup-scene.mjs";
 import { EXITCAR_SPEC, SCENE_OBJECTS as CAR_OBJECTS, CHARACTER as DRIVER } from "./fixtures/exitcar-scene.mjs";
 import { specIdOf, createSpecStore, SPEC_STORE_SIZE } from "../../src/motion3/spec-store.js";
 import { deltaOf } from "../../src/motion3/delta.js";
+import { specRefusalPath } from "../../src/motion3/schema/fields.js";
 import { MOTION_OUTPUT_BUDGET } from "../../src/motion3/report.js";
 import { MOVED_BARE, BASE_REMEASURE, REMEASURE, BASE_PROBES_IN_SPEC, PROBES_IN_SPEC } from "./fixtures/round2-calls.mjs";
 
@@ -108,6 +110,16 @@ expect("a bad patch path: the C7 message with its index, what is there and how t
 expect("spec and base together, and patch without base, are refused", /exactly one of spec or base/.test(refusal(() => cup.run("motion.compile", { characterId: CHARACTER.id, spec, base: first.specId })))
 	&& /patch applies to base/.test(refusal(() => cup.run("motion.compile", { characterId: CHARACTER.id, spec, patch: [{ op: "remove", path: "/label" }] }))));
 
+// #1042: a refused spec names its top-level field (telemetry), the message stays the compiler's own
+const detailsOf = run => { try { run(); return null; } catch (error) { return error.details; } };
+expect("specRefusalPath names a declared spec field only", specRefusalPath("MOTION_SPEC_INVALID: spec.frames must be an integer") === "$.args.spec.frames"
+	&& specRefusalPath("keys[3].f = 400 is outside 0..99") === "$.args.spec.keys" && specRefusalPath("spec.madeUp is not a spec field") === "$.args.spec" && specRefusalPath("walkTo: bad arg") === "$.args.spec");
+const neither = detailsOf(() => cup.run("motion.compile", { characterId: CHARACTER.id }));
+expect("neither spec nor base: the field and rule ride on the refusal", neither?.path === "$.args.spec" && neither?.rule === "variant", JSON.stringify(neither));
+expect("neither spec nor base: the message says which was missing", /neither was sent/.test(refusal(() => cup.run("motion.compile", { characterId: CHARACTER.id }))));
+const badKey = detailsOf(() => cup.run("motion.compile", { characterId: CHARACTER.id, spec: stand({ keys: [{ f: 9999, set: { yaw: 0 } }], checks: {} }), install: false }));
+expect("a refused spec key carries $.args.spec.keys and rule spec", badKey?.path === "$.args.spec.keys" && badKey?.rule === "spec", JSON.stringify(badKey));
+
 // eviction through the registry: 64 more compiles forget the first base
 const evictReg = createStudioAppActions(portsFor(CHARACTER, SCENE_OBJECTS));
 const plain = stand({ checks: {} });
@@ -159,13 +171,19 @@ const both = run(remeasureReg, "motion.compile", { characterId: CHARACTER.id, ba
 expect("spec.probes join the request's probes", Object.keys(both.probes ?? {}).join() === "hand,head", JSON.stringify(both.probes));
 
 // ---- 4c. the round-2 refusals, replayed verbatim on the cup scene (fixtures/round2-calls.mjs) ---
+// a CI runner loaded during one compile (#1187): its clock runs 8x, so a full repair (~4 s here) reads past repair.js's 20 s cap
+const realNow = performance.now.bind(performance);
+// The cap is a wall-clock guard the product wants; this check is about the bare id, so its two compiles run on a held clock and
+// each repair runs all its rounds, whatever the runner's load
+const atClock = (now, fn) => { const was = performance.now; performance.now = now; try { return fn(); } finally { performance.now = was; } };
+const loaded = fn => atClock(() => realNow() * 8, fn), compileHeld = args => atClock(() => 0, () => replay.run("motion.compile", args));
 const replay = createStudioAppActions(portsFor(CHARACTER, SCENE_OBJECTS));
-const bare = replay.run("motion.compile", MOVED_BARE);
+const bare = compileHeld(MOVED_BARE);
 const lifted = bare.output.qa.goals?.find(g => g.name === "cup lifted off the table");
 const prefixed = structuredClone(MOVED_BARE);
 prefixed.spec.goals[1].moved = "object:empty-2";
 expect("replay 95b449d7: goals[1].moved \"empty-2\" compiles as object:empty-2 (the cup is lifted; the same specId as the object: form)", lifted?.kind === "moved" && lifted.ok === true
-	&& bare.output.specId === replay.run("motion.compile", prefixed).output.specId, JSON.stringify(bare.output.qa.goals));
+	&& bare.output.specId === loaded(() => compileHeld(prefixed)).output.specId, JSON.stringify(bare.output.qa.goals));
 const baseA = run(replay, "motion.compile", { characterId: CHARACTER.id, spec: BASE_REMEASURE, install: false }).specId;
 const remeasure = replay.run("motion.compile", { ...REMEASURE, base: baseA });
 expect("replay 95b449d7: install \"never\", base + patch: [] + 3 probes answers the probes and installs nothing", remeasure.output.specId === baseA && remeasure.output.installed === false

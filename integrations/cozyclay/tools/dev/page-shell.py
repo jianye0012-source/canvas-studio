@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-off generator for the search-facing article pages.
+"""Regenerates the root article pages (<slug>/index.html) from tools/dev/pages.
 
 Each page is plain static HTML (no bundle) so it stays crawlable and cheap.
 The shell (head, nav, footer, shared CSS link) lives here; the body of each
@@ -16,13 +16,13 @@ NAV = """        <nav>
           <a href="/greybox-to-video/">Greybox to video</a>
           <a href="/previs-software/">Previs software</a>
           <a href="/ai-camera-control/">Camera control</a>
-          <a href="https://github.com/NomaDamas/CozyClay">GitHub</a>
+          <a href="https://github.com/HaD0Yun/CozyClay">GitHub</a>
         </nav>"""
 
 FOOTER = """    <footer class="site">
       <div class="wrap">
         <p>
-          <a href="https://github.com/NomaDamas/CozyClay">Source code (AGPL)</a> ·
+          <a href="https://github.com/HaD0Yun/CozyClay">Source code (AGPL)</a> ·
           <a href="https://www.npmjs.com/package/cozyclay">npm</a> ·
           <a href="/privacy/">Privacy</a>
         </p>

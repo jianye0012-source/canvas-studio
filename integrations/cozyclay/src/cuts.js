@@ -24,9 +24,35 @@ function uniqueKeys(keys, min = -Infinity, max = Infinity) {
 	for (const key of normalizeStableItems(keys, "camera-key")) {
 		if (!Number.isFinite(key.frame) || !key.framing) continue;
 		const frame = Math.max(min, Math.min(max, Math.round(key.frame)));
-		byFrame.set(frame, { id: key.id, frame, framing: cloneFraming(key.framing) });
+		// Preserve the outgoing segment pace across shot edits.
+		byFrame.set(frame, { id: key.id, frame, framing: cloneFraming(key.framing), ...(key.ease === undefined ? {} : { ease: key.ease }) });
 	}
 	return [...byFrame.values()].sort((a, b) => a.frame - b.frame);
+}
+
+function shotExtras(shot) {
+	return {
+		...(shot.subjectIds?.length ? { subjectIds: [...shot.subjectIds] } : {}),
+		...(shot.optics ? { optics: structuredClone(shot.optics) } : {}),
+		...(shot.review ? { review: structuredClone(shot.review) } : {}),
+	};
+}
+
+function rebaseRecordedAim(camera, delta) {
+	if (!camera?.aimTake || delta === 0) return camera;
+	const startFrame = camera.aimTake.startFrame - delta;
+	return createCameraBlock({
+		...camera,
+		aimTake: {
+			startFrame: Math.max(0, startFrame),
+			samples: camera.aimTake.samples.slice(Math.max(0, -startFrame)),
+		},
+		railFollow: camera.railFollow?.mode === "range" ? {
+			...camera.railFollow,
+			startFrame: Math.max(0, camera.railFollow.startFrame - delta),
+			endFrame: Math.max(0, camera.railFollow.endFrame - delta),
+		} : camera.railFollow,
+	});
 }
 
 function shotById(shots, shotId) {
@@ -48,12 +74,6 @@ export function createShot(name = "Shot", startFrame = 0, endFrame = startFrame 
 		endFrame: end,
 		cameraKeys: uniqueKeys(cameraKeys, start, end),
 		camera: createCameraBlock(camera),
-		// v5 shot-document defaults, so a fresh shot already has the shape the
-		// document normalizer gives it (and an undo restores).
-		kind: "clip",
-		caption: "",
-		cast: {},
-		stylizedAssetId: null,
 	};
 }
 
@@ -99,10 +119,12 @@ export function cutAtFrame(shots, shotId, frame, currentFraming) {
 		cameraKeys: uniqueKeys(source.cameraKeys, source.startFrame, cutFrame - 1),
 		camera: cloneCameraBlock(source.camera),
 	};
-	const downstream = createShot(`Shot ${shots.length + 1}`, cutFrame, source.endFrame, [
+	const outgoingEase = source.cameraKeys.findLast((key) => key.frame <= cutFrame)?.ease;
+	const downstream = { ...createShot(`Shot ${shots.length + 1}`, cutFrame, source.endFrame, [
 		...source.cameraKeys.filter((key) => key.frame >= cutFrame),
-		{ id: createStableItemId("camera-key"), frame: cutFrame, framing: currentFraming },
-	], source.camera);
+		// Keep the outgoing pace when a cut creates or replaces a key.
+		{ id: createStableItemId("camera-key"), frame: cutFrame, framing: currentFraming, ...(outgoingEase === undefined ? {} : { ease: outgoingEase }) },
+	], rebaseRecordedAim(source.camera, cutFrame - source.startFrame)), ...shotExtras(source) };
 	return [...shots.slice(0, index), upstream, downstream, ...shots.slice(index + 1)];
 }
 
@@ -146,7 +168,11 @@ export function resizeShot(shots, shotId, edge, rawFrame, frameCount) {
 	const startFrame = edge === "start" ? Math.min(frame, shot.endFrame) : shot.startFrame;
 	const endFrame = edge === "end" ? Math.max(frame, shot.startFrame) : shot.endFrame;
 	if ((startFrame === shot.startFrame && endFrame === shot.endFrame) || overlaps(shots, startFrame, endFrame, shotId)) return shots;
-	return updateStableItem(shots, shotId, (entry) => ({ ...entry, startFrame, endFrame, cameraKeys: uniqueKeys(entry.cameraKeys, startFrame, endFrame) }), "shots")
+	return updateStableItem(shots, shotId, (entry) => ({
+		...entry, startFrame, endFrame,
+		camera: rebaseRecordedAim(entry.camera, startFrame - entry.startFrame),
+		cameraKeys: uniqueKeys(entry.cameraKeys, startFrame, endFrame),
+	}), "shots")
 		.sort((a, b) => a.startFrame - b.startFrame);
 }
 
@@ -187,8 +213,8 @@ export function duplicateShot(shots, shotId, frameCount) {
 	const startFrame = freeStart(shots, duration, Math.max(1, frameNumber(frameCount, 1)), source.endFrame + 1);
 	if (startFrame === undefined) return shots;
 	const delta = startFrame - source.startFrame;
-	const duplicate = createShot(`${source.name} copy`, startFrame, startFrame + duration - 1,
-		source.cameraKeys.map((key) => ({ ...key, id: createStableItemId("camera-key"), frame: key.frame + delta })), source.camera);
+	const duplicate = { ...createShot(`${source.name} copy`, startFrame, startFrame + duration - 1,
+		source.cameraKeys.map((key) => ({ ...key, id: createStableItemId("camera-key"), frame: key.frame + delta })), source.camera), ...shotExtras(source) };
 	return [...shots, duplicate].sort((a, b) => a.startFrame - b.startFrame);
 }
 

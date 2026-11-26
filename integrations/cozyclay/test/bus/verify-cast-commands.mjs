@@ -98,6 +98,19 @@ test('cast: every patchable path matches patch_elements normalization and field 
   }
 });
 
+test('cast: a new rig character is the block figure; a saved Y Bot row keeps its body', () => {
+  const f = castFixture();
+  try {
+    owned(f);
+    ok(f.run('character.add', { character: { id: 'asked-y', model: 'y-bot-tpose' } }, 'agent'));
+    assert.equal(f.cast.read().find(row => row.id === 'asked-y').model, 'x-bot-tpose', 'an add asking for Y Bot is given the block figure');
+    ok(f.run('character.add', { character: { id: 'no-model' } }, 'agent'));
+    assert.equal(f.cast.read().find(row => row.id === 'no-model').model, 'x-bot-tpose');
+    assert.equal(f.run('character.add', { character: { id: 'unknown', model: 'nope' } }, 'agent').ok, false, 'an unknown body is refused, not turned into a Y Bot');
+    assert.equal(f.cast.read().find(row => row.id === 'actor-a').model, 'y-bot-tpose', 'a saved Y Bot row keeps its body');
+  } finally { f.dispose(); }
+});
+
 test('cast: a character groups only under an object that is in the scene (#655)', () => {
   const f = castFixture();
   try {
@@ -119,10 +132,7 @@ test('cast: a pose with a bone outside POSE_BONES is refused and leaves the cast
     assert.match(refused.message, /mixamorigRightArm.*rArm/);
     assert.equal(f.run('character.set', { id: 'actor-a', set: { pose: { id: 'probe', bones: { __probe__: [0, 0, 0] } } } }, 'agent').code, 'INVALID_ARGUMENT');
     assert.deepEqual(f.cast.read(), before);
-    const library = structuredClone(f.cast.state().customPoses);
-    assert.equal(f.run('cast.savePose', { pose: { id: 'bad', bones: { mixamorigRightArm: [0, 0, 1] } } }).code, 'INVALID_ARGUMENT');
-    assert.equal(f.run('cast.setCustomPoses', { poses: [...library, { id: 'bad', bones: { __probe__: [0, 0, 0] } }] }).code, 'INVALID_ARGUMENT');
-    assert.deepEqual(f.cast.state().customPoses, library, 'no malformed entry reaches the pose library');
+    for (const id of ['cast.savePose', 'cast.setCustomPoses', 'cast.removePose']) assert.equal(f.run(id, {}).ok, false, `${id} is gone`);
     ok(f.run('character.setPose', { characterId: 'actor-a', pose: { id: 'probe', bones: { rArm: [0, 0, 1] } } }, 'agent'));
   } finally { f.dispose(); }
 });
@@ -163,5 +173,22 @@ test('cast: raw setters are guarded and scene load resets history without author
       stage: f.live.current.stage, shot: f.scope.shotsDomain.state() });
     assert.deepEqual(f.cast.read(), incoming); assert.equal(f.cast.documentStore.depths().past, 0);
     assert.deepEqual(f.buffer.current.waypoints, incoming[0].layer.waypoints);
+  } finally { f.dispose(); }
+});
+
+test('cast: the UI may replace the cast with an empty one, and an external apply never throws (#1040)', () => {
+  const f = castFixture();
+  try {
+    owned(f);
+    const emptied = ok(f.run('cast.replace', { characters: [] }));
+    assert.deepEqual(f.cast.read(), [], 'the last character can go: an empty stage is legal');
+    assert.equal(ok(f.run('edit.undo', { receiptId: emptied.receiptId })).status, 'undone');
+    assert.equal(f.cast.read().length, 2);
+    // The cross-tab scene subscription feeds the cast straight from a store callback.
+    assert.doesNotThrow(() => f.cast.applyExternalCharacters([]));
+    assert.deepEqual(f.cast.read(), []);
+    const warn = console.warn; let warned = 0; console.warn = () => { warned++; };
+    try { assert.doesNotThrow(() => f.cast.applyExternalCharacters('not a cast')); } finally { console.warn = warn; }
+    assert.equal(warned, 1, 'a refused external cast is logged, not thrown into window.onerror');
   } finally { f.dispose(); }
 });

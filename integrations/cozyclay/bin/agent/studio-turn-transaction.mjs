@@ -1,13 +1,13 @@
 // The editor transaction a Studio run holds while its model works.
 //
 // A single turn (the default): one user message is one editor transaction. Every Studio turn whose editor reports a
-// previsMode opens agent.turn.begin and closes agent.turn.finish, so all of its mutations land as ONE history entry and
-// one receipt frame. A context without a previsMode runs unwrapped (an editor that predates turn transactions).
+// scene opens agent.turn.begin and closes agent.turn.finish, so all of its mutations land as ONE history entry and
+// one receipt frame. A context without a scene runs unwrapped (an editor that predates turn transactions).
 //
 // A task (parallel Studio tasks, P2): the run holds task.begin { taskId, scope, reads, title } instead, so other tasks
 // edit other keys of the same scene meanwhile. Its commands carry the taskId and commit one by one (src/bus-tasks.js).
-// A stopped task cancels (its keys go back to where they were); a task that ends, even on an error, finishes and keeps
-// what it did. A task whose Studio went away (the browser reloaded) is neither: the editor that held it is gone.
+// A task the user stopped cancels (its keys go back to where they were); a task that ends, even on an error, or that the
+// board stopped at a limit (task.keep: its time, tool or no-progress limit), finishes and keeps what it did. A task whose Studio went away (the browser reloaded) is neither: the editor that held it is gone.
 //
 // mark() records where a script starts; rollback() undoes only the edits after it and keeps the run open, so earlier
 // edits still land.
@@ -20,7 +20,7 @@ export const LOST_STUDIO = new Set(["LIVE_HUB_UNAVAILABLE", "STALE_HANDLE", "NO_
 
 export function studioTransaction({ hub, context, turnId, admission, task = null, signal, plain = false, onWait }) {
 	// The main agent holds no transaction (plain): its one quick edit opens a task of its own.
-	const wrapped = !plain && Boolean(task || context.scene?.previsMode);
+	const wrapped = !plain && Boolean(task || context.scene);
 	const host = Object.fromEntries(["workspaceId", "documentEpoch", "sceneId", "sceneEpoch"].map(key => [key, context.host[key]]));
 	const verb = name => task ? `task.${name === "begin" ? "begin" : name}` : `agent.turn.${name}`;
 	// A control the user's drag refuses (a task's cancel or rollback writes its keys back) waits for the drag to end.
@@ -28,7 +28,8 @@ export function studioTransaction({ hub, context, turnId, admission, task = null
 		const args = task ? { taskId: task.taskId, ...extra } : { turnId };
 		const receipt = await hub.command("run_action", {
 			name: "run_action", args: { action: verb(name), args }, ...(task ? { taskId: task.taskId } : { turnId }),
-			commandId: randomUUID(), host, expectedRevision: admission.revision,
+			// a scene action of this run may have opened another scene: the controls follow the host the tools adopted
+			commandId: randomUUID(), host: admission.host ?? host, expectedRevision: admission.revision,
 		}, context.host.workspaceHandle);
 		if (!receipt.ok) throw Object.assign(new Error(receipt.message), { code: receipt.code });
 		return receipt;
@@ -59,7 +60,7 @@ export function studioTransaction({ hub, context, turnId, admission, task = null
 				// Finish only the transaction this run opened (a rollback keeps it open).
 				if (admission[owner] === id) {
 					delete admission[owner];
-					const stopped = task && (signal?.aborted || input?.signal?.aborted);
+					const stopped = task && (signal?.aborted || input?.signal?.aborted) && !task.keep;
 					if (!(task && (lost || task.lost))) {
 						try {
 							const receipt = await control(stopped ? "cancel" : "finish");

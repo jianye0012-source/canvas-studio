@@ -7,6 +7,12 @@ description: 当前项目后续值得处理的事项
 
 本文档用来记录当前项目后续比较值得处理的事项。
 
+- 导演台升级到 CozyClay 3.3.2 后评估切换新动作编写模型：目前固定用 `COZYCLAY_MOTION_ENGINE=old`，需要用启动器常用渠道模型实测新动作引擎的效果、耗时和图片输入要求，再决定要不要默认切换。
+
+- `bin/agent/agent-runner.mjs` 合并时把本地「续跑未完成步骤」和上游新的「收尾未完成工具调用」两段 `finishTurn` 逻辑手工拼成一个函数，未确认 pi 1.6.0 的 `Agent` 是否仍把 `signal` 作为 `finishTurn` 的第二个参数传入；已用可选链兜底不会崩，但真实环境里续跑的中止识别要在用量较大的场景实测确认。
+
+- 上游 3.3.2 新增宿主程序官方接口（`window.cozyclayHost.projectFiles`/`agentBrief`），画布工作台目前仍用自己的 `canvas-bridge.js` 桥接。评估用官方接口替换部分保存/打开逻辑，作为第二阶段（见 cozyclay-upgrade-assessment.md）。
+
 - 参考图库接入 CharaDB 二次元服装（440 套）和ギア二次元服装（1320 套）：两者只有远程图且来源禁止镜像，需决定是否以远程代理方式接入。
 
 - 画布 Agent 增加检索参考图库并设为参考图的工具。

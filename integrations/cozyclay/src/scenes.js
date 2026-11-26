@@ -3,15 +3,15 @@
 // This module stores and copies those envelopes but never opens or validates them.
 
 import { DEFAULT_SENSOR_FORMAT, SENSOR_FORMATS } from "./shot.js";
-import { normalizeStableItems } from "./stable-items.js";
+import { normalizeStableItems } from "./stable-items.js"; import { noteLayerField } from "./timeline-notes.js";
 
 import { elementByPath } from "./studio-elements.js";
 import { wrapAngle } from "./scene-objects.js"; import { retireObjectKind } from "./retired-kinds.js";
-import { normalizeTakeSource } from "./domains/motion/take-source.js";
+import { normalizeTakeSource } from "./domains/motion/take-source.js"; import { importedRigOf, isImportedCharacter } from "./character-rig.js";
 import { createKeyLight, normalizeLighting } from "./stage-lighting.js";
 // The timeline clock lives in timeline-fps.js (three-free, so the agent
 // sidecar can import it); re-exported here for every scene-side caller.
-import { LEGACY_FRAME_FPS, TIMELINE_FRAME_FPS, toTimelineFrame } from "./timeline-fps.js";
+import { TIMELINE_FRAME_FPS, toTimelineFrame } from "./timeline-fps.js"; import { carriedOver, lookBody, scaleRoom } from "./lowvis/studio/figure.js";
 
 const CHARACTER_POSITION_LIMITS = elementByPath("character.position");
 const CHARACTER_SCALE_LIMITS = elementByPath("character.scale");
@@ -33,14 +33,18 @@ export const LEGACY_SCENES_STORAGE_KEYS = Object.freeze([
 	V1_SCENES_STORAGE_KEY,
 ]);
 
-export { LEGACY_FRAME_FPS, TIMELINE_FRAME_FPS, toTimelineFrame };
+export { TIMELINE_FRAME_FPS };
 
-/** Rigged character models shipped in public/models. The id is both the FBX
- * file stem and the wire `source.rig` value sent to ARDY. */
+// Rigged character models shipped in public/models. The id is both the FBX
+// file stem and the motion3 rig name (src/motion3/rigs/<id>.json).
 export const CHARACTER_MODEL_IDS = Object.freeze(["y-bot-tpose", "x-bot-tpose"]);
 export const DEFAULT_CHARACTER_MODEL = "y-bot-tpose";
-/** A rig-free capsule stand-in for blocking. It has no FBX and is never sent
- * to ARDY, so it extends the accepted kinds without joining
+// The model every add path gives a new character: the X Bot skeleton, drawn
+// as the block figure. DEFAULT_CHARACTER_MODEL stays the reading of a saved
+// row without a model, so old documents load as before.
+export const NEW_CHARACTER_MODEL = "x-bot-tpose";
+/** A rig-free capsule stand-in for blocking. It has no FBX and no motion3
+ * rig, so it extends the accepted kinds without joining
  * CHARACTER_MODEL_IDS. */
 export const PROXY_FIGURE_MODEL = "proxy-figure";
 export const CHARACTER_KIND_IDS = Object.freeze([...CHARACTER_MODEL_IDS, PROXY_FIGURE_MODEL]);
@@ -49,13 +53,13 @@ export const POSTURES = Object.freeze(["stand", "sit", "lie"]);
 export function isProxyFigure(character) {
 	return character?.model === PROXY_FIGURE_MODEL;
 }
-export const DEFAULT_SUBJECT_ONE = "a young woman in a tan coat";
-export const DEFAULT_SUBJECT_TWO = "a man in a dark coat";
+// Descriptions the app once invented for a character with none (#1212): a stored one loads as no subject.
+const PLACEHOLDER_SUBJECTS = new Set(["a young woman in a tan coat", "a man in a dark coat", "a person"]);
 
 // The one-character cast every scene used to open with. A new scene now
 // starts on an empty stage; legacy documents that never stored a cast, and
 // fixtures that want a body to work with, still seed this one.
-const SEED_CHARACTER = Object.freeze({ id: "char-a", model: DEFAULT_CHARACTER_MODEL, x: 0, z: 0, rot: 0, hidden: false, pose: null, subject: DEFAULT_SUBJECT_ONE });
+const SEED_CHARACTER = Object.freeze({ id: "char-a", model: DEFAULT_CHARACTER_MODEL, x: 0, z: 0, rot: 0, hidden: false, pose: null, subject: "" });
 const DEFAULT_SCENE_STAGE = Object.freeze({
 	characters: Object.freeze([]),
 	hasCharSheet: false,
@@ -64,11 +68,9 @@ const DEFAULT_SCENE_STAGE = Object.freeze({
 	// What the location IS and how it should look: the two lines every shot
 	// prompt is built from, plus the flag saying the author has a sheet for it
 	// instead. Session state until #345 — a reopened scene came back describing
-	// the previous room. The strings mirror the studio's own first-run defaults
-	// (app-stage.jsx DEFAULT_ENVIRONMENT); this module stays free of renderer
-	// imports, so they are repeated rather than borrowed.
-	environment: "a sunlit modern living room",
-	style: "moody cinematic lighting, 35mm film look",
+	// the previous room. A new scene starts with neither; the author writes them.
+	environment: "",
+	style: "",
 	hasEnvSheet: false,
 	shotAspect: "16:9",
 	cameraPresetId: null,
@@ -117,8 +119,8 @@ export function normalizeReferenceImage(value) {
 
 /** Stature band for a cast member: the gizmo's scale handles are a deliberate
  * artistic ask, and a previs giant or child is legitimate. */
-const clampScale = (value) => (Number.isFinite(value) && value > 0
-	? Math.max(CHARACTER_SCALE_LIMITS.min, Math.min(CHARACTER_SCALE_LIMITS.max, value))
+const clampScale = (value, room) => (Number.isFinite(value) && value > 0
+	? Math.max(room.min, Math.min(room.max, value))
 	: 1);
 
 /** One character entry in the stage envelope. `source` may be a v3 entry, a
@@ -128,11 +130,12 @@ export function createCharacterEntry(source = null, index = 0) {
 	const s = plainObject(source) ? source : {};
 	return {
 		id: typeof s.id === "string" && s.id ? s.id : `char-${index + 1}`,
-		model: CHARACTER_KIND_IDS.includes(s.model) ? s.model : DEFAULT_CHARACTER_MODEL,
+		// an imported character (character-rig.js) keeps its own model id with its rig
+		model: CHARACTER_KIND_IDS.includes(s.model) || isImportedCharacter(s) ? s.model : DEFAULT_CHARACTER_MODEL,
 		posture: POSTURES.includes(s.posture) ? s.posture : "stand",
 		x: Math.max(CHARACTER_POSITION_LIMITS.min.x, Math.min(CHARACTER_POSITION_LIMITS.max.x, finiteOr(s.x, 0))),
-		// Lift is bounded by the deck and the shared room headroom, so every
-		// writer (inspector field, viewport gizmo, load path) shares one envelope.
+		// Lift (y) is bounded by the deck and the shared room headroom; only y has
+		// one envelope for every writer (inspector field, viewport gizmo, load path).
 		y: Math.max(CHARACTER_POSITION_LIMITS.min.y, Math.min(CHARACTER_POSITION_LIMITS.max.y, finiteOr(s.y, 0))),
 		z: Math.max(CHARACTER_POSITION_LIMITS.min.z, Math.min(CHARACTER_POSITION_LIMITS.max.z, finiteOr(s.z, 0))),
 		rot: wrapAngle(finiteOr(s.rot, 0)),
@@ -152,8 +155,8 @@ export function createCharacterEntry(source = null, index = 0) {
 		// Stature multiplier: 1 is the canonical body, an extracted take carries
 		// the FILMED person's leg ratio. It persists with the entry because the
 		// take's root travel was authored against it — see the render path.
-		scale: clampScale(s.scale),
-		subject: typeof s.subject === "string" ? s.subject : index === 0 ? DEFAULT_SUBJECT_ONE : DEFAULT_SUBJECT_TWO,
+		scale: clampScale(s.scale, scaleRoom(CHARACTER_SCALE_LIMITS, s.model)), // a row of another look's body keeps its size (figure.js)
+		subject: typeof s.subject === "string" && !PLACEHOLDER_SUBJECTS.has(s.subject) ? s.subject : "",
 		// The character's animation layer: its own root path.
 		layer: normalizeLayer(s.layer),
 		// The Pose-mode / IK edits on this character's layer (encoded keys, range
@@ -161,7 +164,7 @@ export function createCharacterEntry(source = null, index = 0) {
 		// is open; this is what the saved scene carries so a reload keeps them.
 		ikEdits: normalizeIkEdits(s.ikEdits),
 		// A compiled take v3 saves its source; the motion layer compiles it again on load.
-		motionTake: normalizeTakeSource(s.motionTake),
+		motionTake: normalizeTakeSource(s.motionTake), ...importedRigOf(s),
 	};
 }
 
@@ -177,7 +180,7 @@ function normalizeIkEdits(value) {
 function normalizeLayer(layer) {
 	const source = plainObject(layer) ? layer : {};
 	return {
-		waypoints: normalizeStableItems(cloneValue(source.waypoints), "waypoint"),
+		waypoints: normalizeStableItems(cloneValue(source.waypoints), "waypoint"), ...noteLayerField(source.notes), // timeline notes (timeline-notes.js)
 	};
 }
 
@@ -190,7 +193,7 @@ function normalizeStageLayers(stage) {
 			? source.characters.map((character) => ({
 				...character,
 				layer: {
-					waypoints: normalizeStableItems(cloneValue(character.layer?.waypoints), "waypoint", ids),
+					waypoints: normalizeStableItems(cloneValue(character.layer?.waypoints), "waypoint", ids), ...noteLayerField(character.layer?.notes),
 				},
 			}))
 			: source.characters,
@@ -236,23 +239,27 @@ export function migrateStageFrames(stage) {
  * poseB/subject/subject2). Fold that cast into the characters list so the
  * rest of the app only ever sees one shape. */
 function migrateLegacyCast(source) {
-	const cast = [createCharacterEntry({ ...plainObject(source.charA) ? source.charA : {}, id: "char-a", pose: source.poseA ?? null, subject: source.subject ?? DEFAULT_SUBJECT_ONE }, 0)];
+	const cast = [createCharacterEntry({ ...plainObject(source.charA) ? source.charA : {}, id: "char-a", pose: source.poseA ?? null, subject: source.subject }, 0)];
 	if (source.showB === true) {
-		cast.push(createCharacterEntry({ ...plainObject(source.charB) ? source.charB : {}, id: "char-b", pose: source.poseB ?? null, subject: source.subject2 ?? DEFAULT_SUBJECT_TWO }, 1));
+		cast.push(createCharacterEntry({ ...plainObject(source.charB) ? source.charB : {}, id: "char-b", pose: source.poseB ?? null, subject: source.subject2 }, 1));
 	}
 	return cast;
 }
 
 const LEGACY_CAST_KEYS = Object.freeze(["charA", "charB", "showB", "poseA", "poseB", "subject", "subject2"]), STAGE_ENVELOPE_KEYS = new Set([
-	"characters", "hasCharSheet", "environmentImage", "environment", "style", "hasEnvSheet", "shotAspect", "cameraPresetId", "sensorId", "keyLight", "lighting",
+	"characters", "hasCharSheet", "floor", "environmentImage", "environment", "style", "hasEnvSheet", "shotAspect", "cameraPresetId", "sensorId", "keyLight", "lighting", "figureBody",
 	...LEGACY_CAST_KEYS,
 ]);
 
 export function createSceneStage(stage = null) {
 	const source = plainObject(stage) ? stage : {};
 	// With no cast list, a pre-v3 envelope folds its fixed cast in; anything else is an empty stage.
+	// figureBody: the body the stage's rig characters' scales are of (src/lowvis/studio/figure.js lookBody; 1, left out:
+	// the rig's own body). A stage stored under a look of another body than this page's is carried over: each such
+	// character gets the scale that stands it exactly as large as before, so it looks and plays the same (its take, the
+	// props on its bones and the tracked props are not touched; they are of the world size, which stays).
 	const characters = Array.isArray(source.characters)
-		? source.characters.map((entry, index) => createCharacterEntry(entry, index))
+		? source.characters.map((entry, index) => createCharacterEntry(carriedOver(entry, source.figureBody), index))
 		: LEGACY_CAST_KEYS.some((key) => Object.hasOwn(source, key)) ? migrateLegacyCast(source) : [];
 	// Unknown extra keys (shotAspect was one, once) ride along so the envelope
 	// stays sealed-but-lossless; legacy cast keys are deliberately dropped.
@@ -262,8 +269,9 @@ export function createSceneStage(stage = null) {
 	}
 	return {
 		...extras,
-		characters,
-		hasCharSheet: source.hasCharSheet === true,
+		characters, ...(lookBody() === 1 ? {} : { figureBody: lookBody() }),
+		// Old and malformed stages retain the lit deck.
+		hasCharSheet: source.hasCharSheet === true, floor: typeof source.floor === "boolean" ? source.floor : true,
 		// Persisted exactly like shotAspect: part of the stage envelope, written
 		// on every save and read back on load.
 		environmentImage: normalizeReferenceImage(source.environmentImage),
@@ -453,14 +461,14 @@ export function readSceneDocument(raw, legacyRaw = null) {
 export function migrateScenesDocument(source) {
 	if (!Number.isInteger(source.version) || source.version >= SCENES_VERSION) return source;
 	const legacyClock = source.version < 4;
+	const { stage: legacyStage, ...document } = source, fallbackStage = source.version < 3 && !plainObject(legacyStage) ? createSeededSceneStage() : legacyStage;
 	return {
-		...source,
+		...document,
 		version: SCENES_VERSION,
 		scenes: source.scenes.map((scene) => {
-			const stage = legacyClock ? migrateStageFrames(scene.stage) : scene.stage;
-			return { ...scene, stage: plainObject(stage) && Array.isArray(stage.characters)
-				? { ...stage, characters: stage.characters.map((entry) => (plainObject(entry) && !POSTURES.includes(entry.posture) ? { ...entry, posture: "stand" } : entry)) }
-				: stage };
+			const authored = plainObject(scene.stage) ? scene.stage : fallbackStage, folded = source.version < 3 ? createSceneStage(authored) : authored;
+			const stage = legacyClock ? migrateStageFrames(folded) : folded;
+			return { ...scene, stage: plainObject(stage) && Array.isArray(stage.characters) ? { ...stage, characters: stage.characters.map(entry => plainObject(entry) && !POSTURES.includes(entry.posture) ? { ...entry, posture: "stand" } : entry) } : stage };
 		}),
 	};
 }

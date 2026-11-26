@@ -135,7 +135,7 @@ const seeded = (() => {
 const base = new URL(page.url);
 for (const theme of ["light", "dark"]) {
 	await navigate(`${base.origin}/favicon.ico`);
-	await evaluate(`(() => { localStorage.clear(); localStorage.setItem('cozyclay.locale','en'); localStorage.setItem('cozyclay.theme.v1', ${JSON.stringify(theme)}); localStorage.setItem('cozyclay.project-session.v1', JSON.stringify({ name: 'Speed Graph QA', updatedAt: Date.now() })); localStorage.setItem('cozyclay.scenes.v4', ${JSON.stringify(seeded)}); return true; })()`);
+	await evaluate(`(() => { localStorage.clear(); localStorage.setItem('cozyclay.shell.agent-pane.v1','folded'); localStorage.setItem('cozyclay.locale','en'); localStorage.setItem('cozyclay.theme.v1', ${JSON.stringify(theme)}); localStorage.setItem('cozyclay.project-session.v1', JSON.stringify({ name: 'Speed Graph QA', updatedAt: Date.now() })); localStorage.setItem('cozyclay.scenes.v4', ${JSON.stringify(seeded)}); return true; })()`);
 	await navigate(`${base.origin}/app/`);
 	await waitFor("hook", () => evaluate("Boolean(window.__cozyclay?.sceneObject) && (window.__cozyclay.objects||[]).length > 100"));
 	await waitFor("stage", () => evaluate("Boolean(window.__cclayPropWorld?.['cube'])"));
@@ -234,11 +234,13 @@ for (const theme of ["light", "dark"]) {
 
 	/* ---------------------------------------------------------------- 6. */
 	const marks = await Promise.all([".sg-scale-top", ".sg-scale-avg", ".sg-scale-zero"].map((s) => rect(`.objmo ${s}`)));
-	const lefts = marks.map((m) => m.x - body.x);
+	// The compact glass shell hides the average mark; the marks still shown share the edge.
+	const lefts = marks.filter((m) => m.width > 0).map((m) => m.x - body.x);
+	assert.ok(lefts.length >= 2, `the top and zero marks are shown: ${lefts.length}`);
 	assert.ok(lefts.every((l) => Math.abs(l - lefts[0]) < 1 && l < 12), `the scale marks share the left edge: ${lefts.map((l) => l.toFixed(1)).join(", ")}`);
 	assert.ok(marks.every((m) => m.width < 60), `the marks are labels, not full-width spans: ${marks.map((m) => m.width.toFixed(0)).join(", ")}`);
 	await stripShot(`speed-graph-${theme}-after`);
 }
 
 console.log("speed graph browser QA: pins are handle-sized HTML, the fill is a tint, the clock is the ruler's, in both themes");
-process.exit(0);
+ws.close();

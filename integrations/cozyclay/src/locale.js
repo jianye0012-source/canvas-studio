@@ -6,7 +6,7 @@
 // ko() at render time, so switching saves the choice and reloads.
 //
 // Chinese lives in a central dictionary (locale-zh.js) keyed by the English
-// default, so the ~1500 call sites stay unchanged upstream. A third argument
+// default, so the call sites stay unchanged upstream. A third argument
 // overrides the dictionary where one English string needs two translations.
 import { ZH } from "./locale-zh.js";
 
@@ -35,6 +35,15 @@ export function ko(en, koText, zhText) {
 	if (isKo) return koText;
 	if (isZh) return zhText ?? ZH[en] ?? en;
 	return en;
+}
+
+/** Save the language the page is already in as the visitor's choice. Nothing changes on screen, so no reload. */
+export function keepLocale() {
+	try {
+		localStorage.setItem(KEY, LOCALE);
+	} catch {
+		// Private mode without storage: the page stays in this language for this load.
+	}
 }
 
 export function setLocale(next) {

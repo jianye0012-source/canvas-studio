@@ -1,5 +1,7 @@
 import { timingProgress } from "./speed-envelope.js";
 import { monotoneCubicAt } from "./monotone-cubic.js";
+import { cappedSpringStep } from "./dolly-spring.js";
+import { framedAim, steerBudget, steerLead } from "./camera-follow-bounds.js";
 
 /**
  * Follow camera: a real crew in three pieces of math.
@@ -32,16 +34,6 @@ function springStep(pos, vel, target, omega, dt) {
 	return [pos + nextVel * dt, nextVel];
 }
 
-/** scalar forward spring whose speed limit is applied before position integration */
-function cappedSpringStep(pos, vel, target, omega, dt, maxSpeed) {
-	const acc = omega * omega * (target - pos) - 2 * omega * vel;
-	const cap = Math.max(0, Number.isFinite(maxSpeed) ? maxSpeed : 0);
-	// Rail targets never move backward; discard incompatible spring velocity
-	// before integration so the authored arc remains a forward-only invariant.
-	const nextVel = Math.max(0, Math.min(vel + acc * dt, cap));
-	return [pos + nextVel * dt, nextVel];
-}
-
 const PITCH_LIMIT = (85 * Math.PI) / 180;
 
 function offsetPitch(pitch, offsetDeg) {
@@ -49,7 +41,7 @@ function offsetPitch(pitch, offsetDeg) {
 	return Math.max(-PITCH_LIMIT, Math.min(pitch + (safeOffset * Math.PI) / 180, PITCH_LIMIT));
 }
 
-function aimAngles(position, target) {
+export function aimAngles(position, target) {
 	const dx = target.x - position.x;
 	const dy = target.y - position.y;
 	const dz = target.z - position.z;
@@ -108,17 +100,16 @@ export const FOLLOW_DEFAULTS = {
 	pitchOffsetDeg: 0,
 	/** authored position around the subject: 0 behind, ±90 side, 180 front */
 	orbitOffsetDeg: 0,
-	/** cap on unconstrained steering (m/s); exact follow distance wins */
-	maxSpeed: 2.8,
 	/** where a rail dolly opens: the authored head or legacy auto placement */
 	railStartMode: "head",
-	/** hard cap on rail-dolly travel in metres per second */
-	maxDollySpeed: 4,
-	/** EMA weight for the BEHIND direction; slow on purpose, so a corner
-	 * sweeps the trailing position gradually and the camera cuts the corner
-	 * the way a steadicam op does instead of whipping around the subject.
-	 * Tuned with maxSpeed against a 90° corner walk: together they hold the
-	 * worst pan under ~60°/s (3°/frame @20), a brisk but human pan. */
+	/** optional cap on rail-dolly travel (m/s); none, so the rail's schedule sets the speed */
+	maxDollySpeed: Infinity,
+	// EMA weight for the BEHIND direction; slow on purpose, so a corner
+	// sweeps the trailing position gradually and the camera cuts the corner
+	// the way a steadicam op does instead of whipping around the subject.
+	// On a 90° corner walk it holds the worst pan under ~60°/s (3°/frame @20),
+	// a brisk but human pan. It is a weight per frame, not per metre, so a
+	// faster subject's corner is swept in the same time, not left behind.
 	dirBlend: 0.05,
 };
 
@@ -207,9 +198,8 @@ export function buildFollowTrack(subject, fps, params = {}) {
 	const omega = omegaFor(p.response);
 	const aimOmega = omegaFor(p.aimResponse);
 	// a critically damped spring trails a moving target by 2v/ω at steady
-	// state; feeding the subject's velocity forward cancels that lag, so the
-	// held distance is the REQUESTED distance, not distance-plus-lag
-	const lagComp = 2 / omega;
+	// state; feeding the subject's velocity forward (steerLead) cancels that
+	// lag, so the held distance is the REQUESTED distance, not distance-plus-lag
 
 	// start settled on the frame-0 target: a shot opens composed, not sliding
 	let px = subject[0].x + offsets[0].x * p.distance;
@@ -225,16 +215,19 @@ export function buildFollowTrack(subject, fps, params = {}) {
 		if (f > 0) {
 			const previousX = px;
 			const previousZ = pz;
+			const lagComp = steerLead(vels[f], omega, dt, p.distance);
 			const tx = subject[f].x + offsets[f].x * p.distance + vels[f].x * lagComp;
 			const tz = subject[f].z + offsets[f].z * p.distance + vels[f].z * lagComp;
-			// planar spring integrated by hand so the SPEED cap binds the
-			// velocity vector, not each axis separately
 			vx += (omega * omega * (tx - px) - 2 * omega * vx) * dt;
 			vz += (omega * omega * (tz - pz) - 2 * omega * vz) * dt;
+			// the steering budget scales with the subject (camera-follow-bounds.js),
+			// so the camera swings round a corner in the same share of the turn at
+			// any speed; planar, so it binds the velocity vector, not each axis
+			const cap = steerBudget(subject, vels[f], f, dt);
 			const speed = Math.hypot(vx, vz);
-			if (speed > p.maxSpeed) {
-				vx *= p.maxSpeed / speed;
-				vz *= p.maxSpeed / speed;
+			if (speed > cap) {
+				vx *= cap / speed;
+				vz *= cap / speed;
 			}
 			px += vx * dt;
 			pz += vz * dt;
@@ -264,7 +257,7 @@ export function buildFollowTrack(subject, fps, params = {}) {
 			[az, avz] = springStep(az, avz, aimTz, aimOmega, dt);
 		}
 		const pos = { x: px, y: py, z: pz };
-		const { yaw, pitch } = aimAngles(pos, { x: ax, y: p.aimHeight, z: az });
+		const { yaw, pitch } = aimAngles(pos, framedAim({ x: ax, y: p.aimHeight, z: az }, subject[f], pos, p.lead));
 		track.push({ pos, yaw, pitch: offsetPitch(pitch, p.pitchOffsetDeg) });
 	}
 	return track;
@@ -412,8 +405,9 @@ function nearestS(rail, point) {
  * arc positions can refine the timed target, but they can never make the
  * dolly stop at the first point that happens to match the preference.
  * The operator aims exactly as in the free follow. The timed target and its
- * local distance correction are both speed-capped, so the dolly never
- * teleports across the stage.
+ * local distance correction move through a critically damped spring
+ * (dolly-spring.js): how fast the dolly takes a jump of that target is the
+ * shot's response, and a speed cap applies only when one is set.
  */
 export function buildRailFollowTrack(subject, fps, rail, params = {}) {
 	const p = { ...FOLLOW_DEFAULTS, searchWindow: 2.5, distanceInfluence: 0.35, ...params };
@@ -423,7 +417,6 @@ export function buildRailFollowTrack(subject, fps, rail, params = {}) {
 	const omega = omegaFor(p.response);
 	const aimOmega = omegaFor(p.aimResponse);
 	const step = Math.max(rail.length / Math.max(rail.points.length - 1, 1), 1e-3);
-	const authoredSpeed = subject.length > 1 ? rail.length / ((subject.length - 1) * dt) : 0;
 	// A critically damped spring trails a constant-speed target by 2v/omega —
 	// which is exactly a 2/omega-second head start. Leading in TIME instead of
 	// metres keeps the compensation honest under a speed envelope: where the
@@ -504,7 +497,7 @@ export function buildRailFollowTrack(subject, fps, rail, params = {}) {
 		}
 		const rp = railPoint(rail, s);
 		const pos = { x: rp.x, y: py, z: rp.z };
-		const { yaw, pitch } = aimAngles(pos, { x: ax, y: p.aimHeight, z: az });
+		const { yaw, pitch } = aimAngles(pos, framedAim({ x: ax, y: p.aimPerFrame ? (subject[f].y ?? p.aimHeight) : p.aimHeight, z: az }, subject[f], pos, p.lead));
 		track.push({ pos, yaw, pitch: offsetPitch(pitch, p.pitchOffsetDeg), s });
 	}
 	return track;

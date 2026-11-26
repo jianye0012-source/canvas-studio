@@ -74,6 +74,8 @@ expect("arbitrary object name appears in hierarchy", props.children[0].label ===
 expect("arbitrary object ID is namespaced", props.children[0].id === "object:asset-17");
 expect("hierarchy ID round-trips to object ID", sceneObjectIdFromHierarchy(sceneObjectHierarchyId("asset-17")) === "asset-17");
 expect("non-object hierarchy ID is rejected", sceneObjectIdFromHierarchy("camera") === null);
+// #1362: Motion on an empty stage once selected nothing at all, and reading that took the studio down.
+expect("a missing selection is no object", sceneObjectIdFromHierarchy(null) === null && sceneObjectIdFromHierarchy(undefined) === null);
 
 const moved = updateSceneObject(objects, "asset-17", { x: 3.25, z: -1.5, rot: 90 });
 expect("transform update returns a new collection", moved !== objects);
@@ -1118,9 +1120,9 @@ expect(
 const hiddenCube = updateSceneObject([visibleCube], visibleCube.id, { hidden: true })[0];
 expect("updateSceneObject hides on a boolean true", hiddenCube.hidden === true);
 const shownAgain = updateSceneObject([hiddenCube], hiddenCube.id, { hidden: false });
-expect("updateSceneObject shows again on false", shownAgain[0].hidden === false && shownAgain !== [hiddenCube]);
+expect("updateSceneObject shows again on false", shownAgain[0].hidden === false);
 const ignored = updateSceneObject([visibleCube], visibleCube.id, { hidden: "yes" });
-expect("a non-boolean hidden is ignored", ignored === [visibleCube] || ignored[0] === visibleCube);
+expect("a non-boolean hidden is ignored", ignored[0] === visibleCube);
 const normalizedHidden = normalizeSceneObject({ ...visibleCube, hidden: true });
 expect("normalize keeps a true hidden flag", normalizedHidden.hidden === true);
 const normalizedMissing = normalizeSceneObject({ id: "cube", renderer: "cube", name: "Cube" });

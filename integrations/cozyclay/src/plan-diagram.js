@@ -5,8 +5,9 @@
 // Pure: no renderer, no React, no DOM.
 import { isEffectivelyHidden } from './scene-objects.js';
 import { shotAtFrame } from './cuts.js';
-import { occludersOf, primarySubjects, shotCamera, sideOfAxis } from './studio-geometry-facts.js';
+import { axisSubjects, occludersOf, primarySubjects, shotCamera, sideOfAxis } from './studio-geometry-facts.js';
 import { entityWorldBounds } from './studio-agent-commands.js';
+import { characterName } from './character-name.js';
 
 export const PLAN_DIAGRAM = Object.freeze({ marginM: 1.5, maxSpanM: 30, minSpanM: 6, characterRadiusM: 0.3, frustumM: 3, defaultFovDeg: 40 });
 const SIDE_LABEL = { left: 'L', right: 'R', 'on-axis': 'on-axis' };
@@ -54,7 +55,7 @@ export function planDiagramLayout(state, { width = 1280, height = 720, ports, cu
   }
   for (const c of characters) {
     const yaw = (c.rot ?? 0) * Math.PI / 180;
-    primitives.push({ kind: 'character', id: c.id, label: c.subject || c.id, x: round(c.x), z: round(c.z), radius: PLAN_DIAGRAM.characterRadiusM, facing: flat({ x: Math.sin(yaw), z: Math.cos(yaw) }) });
+    primitives.push({ kind: 'character', id: c.id, label: characterName(c), x: round(c.x), z: round(c.z), radius: PLAN_DIAGRAM.characterRadiusM, facing: flat({ x: Math.sin(yaw), z: Math.cos(yaw) }) });
   }
   shots.forEach((shot, index) => {
     const camera = shotCamera(shot, state);
@@ -66,12 +67,13 @@ export function planDiagramLayout(state, { width = 1280, height = 720, ports, cu
       halfFovRad: round(halfFov), frustum: [edge(heading - halfFov), edge(heading + halfFov)], cameraSide: null };
     primitives.push(entry);
     if (!current) return;
-    const pair = primarySubjects(shot.subjectIds ?? [], camera.position, state);
-    if (pair.length !== 2) return;
-    entry.cameraSide = SIDE_LABEL[sideOfAxis(pair[0], pair[1], camera.position)] ?? null;
-    primitives.push({ kind: 'actionLine', shotId: shot.id, subjectIds: pair.map(c => c.id), a: flat(pair[0]), b: flat(pair[1]), distanceM: round(Math.hypot(pair[1].x - pair[0].x, pair[1].z - pair[0].z)), cameraSide: entry.cameraSide });
+    const subjects = primarySubjects(shot.subjectIds ?? [], camera.position, state), pair = axisSubjects(shot.subjectIds ?? [], camera.position, state);
+    if (pair.length === 2) {
+      entry.cameraSide = SIDE_LABEL[sideOfAxis(pair[0], pair[1], camera.position)] ?? null;
+      primitives.push({ kind: 'actionLine', shotId: shot.id, subjectIds: pair.map(c => c.id), a: flat(pair[0]), b: flat(pair[1]), distanceM: round(Math.hypot(pair[1].x - pair[0].x, pair[1].z - pair[0].z)), cameraSide: entry.cameraSide });
+    }
     if (!ports) return;
-    for (const subject of pair) {
+    for (const subject of subjects) {
       const box = entityWorldBounds(subject, state, ports);
       if (!box) continue;
       for (const hit of occludersOf(subject, camera.position, state, ports, box)) {

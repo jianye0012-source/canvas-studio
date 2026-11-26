@@ -1,4 +1,3 @@
-import { useEffect, useRef, useState } from "react";
 import { ko } from "./locale.js";
 import { EMPTY_KIND, OBJECT_MENU_ENTRIES } from "./scene-objects.js";
 
@@ -19,6 +18,7 @@ const OBJECT_LABELS_KO = {
 	Plane: "평면",
 	"Point light": "점 조명",
 	"Spot light": "스포트 조명",
+	"Directional light": "방향 조명",
 	Light: "조명",
 	Effect: "효과",
 	Text: "텍스트",
@@ -33,12 +33,6 @@ export function displayObjectLabel(label) {
 	if (numbered && OBJECT_LABELS_KO[numbered[1]]) return `${ko(numbered[1], OBJECT_LABELS_KO[numbered[1]])} ${numbered[2]}`;
 	return OBJECT_LABELS_KO[label] ? ko(label, OBJECT_LABELS_KO[label]) : label;
 }
-
-/**
- * "Add object" — the hierarchy's create menu, Unity's GameObject > 3D Object
- * in one popover. Grouped by catalogue section; picking an entry drops the
- * object in front of the camera and hands selection to the caller.
- */
 
 /** The catalogue grouped by section. Shared with the hierarchy's right-click
  * create menu so both entry points list the same objects
@@ -70,55 +64,9 @@ export function CatalogueEntries({ onPick }) {
 					<span className={`add-object-swatch ${entry.kind}`} style={{ background: entry.color }} aria-hidden="true" />
 					<span>{displayObjectLabel(entry.label)}</span>
 					{/* An empty has no size to quote: say what it is instead of "0 × 0 m". */}
-					<small>{entry.light ? ko("practical light", "실제 조명") : entry.kind === EMPTY_KIND ? ko("node only", "노드 전용") : entry.kind === "effect" ? ko("smoke, fire, rain…", "연기, 불, 비…") : entry.kind === "text" ? ko("words, signs, logos", "글자, 간판, 로고") : `${entry.footprint.width} × ${entry.footprint.depth} m`}</small>
+					<small>{entry.light ? ko("practical light", "실제 조명") : entry.kind === EMPTY_KIND ? ko("empty, no geometry", "빈 오브젝트, 형상 없음", "空对象，无几何体") : entry.kind === "effect" ? ko("smoke, fire, rain…", "연기, 불, 비…") : entry.kind === "text" ? ko("words, signs, logos", "글자, 간판, 로고") : `${entry.footprint.width} × ${entry.footprint.depth} m`}</small>
 				</button>
 			))}
 		</div>
 	));
-}
-
-export default function AddObjectMenu({ onAdd, label = ko("Add object", "오브젝트 추가") }) {
-	const [open, setOpen] = useState(false);
-	const rootRef = useRef(null);
-
-	useEffect(() => {
-		if (!open) return undefined;
-		const onDocDown = (event) => {
-			if (rootRef.current && !rootRef.current.contains(event.target)) setOpen(false);
-		};
-		const onKey = (event) => {
-			if (event.key === "Escape") setOpen(false);
-		};
-		document.addEventListener("mousedown", onDocDown);
-		window.addEventListener("keydown", onKey);
-		return () => {
-			document.removeEventListener("mousedown", onDocDown);
-			window.removeEventListener("keydown", onKey);
-		};
-	}, [open]);
-
-	return (
-		<div className={"add-object" + (open ? " open" : "")} ref={rootRef}>
-			<button
-				type="button"
-				className="add-object-trigger"
-				aria-expanded={open}
-				aria-haspopup="menu"
-				onClick={() => setOpen((value) => !value)}
-			>
-				<span aria-hidden="true">＋</span>
-				{label}
-			</button>
-			{open && (
-				<div className="add-object-menu" role="menu">
-					<CatalogueEntries
-						onPick={(kind) => {
-							onAdd(kind);
-							setOpen(false);
-						}}
-					/>
-				</div>
-			)}
-		</div>
-	);
 }

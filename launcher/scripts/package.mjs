@@ -15,7 +15,9 @@ await fs.mkdir(outputs, { recursive: true });
 await fs.mkdir(path.join(taskWork, 'tmp'), { recursive: true }); await fs.mkdir(path.join(taskWork, 'cache'), { recursive: true });
 if (!process.argv.includes('--skip-build')) {
   await run(process.execPath, [path.join(sourceRoot, 'web/node_modules/next/dist/bin/next'), 'build', '--webpack'], { cwd: path.join(sourceRoot, 'web') });
-  await run('npm', ['run', 'build', '--prefix', path.join(sourceRoot, 'integrations/cozyclay')]);
+  // Temporary: keep the pre-3.3.2 motion engine until the new motion writer is wired to canvas-studio's
+  // model channels and tested (docs/progress/cozyclay-upgrade-assessment.md). Must match runtime.cjs's env.
+  await run('npm', ['run', 'build', '--prefix', path.join(sourceRoot, 'integrations/cozyclay')], { env: { COZYCLAY_MOTION_ENGINE: 'old' } });
 }
 const bundle = await prepareBundle('win32');
 await run('npm', ['install', '--prefix', path.join(taskWork, 'win-native'), '--ignore-scripts', '--force', '--no-audit', '--no-fund', '@img/sharp-win32-x64@0.34.5', '@next/swc-win32-x64-msvc@16.2.9']);

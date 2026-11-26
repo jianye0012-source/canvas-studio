@@ -1,20 +1,17 @@
 import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { FiAlertTriangle, FiArrowUp, FiCamera, FiCheck, FiChevronRight, FiClock, FiDownload, FiImage, FiMoreHorizontal, FiPaperclip, FiPlus, FiPower, FiRotateCw, FiX } from "react-icons/fi";
-import { ATTACHMENT_ACCEPT, ATTACHMENT_FAILED_NOTICE, ATTACHMENT_LIMIT_NOTICE, ATTACHMENT_TYPE_NOTICE, attachmentFilesFromTransfer, attachmentFromFile, transferCarriesFiles } from "./attachment-image.js";
-import { isImeComposing } from "../ime.js";
-import { useStudioShell } from "../shell/studio-shell-context.js";
-import { ko } from "../locale.js"; import { saveExport } from "../export-workspace.js";
+import { FiAlertTriangle, FiArrowUp, FiCamera, FiCheck, FiChevronRight, FiClock, FiDownload, FiImage, FiMoreHorizontal, FiPaperclip, FiPlus, FiRotateCw, FiX } from "react-icons/fi";
+import { ATTACHMENT_ACCEPT, ATTACHMENT_FAILED_NOTICE, ATTACHMENT_MAX_COUNT, ATTACHMENT_LIMIT_NOTICE, ATTACHMENT_TYPE_NOTICE, attachmentFilesFromTransfer, attachmentFromFile, transferCarriesFiles } from "./attachment-image.js";
+import { isImeComposing } from "../ime.js"; import { useStudioShell } from "../shell/studio-shell-context.js"; import { hostBriefReadiness, runHostBriefs } from "../host-agent-brief.js";
+import { ko } from "../locale.js"; import { saveExport } from "../export-workspace.js"; import { AgentContextMeter } from "./AgentContextMeter.jsx";
+import { ContextChips } from "./ContextChips.jsx"; import { captureAnnotatedImage, consumeMarks, markStills } from "../context-chips.js";
 import {
 	AGENT_PANEL_OVERLAY_BREAKPOINT,
-	AGENT_PANEL_RAIL_WIDTH,
 	AGENT_PANEL_WIDTH_MAX, AGENT_PANEL_WIDTH_MIN,
-	AGENT_STATES,
 	agentServerUnavailable,
 	describeActivity,
 	JOB_STATE_COPY,
 	createAgentChatStore,
 	effortOptions,
-	ERROR_COPY,
 	formatJobProgress,
 	isTerminalJobState,
 	jobStateTone,
@@ -35,15 +32,20 @@ import {
 	supervisorFollowUp,
 } from "./agent-client.js";
 import { TaskDetail, TaskRows, TaskStrip, readStoredTaskMode, storeTaskMode } from "./TaskInline.jsx";
+import { boardTurn } from "./task-board.js";
 import "./agent-panel.css";
 // The task board (task mode, parallel Studio tasks) loads only where it is used: the Studio, never the workflow page.
 const TaskBoard = lazy(() => import("./TaskBoard.jsx"));
 import { AgentProgressCard } from "./AgentProgressCard.jsx";
 import { LoginPanel } from "./LoginPanel.jsx";
+import { PausedCard, SigningInCard } from "./AgentWaitCards.jsx";
+import { OfflineCard } from "./AgentOfflineCard.jsx";
+import { SIGN_IN_FAILURE_COPY, otherProviderModel, providerLabel } from "./agent-provider-help.js";
 import { TurnSteps } from "./AgentTurnSteps.jsx";
 import { PlanCard } from "./AgentPlanCard.jsx";
 import { ReplyText } from "./AgentReplyText.jsx";
-import { stepLabel, turnLayout } from "./agent-turn.js";
+import { stepLabel, turnLayout } from "./agent-turn.js"; import { createMessageQueue } from "./agent-queue.js"; import { AgentQueue } from "./AgentQueue.jsx";
+import { checkEdit, editableMessageId, resendEdited, steeredAfter } from "./agent-edit.js"; import { AgentUserBubble } from "./AgentUserBubble.jsx";
 import { connectAuthState, connectFinished, connectOpened, connectStarted, modelChanged } from "./connect-telemetry.js";
 import { noteChipDraft, noteDraftConsumed, noteDraftInput, stagePrompt } from "./prompt-telemetry.js";
 
@@ -84,39 +86,6 @@ function ImageResultCard({ image, onUse, onUndo, onRegenerate, onOpen }) {
 	</div>;
 }
 
-// Plain `vite` serves the Studio without the agent server, so there is nothing to sign in to. The card says
-// so and how to start it, in place of sign-in buttons that could only fail.
-function OfflineCard({ probing, onRetry }) {
-	return <div className="agent-state-card agent-offline-card" data-agent-card="offline" role="status" aria-live="polite">
-		<FiPower className="agent-offline-icon" size={18} aria-hidden="true" />
-		<h3>{ko("Agent server is not running", "에이전트 서버가 실행 중이 아니에요")}</h3>
-		<p>{ko(<>Start CozyClay with <code>npx cozyclay</code> (or <code>npm run dev</code> in a checkout) to sign in.</>,
-			<>로그인하려면 <code>npx cozyclay</code>(체크아웃에서는 <code>npm run dev</code>)로 CozyClay를 시작하세요.</>, <>使用 <code>npx cozyclay</code> 启动 CozyClay（在代码检出中使用 <code>npm run dev</code>）即可登录。</>)}</p>
-		<button type="button" className="agent-ghost-button agent-offline-retry" onClick={onRetry} disabled={probing} aria-busy={probing}>
-			<FiRotateCw size={11} aria-hidden="true" /> {probing ? ko("Checking…", "확인 중…") : ko("Retry", "다시 확인", "重新检查")}
-		</button>
-	</div>;
-}
-
-function PausedCard({ resetAt, onRetry, onSwitchModel }) {
-	const [now, setNow] = useState(() => Date.now());
-	useEffect(() => {
-		const timer = setInterval(() => setNow(Date.now()), 1000);
-		return () => clearInterval(timer);
-	}, []);
-	const countdown = formatResetIn(resetAt, now);
-	return <div className="agent-paused" data-agent-card="rate-limited" role="status">
-		<div className="agent-paused-head"><FiClock size={12} aria-hidden="true" /> Paused — usage limit reached
-			<span className="agent-paused-countdown">{countdown ? `resets in ${countdown}` : "resets soon"}</span>
-		</div>
-		<p style={{ margin: 0 }}>{ERROR_COPY.rate_limit}</p>
-		<div className="agent-paused-actions">
-			<button type="button" className="agent-paused-wait" onClick={onRetry}>Wait &amp; retry</button>
-			<button type="button" className="agent-paused-switch" onClick={onSwitchModel}>Switch model</button>
-		</div>
-	</div>;
-}
-
 // The lineup the sidecar derived for the selected model (#717), read-only:
 // what a turn may lean on beside it. Vision is named only when it is not the
 // selected model itself.
@@ -151,8 +120,8 @@ function JobCard({ job, onStop, onAccept }) {
 		{phase && <p className="agent-job-phase">{phase}</p>}
 		{/* An acknowledged Stop states what happened to the scene; the state label
 		    alone does not. Uncertainty is reported as uncertainty, never as safety. */}
-		{job.outcome?.status === "not_applied" && <p className="agent-job-outcome">Not applied — scene unchanged.</p>}
-		{job.outcome?.status === "unknown" && <p className="agent-job-outcome">Stopped, but the result is unknown — reconcile before editing this target.</p>}
+		{job.outcome?.status === "not_applied" && <p className="agent-job-outcome">{ko("Not applied — scene unchanged.", "적용되지 않았어요 — 장면은 그대로예요.", "未应用 — 场景未改变。")}</p>}
+		{job.outcome?.status === "unknown" && <p className="agent-job-outcome">{ko("Stopped, but the result is unknown — check the scene before editing this target.", "멈췄지만 결과를 알 수 없어요 — 이 대상을 고치기 전에 장면을 확인하세요.", "已停止，但结果未知 — 编辑此目标前请先检查场景。")}</p>}
 		{percent !== null && <div className="agent-job-bar" role="progressbar" aria-label="Generation progress" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}>
 			<span className="agent-job-bar-fill" style={{ transform: `scaleX(${job.progress})` }} />
 		</div>}
@@ -185,7 +154,7 @@ function ReceiptCard({ item }) {
 		</ul>}
 		{/* The pane has no direct Undo into the Studio editor; it names the two
 		    paths that do exist rather than drawing a button it cannot honour. */}
-		{installedWithWarnings && <p className="agent-job-note">Undo with Cmd+Z or ask the agent.</p>}
+		{installedWithWarnings && <p className="agent-job-note">{ko("Undo with Cmd+Z or ask the agent.", "Cmd+Z로 되돌리거나 에이전트에게 부탁하세요.", "按 Cmd+Z 撤销，或请智能体撤销。")}</p>}
 	</div>;
 }
 
@@ -231,20 +200,20 @@ function SupervisorCard({ note, onSend, defaultOpen = false }) {
 }
 
 const RECOVERY_COPY = {
-	none: "No recovery is available for this command.",
-	inspect: "Ask the agent to inspect the target before trying again.",
-	retry: "The same command can be retried.",
-	new_intent: "Tell the agent what to do with the changed target.",
-	reconcile: "The result is unknown; reconcile before changing this target.",
-	sign_in: "Sign in again to continue.",
-	fix_key: "Log in again under Connect a model, then retry.",
+	none: ko("No recovery is available for this command.", "이 명령은 복구할 방법이 없어요.", "此命令无法恢复。"),
+	inspect: ko("Ask the agent to inspect the target before trying again.", "다시 시도하기 전에 에이전트에게 대상을 살펴보게 하세요.", "重试前，请让智能体先检查目标。"),
+	retry: ko("The same command can be retried.", "같은 명령을 다시 시도할 수 있어요.", "可以重试同一命令。"),
+	new_intent: ko("Tell the agent what to do with the changed target.", "바뀐 대상을 어떻게 할지 에이전트에게 알려 주세요.", "请告诉智能体如何处理已更改的目标。"),
+	reconcile: ko("The result is unknown; check the scene before changing this target.", "결과를 알 수 없어요. 이 대상을 바꾸기 전에 장면을 확인하세요.", "结果未知；更改此目标前请先检查场景。"),
+	sign_in: ko("Sign in again to continue.", "계속하려면 다시 로그인하세요.", "请重新登录以继续。"),
+	fix_key: ko("Log in again under Connect a model, then retry.", "Connect a model에서 다시 로그인한 뒤 다시 시도하세요.", "请在 Connect a model 中重新登录，然后重试。"),
 };
 
 function FailureCard({ failure, onRetry, onFixKey }) {
 	return <div className="agent-card agent-failure-card" data-failure-code={failure.code} role="alert">
 		<div className="agent-failure-head"><FiAlertTriangle size={12} aria-hidden="true" /><span className="agent-failure-code">{failure.code}</span></div>
-		<p className="agent-failure-message">{failure.message || "The command did not complete."}</p>
-		<p className="agent-failure-recovery">{RECOVERY_COPY[failure.recovery?.action] || RECOVERY_COPY.none}{failure.preserved?.authoredState === "unchanged" ? " Nothing in the scene changed." : failure.preserved?.authoredState === "unknown" ? " Whether the scene changed is unknown." : ""}</p>
+		<p className="agent-failure-message">{(failure.message !== failure.code && failure.message) || "The command did not complete."}</p>
+		<p className="agent-failure-recovery">{RECOVERY_COPY[failure.recovery?.action] || RECOVERY_COPY.none}{failure.preserved?.authoredState === "unchanged" ? ko(" Nothing in the scene changed.", " 장면은 바뀌지 않았어요.", " 场景未改变。") : failure.preserved?.authoredState === "unknown" ? ko(" Whether the scene changed is unknown.", " 장면이 바뀌었는지는 알 수 없어요.", " 无法确定场景是否已改变。") : ""}</p>
 		{failure.recovery?.retryAllowed && <div className="agent-error-actions">{failure.recovery.action === "fix_key" && onFixKey && <button type="button" className="agent-ghost-button agent-error-keys" onClick={onFixKey}>Log in again</button>}<button type="button" className="agent-ghost-button agent-error-retry" data-fid="agent_retry" onClick={onRetry}>Retry</button></div>}
 	</div>;
 }
@@ -277,13 +246,9 @@ export default function AgentPanel({
 	// The surface is a prop, not an inference from the address bar: an embedded
 	// Studio panel is a Studio panel on every route.
 	const transport = useMemo(() => injectedTransport || createAgentTransport({ surface }), [injectedTransport, surface]);
-	const mockState = transport.mock ? transport.state : null;
+	// shell: the host app's project and the editor's link, for a brief the host hands the agent (src/host-agent-brief.js).
+	const mockState = transport.mock ? transport.state : null, shell = useStudioShell();
 
-	// Inside the studio the title names the project's previs mode (#650).
-	const previsMode = useStudioShell()?.previsMode;
-	const titleMode = surface === "studio" && previsMode
-		? (previsMode === "storyboard" ? ko("Storyboard", "스토리보드") : ko("Animation", "애니메이션"))
-		: null;
 	const [collapsed, setCollapsed] = useState(defaultCollapsed);
 	// Only the dock owns a width; an embedded host sizes the panel itself and
 	// never reads the dock's stored key.
@@ -354,20 +319,21 @@ export default function AgentPanel({
 	// something the panel tried and could not do.
 	const [steerNotice, setSteerNotice] = useState("");
 	const [restoreReady, setRestoreReady] = useState(surface !== "studio");
+	// The restored session has a task board on the sidecar (task mode): the board follows it from the start and hands it
+	// the Studio's new handle once (a reload), instead of polling a board that may not exist.
+	const [restoredMain, setRestoredMain] = useState(null);
+	const restoreLookup = useRef(null); // the stored id is looked up once, also when StrictMode replays the effect
 
 	const composerRef = useRef(null);
 	const fileInputRef = useRef(null);
-	const focusPendingRef = useRef(false);
+	const focusPendingRef = useRef(false), shownAtStartRef = useRef(embedded && !hidden);
 	const transcriptRef = useRef(null);
 
 	// The host's context builder and image-action handler are read through refs
 	// so a re-rendered host never rebuilds the conversation.
-	const buildContextRef = useRef(buildContext);
-	buildContextRef.current = buildContext;
-	const imageActionRef = useRef(onImageAction);
-	imageActionRef.current = onImageAction;
-	const receiptRef = useRef(onReceipt);
-	receiptRef.current = onReceipt;
+	const buildContextRef = useRef(buildContext); buildContextRef.current = buildContext;
+	const imageActionRef = useRef(onImageAction); imageActionRef.current = onImageAction;
+	const receiptRef = useRef(onReceipt); receiptRef.current = onReceipt;
 
 	const store = useMemo(() => createAgentChatStore({
 		transport,
@@ -377,9 +343,13 @@ export default function AgentPanel({
 		requestImageAction: (request) => (imageActionRef.current ?? transport.applyImage?.bind(transport) ?? requestHostImageAction)(request),
 		onReceipt: (receipt) => receiptRef.current?.(receipt),
 		onAuthLost: () => setAuthState("signed-out"),
+		onSteer: (event) => queueRef.current?.steered(event),
 	}), [surface, transport]);
 	const chat = useSyncExternalStore(store.subscribe, store.getState, store.getState);
-	const { draft, items, pendingAttachments, quota, rateLimit, streaming } = chat;
+	// Messages typed while a turn runs (agent-queue.js): a row goes as the next turn through runTurn with what it was typed with.
+	const queueRef = useRef(null), queue = useMemo(() => createMessageQueue({ store }), [store]);
+	const queued = useSyncExternalStore(queue.subscribe, queue.getState, queue.getState);
+	const { context, draft, items, pendingAttachments, quota, rateLimit, streaming } = chat;
 
 	// Studio history is sidecar-backed; Workflow keeps the existing in-memory UX.
 	useEffect(() => {
@@ -390,9 +360,12 @@ export default function AgentPanel({
 		if (!stored) { setRestoreReady(true); return undefined; }
 		(async () => {
 			try {
-				const payload = await transport.loadSession(stored);
+				if (restoreLookup.current?.transport !== transport || restoreLookup.current.stored !== stored) restoreLookup.current = { transport, stored, payload: transport.loadSession(stored, { restore: true }) };
+				const payload = await restoreLookup.current.payload;
+				if (payload?.missing) { if (!cancelled) store.newSession(); return; } // gone with the last server: nothing to restore
 				if (!Array.isArray(payload?.transcript)) throw new Error("missing transcript");
-				if (!cancelled) store.restore(payload.transcript, payload.sessionId || stored);
+				// A turn the sidecar still runs (a reload cut the panel off it) is followed again; main: it has a task board.
+				if (!cancelled) { store.restore(payload.transcript, payload.sessionId || stored); setRestoredMain(payload.main === true ? payload.sessionId || stored : null); if (payload.active?.turnId) void store.resume(payload.active); }
 			} catch (error) {
 				if (!cancelled) {
 					store.newSession();
@@ -400,9 +373,7 @@ export default function AgentPanel({
 					// was ever sent) is nothing to restore, not a failure; with no agent server the offline card says why.
 					if (![404, 502, 503].includes(error?.status) && !(error instanceof TypeError || error instanceof SyntaxError)) setRestoreNotice("Previous conversation could not be restored");
 				}
-			} finally {
-				if (!cancelled) setRestoreReady(true);
-			}
+			} finally { if (!cancelled) setRestoreReady(true); }
 		})();
 		return () => { cancelled = true; };
 	}, [surface, store, transport]);
@@ -499,7 +470,6 @@ export default function AgentPanel({
 			document.removeEventListener("visibilitychange", onReturn);
 		};
 	}, [authState, refreshProviderState]);
-
 	// Mock states that only exist as a rendered result (a finished streaming
 	// turn, a paused card, a failed tool call) are driven by replaying the
 	// scripted turn once, so QA screenshots the same code path a live turn uses.
@@ -549,7 +519,10 @@ export default function AgentPanel({
 	// embedded panel never pulls focus out of the host's own surface. An
 	// embedded panel never collapses itself (its host hides it), so shown means
 	// open there: without that the Studio composer opened unfocused and the
-	// next Cmd+V landed on the stage.
+	// next Cmd+V landed on the stage. An embedded panel its host shows from the
+	// start was not opened by the author: it leaves the keyboard with the host
+	// (the Studio's stage shortcuts) until the author hides it and opens it again
+	// (the pending-focus effect below clears the flag), or clicks into it.
 	useEffect(() => {
 		if (hidden) {
 			// Chrome blurs a hidden focused field only on its next lifecycle step;
@@ -557,7 +530,7 @@ export default function AgentPanel({
 			if (composerRef.current && composerRef.current === document.activeElement) composerRef.current.blur();
 			return;
 		}
-		if (!(embedded || !collapsed)) return;
+		if (!(embedded || !collapsed) || shownAtStartRef.current) return;
 		composerRef.current?.focus();
 		// A composer still waiting on the model list is disabled and refuses
 		// focus; the open is remembered so it lands once the composer enables.
@@ -664,25 +637,34 @@ export default function AgentPanel({
 		if (!event.defaultPrevented && takeTransfer(event.dataTransfer)) event.preventDefault();
 	}, [takeTransfer]);
 
-	// `via`: how the prompt was sent, for agent:prompt_sent (prompt-telemetry.js keeps no text).
-	const runTurn = useCallback((text, via = "typed") => {
-		setAttachNotice(null); setSteerNotice("");
-		stagePrompt(text, { via, model, attached: attachFrame || store.getState().pendingAttachments.length > 0, taskMode });
-		return store.send(text, { attachFrame, model, effort: effort ?? undefined, tasks: taskMode });
-	}, [attachFrame, effort, model, store, taskMode]);
+	// `via`: how the prompt was sent, for agent:prompt_sent (prompt-telemetry.js keeps no text). `typed`: a queued row's
+	// options (model, effort, frame switch, task mode and pictures as the message was typed); the composer's otherwise.
+	const runTurn = useCallback((text, via = "typed", typed = null) => {
+		setAttachNotice(null); setSteerNotice(""); const chosen = typed ?? { attachFrame, model, effort: effort ?? undefined, tasks: taskMode };
+		// An OpenAI-compatible server's address class (local, lan, hosted), never the address (#1043).
+		const endpoint = modelProviders.find((entry) => entry.id === String(chosen.model ?? "").split("/")[0])?.endpoint;
+		// Annotation marks (Studio): one annotated picture of the view rides after the composer's pictures, the marks in the context; a message Send took clears them (right after send's synchronous start).
+		const idle = surface === "studio" && !store.getState().streaming, annotated = idle ? captureAnnotatedImage() : null, chipImages = idle ? [...(annotated ? [{ dataUrl: annotated, name: "annotated-view.jpg" }] : []), ...markStills()] : [];
+		if (idle) queueMicrotask(() => { if (store.getState().streaming) consumeMarks(); });
+		// The marks are consumed with this message, so their pictures go first: the author's own pictures fill what is left
+		// of the message's ATTACHMENT_MAX_COUNT, and any left out are named.
+		const pending = typed ? typed.attachments ?? [] : store.getState().pendingAttachments, room = Math.max(0, ATTACHMENT_MAX_COUNT - chipImages.length);
+		if (chipImages.length && pending.length > room) setAttachNotice(`${pending.length - room} attached image${pending.length - room === 1 ? "" : "s"} left out: the marked view takes ${Math.min(chipImages.length, ATTACHMENT_MAX_COUNT)} of the ${ATTACHMENT_MAX_COUNT} images a message holds`);
+		stagePrompt(text, { via, model: chosen.model, endpoint, attached: chosen.attachFrame || pending.length > 0, taskMode: chosen.tasks });
+		return store.send(text, { ...chosen, ...(typed ? { queued: true } : {}), ...(typed || chipImages.length ? { attachments: [...pending.slice(0, room), ...chipImages] } : {}) });
+	}, [attachFrame, effort, model, modelProviders, store, surface, taskMode]);
+	useEffect(() => { queueRef.current = queue; return queue.connect((row) => runTurn(row.text, "typed", row.options)); }, [queue, runTurn]);
 	const taskStepLabel = useCallback((call) => stepLabel(call, presentation.toolLabels), [presentation.toolLabels]);
 	const stopTurn = useCallback(() => store.stop(), [store]);
-	// Steering the turn that is already running: the composer's text joins THAT
-	// turn instead of starting a second one. A refusal (the turn ended while the
-	// stream was still open, or this surface cannot be steered) says so and
-	// leaves the draft to be sent as a normal message.
-	const steerTurn = useCallback(async (text) => {
-		if (!String(text ?? "").trim()) return;
-		setAttachNotice(null); setSteerNotice("");
-		const result = await store.steer(text);
-		// An accepted steer consumed the draft: its typing time is not the next prompt's (prompt-telemetry.js).
-		if (result.ok) noteDraftConsumed(); else setSteerNotice(result.message || "The running turn did not take that message.");
-	}, [store]);
+	// While a turn runs, Enter and Send queue the draft with what it would be sent with now (agent-queue.js); the consumed
+	// draft's typing time is not the next prompt's (prompt-telemetry.js). Send now on a row gives it to the running turn
+	// at its next step; a refusal (the turn ended meanwhile) says so and the row stays queued.
+	const queueDraft = useCallback(() => { if (queue.add(draft, { attachFrame, model, effort: effort ?? undefined, tasks: taskMode, attachments: store.getState().pendingAttachments })) { setAttachNotice(null); store.setDraft(""); store.clearAttachments(); noteDraftConsumed(); } }, [attachFrame, draft, effort, model, queue, store, taskMode]);
+	const sendNow = useCallback(async (id) => { setSteerNotice(""); const result = await queue.sendNow(id); if (!result.ok && result.message) setSteerNotice(result.message); }, [queue]);
+	// The edit on the last message (agent-edit.js): sent with the composer's model and effort, the message's own frame switch and pictures. The pencil
+	// asks the sidecar first: a message sent with Tasks on (or one that is not the last turn any more) says why it cannot be edited.
+	const canEdit = useCallback(async (item) => { setSteerNotice(""); const result = await checkEdit({ store, transport, itemId: item.id }); if (!result.ok && result.message) setSteerNotice(result.message); return result.ok; }, [store, transport]);
+	const editMessage = useCallback(async (item, text, attachments) => { setSteerNotice(""); const result = await resendEdited({ store, transport, itemId: item.id, text, attachments, options: { attachFrame: Boolean(item.attachFrame), model, effort: effort ?? undefined } }); if (!result.ok && result.message) setSteerNotice(result.message); return result; }, [effort, model, store, transport]);
 
 	// A sign-in that succeeds is an authentication transition, not a status
 	// read: the grouped catalogue's `signedIn` flags — and with them every
@@ -696,10 +678,17 @@ export default function AgentPanel({
 			await transport.signIn();
 			await refreshProviderState();
 		} catch (error) {
-			connectFinished("failed"); if (agentServerUnavailable(error)) { setAuthState("offline"); return; }
+			connectFinished("failed", error?.code === "port_busy" ? "port_busy" : "other"); if (agentServerUnavailable(error)) { setAuthState("offline"); return; }
 			setSignInError(error?.message || ko("Sign-in could not start.", "로그인을 시작하지 못했어요."));
 			setAuthState("signed-out");
 		}
+	}, [refreshProviderState, transport]);
+
+	// The waiting card's Cancel (#1044): the sidecar stops waiting and the card goes back to the choices.
+	const cancelSignIn = useCallback(async () => {
+		connectFinished("cancelled", "user_closed");
+		await transport.cancelSignIn?.().catch(() => {});
+		await refreshProviderState();
 	}, [refreshProviderState, transport]);
 
 	const signOut = useCallback(async () => {
@@ -722,6 +711,15 @@ export default function AgentPanel({
 		setMenuOpen(false);
 		composerRef.current?.focus();
 	}, [store, surface]);
+
+	// A brief a host app hands this panel's agent (src/host-agent-brief.js) runs
+	// as a message in a new chat, or in the chat of the host's brief before it.
+	// The runner reads the panel through this ref, so a brief that waits (the
+	// models loading, a project opening) sees the panel as it is then, and a
+	// re-render never restarts it.
+	const briefPanelRef = useRef(null);
+	useEffect(() => { briefPanelRef.current = { ready: hostBriefReadiness({ authState, modelsState, model, restoreReady, editorReady: shell?.liveHubStatus !== "disconnected" }), project: shell?.hostProject, turn: { model, effort: effort ?? undefined }, newChat: newSession, loadChat: (sessionId) => transport.loadSession(sessionId), context: () => buildContextRef.current?.() ?? null, open: () => { if (!embedded) setCollapsed(false); else if (hidden) onCollapsedChange?.(false); } }; });
+	useEffect(() => (surface === "studio" ? runHostBriefs({ store, panel: () => briefPanelRef.current }) : undefined), [store, surface]);
 
 	const openHistory = useCallback(async () => {
 		if (surface !== "studio") return;
@@ -757,7 +755,11 @@ export default function AgentPanel({
 		setMenuOpen(false);
 	}, [store]);
 
+	// A rate limit is the provider's: another connected provider is the way on (#1043).
+	const limitedProvider = rateLimit?.provider || String(model ?? "").split("/")[0];
+	const alternative = useMemo(() => rateLimit ? otherProviderModel(modelProviders, models, model, limitedProvider) : null, [limitedProvider, model, modelProviders, models, rateLimit]);
 	const switchModel = useCallback(() => {
+		if (alternative) { chooseModel(alternative.model); store.clearRateLimit(); return; }
 		// Only a model whose provider holds a credential is worth switching to:
 		// the others are exactly the ones the dropdown draws disabled.
 		const usable = models.filter((entry) => modelIsSelectable(modelProviders, entry.id));
@@ -766,7 +768,7 @@ export default function AgentPanel({
 		const next = list[(index + 1) % list.length];
 		if (next) chooseModel(next.id);
 		store.clearRateLimit();
-	}, [chooseModel, model, modelProviders, models, store]);
+	}, [alternative, chooseModel, model, modelProviders, models, store]);
 
 	const onComposerKeyDown = useCallback((event) => {
 		if (event.key === "Escape" && streaming) {
@@ -776,12 +778,11 @@ export default function AgentPanel({
 		}
 		if (event.key === "Enter" && !isImeComposing(event) && !event.shiftKey) {
 			event.preventDefault();
-			// Enter does what the button under it says: Send, or Steer while a turn
-			// on a steerable surface is still running.
-			if (streaming) { if (presentation.steer) steerTurn(draft); return; }
+			// Enter does what the button under it says: Send, or Queue while a turn is still running.
+			if (streaming) { queueDraft(); return; }
 			runTurn(draft);
 		}
-	}, [draft, presentation, runTurn, steerTurn, stopTurn, streaming]);
+	}, [draft, queueDraft, runTurn, stopTurn, streaming]);
 
 	const panelState = rateLimit ? "rate-limited"
 		: authState !== "ready" ? authState
@@ -797,8 +798,9 @@ export default function AgentPanel({
 	// can send to: the composer stays shut instead of submitting a turn the
 	// provider would refuse.
 	const composerDisabled = panelState === "rate-limited" || !model || !modelIsSelectable(modelProviders, model);
+	const editableId = surface === "studio" && typeof transport.rewind === "function" ? editableMessageId(items) : null;
 	useEffect(() => {
-		if (hidden) focusPendingRef.current = false;
+		if (hidden) focusPendingRef.current = shownAtStartRef.current = false;
 		if (hidden || composerDisabled || !focusPendingRef.current) return;
 		focusPendingRef.current = false;
 		// Only claim focus nobody else has taken in the meantime.
@@ -841,7 +843,7 @@ export default function AgentPanel({
 
 		<header className="agent-header">
 			<StatusDot tone={statusTone} title={panelState} />
-			<h2 className="agent-title" data-previs-mode={titleMode ? previsMode : undefined}>{titleMode ? `Agent · ${titleMode}` : "Agent"}</h2>
+			<h2 className="agent-title">Agent</h2>
 			<span className="agent-header-spacer" />
 			<button type="button" className="agent-icon-button agent-new" aria-label="New conversation" title="New conversation" onClick={newSession}><FiPlus size={14} aria-hidden="true" /></button>
 			{presentation.history && <span className="agent-history-wrap">
@@ -883,19 +885,14 @@ export default function AgentPanel({
 			{authState === "signed-out" && <div className="agent-state-card" data-agent-card="signed-out">
 				<h3>Connect a model</h3>
 				<p>Sign in with ChatGPT, or log in to another provider with a subscription, an API key, or your own proxy server. Sign-in happens in your browser — no token is ever stored in this page.</p>
-				<button type="button" className="agent-primary-button agent-signin" onClick={signIn}>Sign in with ChatGPT</button>
-				{signInError && <p className="agent-key-error agent-signin-error" role="alert">{signInError}</p>}
+				{(signInError || SIGN_IN_FAILURE_COPY[account?.failure]) && <p className="agent-key-error agent-signin-error" role="alert" data-agent-signin-failure={account?.failure || "start"}>{signInError || SIGN_IN_FAILURE_COPY[account?.failure]}</p>}
+				<button type="button" className="agent-primary-button agent-signin" onClick={signIn}>{signInError || SIGN_IN_FAILURE_COPY[account?.failure] ? "Try again: sign in with ChatGPT" : "Sign in with ChatGPT"}</button>
 				<button type="button" className="agent-ghost-button agent-use-key" onClick={() => openProviderKeys("signed_out")}>Log in with another provider</button>
 			</div>}
 
 			{authState === "offline" && <OfflineCard probing={probing} onRetry={retryServer} />}
 
-			{authState === "signing-in" && <div className="agent-state-card" data-agent-card="signing-in">
-				<span className="agent-spinner" aria-hidden="true" />
-				<h3>Waiting for your browser…</h3>
-				<p>Finish the ChatGPT sign-in in the browser page that just opened. This panel picks up the session when you come back.</p>
-				{account?.authorizeUrl && <a className="agent-ghost-button agent-signin-link" href={account.authorizeUrl} target="_blank" rel="noopener noreferrer">Open the sign-in page again</a>}
-			</div>}
+			{authState === "signing-in" && <SigningInCard account={account} onCancel={cancelSignIn} onWaitEnded={refreshProviderState} />}
 
 			{authState === "no-entitlement" && <div className="agent-state-card" data-agent-card="no-entitlement">
 				<h3>Image generation is not on this plan</h3>
@@ -918,12 +915,7 @@ export default function AgentPanel({
 					<div className="agent-row"><TurnSteps block={entry} now={activityNow} toolLabels={presentation.toolLabels} formatClock={formatTurnClock} onRetry={() => runTurn(chat.lastPrompt, "retry_button")} /></div>{taskMode && layout[index + 1]?.item?.kind !== "assistant" && <TaskRows steps={entry.steps} />}
 				</Fragment>;
 				const { item } = entry;
-				if (item.kind === "user") return <div className="agent-row user" key={item.id}>
-					{item.attachments?.length > 0 && <div className="agent-bubble-attachments">
-						{item.attachments.map((attachment, index) => <img key={`${item.id}-${index}`} src={attachment.dataUrl} alt={attachment.name || "Attached image"} onClick={() => setLightbox({ dataUrl: attachment.dataUrl, prompt: attachment.name })} />)}
-					</div>}
-					<div className="agent-bubble">{item.text}</div>
-				</div>;
+				if (item.kind === "user") return <AgentUserBubble key={item.id} item={item} editable={item.id === editableId} running={streaming} steered={item.id === editableId && steeredAfter(items, item.id)} disabled={composerDisabled} onCheck={canEdit} onEdit={editMessage} onOpen={setLightbox} />;
 				if (item.kind === "assistant") return <Fragment key={item.id}><div className="agent-row assistant"><div className="agent-assistant-text"><ReplyText text={item.text} tail={streaming && <span className="agent-caret">▌</span>} /></div></div>{taskMode && layout[index - 1]?.type === "steps" && <TaskRows steps={layout[index - 1].steps} />}</Fragment>;
 				if (item.kind === "job") return <div className="agent-row" key={item.id}><JobCard job={item} onStop={stopTurn} onAccept={(job) => store.acceptJob(job.jobId)} /></div>;
 				if (item.kind === "receipt") return <div className="agent-row" key={item.id}><ReceiptCard item={item} /></div>;
@@ -934,18 +926,19 @@ export default function AgentPanel({
 			})}
 
 			{!layout.some((entry) => entry.type === "steps" && entry.last) && progressCard}{taskMode && <TaskRows items={items} />}
-			{rateLimit && <PausedCard resetAt={rateLimit.resetAt} onRetry={() => { store.clearRateLimit(); runTurn(chat.lastPrompt, "retry_button"); }} onSwitchModel={switchModel} />}
+			{rateLimit && <PausedCard resetAt={rateLimit.resetAt} provider={providerLabel(modelProviders, limitedProvider)} alternative={alternative} onRetry={() => { store.clearRateLimit(); runTurn(chat.lastPrompt, "retry_button"); }} onSwitchModel={switchModel} />}
 		</div>
-		{surface === "studio" && taskMode && authenticated && <><Suspense fallback={null}><TaskBoard sessionId={chat.sessionId} pulse={chat.lastTurn?.endedAt ?? 0} labelOf={taskStepLabel} onMainNote={store.note} /></Suspense><TaskDetail /></>}
+		{surface === "studio" && taskMode && authenticated && <><Suspense fallback={null}><TaskBoard sessionId={chat.sessionId} {...boardTurn(chat)} restored={restoredMain === chat.sessionId} reconnectContext={buildContextRef} labelOf={taskStepLabel} onMainNote={store.note} /></Suspense><TaskDetail /></>}
 
 		{/* Never a blank panel: busy states name the phase and tick, a finished
 		    turn states how it ended, and idle says so in as many words. */}
 		{authenticated && <div className="agent-activity" data-agent-activity={activity.phase} data-agent-activity-kind={activity.kind} role="status" aria-live="polite">
 			<span className={`agent-activity-indicator ${activity.tone}`} aria-hidden="true" />
 			<span className="agent-activity-text">{activity.text}</span>
-			{activity.detail && <span className="agent-activity-detail">{activity.detail}</span>}
+			{activity.detail && <span className="agent-activity-detail">{activity.detail}</span>}<AgentContextMeter context={context} />
 		</div>}
 
+		{authenticated && <AgentQueue queue={queued} actions={queue} streaming={streaming} onSendNow={sendNow} />}
 		{authenticated && <div
 			className="agent-composer"
 			data-agent-dropping={dropping ? "true" : "false"}
@@ -954,6 +947,7 @@ export default function AgentPanel({
 			onDrop={composerDisabled ? undefined : onComposerDrop}
 			onPaste={composerDisabled ? undefined : onComposerPaste}
 		>
+			{surface === "studio" && <ContextChips />}
 			{pendingAttachments.length > 0 && <ul className="agent-attachments" aria-label="Attached images">
 				{pendingAttachments.map((attachment) => <li key={attachment.id} className="agent-attachment">
 					<img src={attachment.dataUrl} alt={attachment.name || "Attached image"} />
@@ -1010,13 +1004,13 @@ export default function AgentPanel({
 						</button>
 					)}
 					<span className="agent-composer-spacer" aria-hidden="true" />
-					{/* While a turn runs, Stop is still the way out of it; on a surface
-					    that can be steered, Send becomes the way INTO it. */}
+					{/* While a turn runs, Stop is still the way out of it, and Send queues
+					    the message above the composer (a row's Send now is the way INTO the turn). */}
 					{streaming
-						? <>
+						? <span className="agent-run-actions">
 							<button type="button" data-fid="agent_stop" className="agent-send stop agent-stop" onClick={stopTurn}>Stop</button>
-							{presentation.steer && <button type="button" data-fid="agent_steer" className="agent-send agent-steer" disabled={!draft.trim()} onClick={() => steerTurn(draft)}>Steer</button>}
-						</>
+							<button type="button" data-fid="agent_send" className="agent-send agent-queue-add" aria-label={ko("Queue", "대기열에 넣기", "加入队列")} title={ko("Queue: sent when this turn ends (Enter)", "대기열에 넣기: 이 턴이 끝나면 보내요 (Enter)", "加入队列：本轮结束后发送 (Enter)")} disabled={composerDisabled || !draft.trim()} onClick={queueDraft}><FiArrowUp size={14} aria-hidden="true" /></button>
+						</span>
 						: <button type="button" data-fid="agent_send" className="agent-send" aria-label="Send" title="Send (Enter)" disabled={composerDisabled || !draft.trim()} onClick={() => runTurn(draft)}><FiArrowUp size={14} aria-hidden="true" /></button>}
 				</div>
 				<ModelRolesLine model={model} roles={selectedModelRoles(modelRoles, model)} />
@@ -1032,4 +1026,3 @@ export default function AgentPanel({
 	</aside>;
 }
 
-export { AGENT_STATES, AGENT_PANEL_RAIL_WIDTH };

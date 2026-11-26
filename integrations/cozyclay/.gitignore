@@ -4,15 +4,8 @@ artifacts/
 .gjc/
 
 # Generated motion archives are large binaries produced by the remote box, not
-# source. Keep only the explicitly listed demo and test fixtures below.
+# source.
 *.npz
-# Exceptions: the hosted demo seed clip ships with the build; test-only clips
-# stay tracked as fixtures but are never copied into production output.
-!public/demo/*.npz
-# QA evidence archives are extraction output staged for a local replay run,
-# not fixtures; the exception above would otherwise make them committable.
-public/demo/qa-h3-*.npz
-!test/fixtures/qa-lying.npz
 
 .DS_Store
 *.log
@@ -29,3 +22,12 @@ mcp/node_modules/
 
 # Recorded or synthesized tutorial narration stays local
 tools/tutorial/voice/
+
+# Rust build output (npm run build:pose-wasm copies the module to src/motion3/compiler)
+native/pose-rs/target/
+
+# Auto Pose network (83 MB): not in git. The npm package ships it; copy it here before a release build (src/poser/config.js)
+public/models/cozy-poser-v1.onnx
+# lowvis motion harness output: run records and the clips it writes (the tracked demo clips stay tracked)
+lowvis-out/
+public/lowvis/clips/pi/

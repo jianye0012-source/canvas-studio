@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import AddSceneEntries from "./shell/AddSceneEntries.jsx"; import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ko } from "./locale.js";
 import { buildHierarchyNodes } from "./hierarchy-model.js";
@@ -13,9 +13,7 @@ import "./hierarchy-panel.css";
 const HIERARCHY_LABELS_KO = {
 	"SCENE 01": "장면 01",
 	Camera: "카메라",
-	Characters: "캐릭터",
-	"Character 1": "캐릭터 1",
-	"Character 2": "캐릭터 2",
+	Characters: "인물",
 	Rig: "리그",
 	Torso: "몸통",
 	"Root / Hips": "루트 / 골반",
@@ -112,6 +110,8 @@ function ScenePill({ scenes, activeSceneId, onSceneSelect, onSceneCreate, onRena
 function displayHierarchyLabel(node) {
 	if (node.kind === "object") return displayObjectLabel(node.label);
 	if (node.kind === "scene") return displaySceneName(node.label);
+	const characterNumber = /^Character (\d+)$/.exec(node.label)?.[1];
+	if (characterNumber) return ko(node.label, `인물 ${characterNumber}`, `角色 ${characterNumber}`);
 	return HIERARCHY_LABELS_KO[node.label] ? ko(node.label, HIERARCHY_LABELS_KO[node.label]) : node.label;
 }
 
@@ -156,10 +156,9 @@ function countHierarchyNodes(nodes) {
 	return nodes.reduce((count, node) => count + 1 + countHierarchyNodes(node.children ?? []), 0);
 }
 
-function filterHierarchyNodes(nodes, query, showB) {
+function filterHierarchyNodes(nodes, query) {
 	const normalized = query.trim().toLocaleLowerCase();
 	const filterNode = (node) => {
-		if (node.optional === "showB" && !showB) return null;
 		if (!normalized) return node;
 		const label = displayHierarchyLabel(node).toLocaleLowerCase();
 		const children = (node.children ?? []).map(filterNode).filter(Boolean);
@@ -290,7 +289,7 @@ function RowContextMenu({ menu, onClose, onAction, onAddObject }) {
 					)}
 				</>
 			) : (
-				<CatalogueEntries onPick={onAddObject} />
+				<><CatalogueEntries onPick={onAddObject} /><AddSceneEntries onDone={onClose} /></>
 			)}
 		</div></div>,
 		document.body,
@@ -504,7 +503,7 @@ function TreeRow({
 				</div>
 			) : (
 				<button
-					type="button"
+					type="button" data-kind={node.kind}
 					className={"hierarchy-row" + (showLabel ? "" : " icon-only") + (touched ? " agent-touched" : "")}
 					aria-label={showLabel ? undefined : label}
 					onClick={() => onSelect(node.id)}
@@ -545,13 +544,11 @@ function TreeRow({
 export default function HierarchyPanel({
 	selectedId,
 	onSelect,
-	showB,
-	characters = null,
-	motionFrames,
+	characters = [],
 	ikMode,
 	// The ACTIVE character's row id (#76): IK badges and the IK-mode
 	// auto-expand follow whichever cast member owns the session.
-	ikRowId = "characterA",
+	ikRowId = null,
 	sceneObjects = [],
 	onAddObject,
 	onRenameObject,
@@ -574,7 +571,7 @@ export default function HierarchyPanel({
 	onSceneRename,
 	onSceneDelete,
 }) {
-	const [expanded, setExpanded] = useState(() => new Set(["shot", "characterA"]));
+	const [expanded, setExpanded] = useState(() => new Set(["shot", ...(ikRowId ? [ikRowId] : [])]));
 	const [search, setSearch] = useState("");
 	const [contextMenu, setContextMenu] = useState(null);
 	// Row currently in in-place rename. The panel owns it: F2/Return and the
@@ -616,8 +613,8 @@ export default function HierarchyPanel({
 	}, [activeSceneName, sceneObjects, characters]);
 	const parents = useMemo(() => indexParents(hierarchyNodes), [hierarchyNodes]);
 	const filteredHierarchyNodes = useMemo(
-		() => filterHierarchyNodes(hierarchyNodes, search, showB),
-		[hierarchyNodes, search, showB],
+		() => filterHierarchyNodes(hierarchyNodes, search),
+		[hierarchyNodes, search],
 	);
 	const outlinerCount = useMemo(
 		() => countHierarchyNodes(filteredHierarchyNodes),
@@ -811,7 +808,6 @@ export default function HierarchyPanel({
 
 	const renderNodes = (nodes, depth = 0) =>
 		nodes.flatMap((node) => {
-			if (node.optional === "showB" && !showB) return [];
 			const sceneRoot = node.id === SCENE_ROOT_ID;
 			// Search opens only the filtered branches. The stored expansion set is
 			// left untouched so clearing the query restores the author's tree.

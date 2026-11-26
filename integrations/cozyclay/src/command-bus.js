@@ -3,8 +3,9 @@
 // idempotency. Synchronous UI actions stay synchronous (including user gestures).
 import { StudioProtocolError, StudioSchemas, validateStudioSchema, validateReceipt, validateStudioIdentity, refusalCode } from './studio-agent-protocol.js';
 import { agentTurnControls, markAgentTurn, turnEditPoint, recordTurnEdit, undoTurnEdit } from './agent-turn-mark.js';
-import { createBusTasks, GESTURE_FREE_TASK_CONTROLS } from './bus-tasks.js'; import { uiTransactionOpen } from './studio-busy.js';
-import { createHistoryReceipts, noteRefusal, noteUndone } from './command-bus-telemetry.js';
+import { createBusTasks, GESTURE_FREE_TASK_CONTROLS } from './bus-tasks.js'; import { uiTransactionOpen } from './studio-busy.js'; import { holdRefusal } from './agent-turn-hold.js';
+import { createHistoryReceipts, noteRefusal, noteUndone } from './command-bus-telemetry.js'; import { checkNoteRange } from './note-range-guard.js';
+import { fitSized, receiptSizes } from './receipt-sizes.js';
 
 export { withCommandHistory } from './command-history.js';
 
@@ -30,6 +31,8 @@ export function createCommandBus({ registry, ports }) {
     confirmations.delete(request.confirmationToken);
   }
   const emit = event => { for (const listener of listeners) listener(event); ports.emit?.(event); };
+  // An agent turn closed (finished or cancelled): its drafts end (agent-progress.js). A listener never fails the close itself.
+  const turnClosed = turn => { try { emit({ type: 'agent.turn.closed', turnId: turn.txId }); } catch { /* the close stands */ } };
   const identifier = StudioSchemas.TargetGuard.properties.targetId;
   const object = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
   const argsSchema = { type: 'object', properties: {}, required: [], additionalProperties: true };
@@ -68,18 +71,18 @@ export function createCommandBus({ registry, ports }) {
       // A script's mark, and the rollback to it that keeps the turn open (agent-turn-mark.js).
       if (id === 'agent.turn.mark' || id === 'agent.turn.rollback') return transactionReceipt(id, markAgentTurn(id, turn), request, before);
       // A rolled-back turn restores every owner it touched and leaves no entry.
-      if (id === 'agent.turn.cancel') { agentTurn = null; turn.session?.cancel(); return transactionReceipt(id, turn, request, before); }
+      if (id === 'agent.turn.cancel') { agentTurn = null; turn.session?.cancel(); turnClosed(turn); return transactionReceipt(id, turn, request, before); }
       try { turn.historyEntryId = turn.session?.commit().historyEntryId; }
       catch (error) { turn.session?.cancel(); throw error; }
-      finally { agentTurn = null; }
+      finally { agentTurn = null; turnClosed(turn); }
       return transactionReceipt(id, turn, request, turn.before);
     }
     // Every Studio turn opens a turn transaction (#715), so "undo the last thing" arrives inside one. Until the
-    // turn has authored (no session yet) history traversal is safe: the undo lands as its own entry (#735).
+    // turn has authored (no session yet) history traversal and the user's own edits are safe: each lands as its own entry (#735).
     // After that the turn owns the frontier: its own agent may undo its newest edit (agent-turn-mark.js).
     const traversal = id === 'edit.undo' || id === 'edit.redo', scoped = traversal && tasks.traversal(id, args, request, before, id === 'edit.undo' ? ports.history?.(false) : null);
     if (scoped) return scoped;
-    if (agentTurn && !id.startsWith('job.') && !(traversal && !agentTurn.session)) { if (id === 'edit.undo' && request.turnId === agentTurn.txId) return validateReceipt(undoTurnEdit(agentTurn, args, request, before, () => ports.read())); fail('TARGET_BUSY', 'Finish the agent turn before traversing history or opening another transaction.'); }
+    if (agentTurn && !id.startsWith('job.') && !((traversal || request.origin === 'ui') && !agentTurn.session)) { if (id === 'edit.undo' && request.turnId === agentTurn.txId) return validateReceipt(undoTurnEdit(agentTurn, args, request, before, () => ports.read())); fail('TARGET_BUSY', 'Finish the agent turn before traversing history or opening another transaction.'); }
     if (traversal) {
       const redo = id === 'edit.redo', historyEntryId = ports.history?.(redo);
       const previous = args.receiptId ? ports.receipt(args.receiptId) : historyReceipts.get(historyEntryId)
@@ -116,7 +119,7 @@ export function createCommandBus({ registry, ports }) {
     if (id === 'run.begin') {
       if (transactions.size) fail('TARGET_BUSY', 'Finish or cancel the open command transaction first.');
       const prepared = registry.prepare(args.id, args.args);
-      exposure(prepared.entry, prepared.args, request);
+      exposure(prepared.entry, prepared.args, request); checkNoteRange(prepared.entry.id, prepared.args, request);
       if (prepared.entry.kind !== 'mutation') fail('INVALID_ARGUMENT', 'Only mutations can open a transaction.');
       tx = { txId: crypto.randomUUID(), entry: prepared.entry, before, origin: request.origin, targetId: prepared.args.characterId ?? null, controller: new AbortController(),
         session: ports.beginAction(prepared.entry.undoDomain, prepared.args.characterId ?? null), affectedIds: new Set(), toasts: [] };
@@ -127,7 +130,7 @@ export function createCommandBus({ registry, ports }) {
       if (request.origin !== tx.origin) fail('TARGET_BUSY', 'This transaction belongs to another origin.');
       if (tx.updating && id !== 'run.cancel') fail('TARGET_BUSY', 'A transaction update is still running.');
       if (id === 'run.update') {
-        const prepared = registry.prepare(tx.entry.id, args.args);
+        const prepared = registry.prepare(tx.entry.id, args.args); checkNoteRange(tx.entry.id, prepared.args, request);
         if (tx.entry.undoDomain === 'motion' && prepared.args.characterId !== tx.targetId) fail('INVALID_ARGUMENT', 'A motion transaction keeps its original target.');
         const shown = [], release = ports.captureToasts?.(toast => shown.push(typeof toast === 'string' ? { message: toast } : toast));
         const context = { origin: request.origin, signal: tx.controller.signal, check() {
@@ -177,7 +180,7 @@ export function createCommandBus({ registry, ports }) {
     const changed = mutated ?? (ports.read().revision !== before.revision);
     return validateReceipt({ ok: false, commandId: request.commandId, host: before.host,
       code: refusalCode(error), phase: changed ? 'commit' : 'admission', affectedIds: [], expectedTargets: [], currentTargets: [],
-      mutated: changed, preserved: { authoredState: changed ? 'changed' : 'unchanged' }, recovery: { action: 'inspect', retryAllowed: false },
+      mutated: changed, preserved: { authoredState: changed ? 'changed' : 'unchanged' }, recovery: !changed && error?.details?.transient ? { action: 'retry', retryAllowed: true } : { action: 'inspect', retryAllowed: false }, // transient: a cause that clears by itself (a rig still loading)
       message: [...String(error.message || error)].slice(0, 2000).join('') });
   }
   /** Findings first, toasts after; past the schema's twelve, say how many were left out. */
@@ -194,20 +197,19 @@ export function createCommandBus({ registry, ports }) {
     const completed = entry.kind === 'job' || entry.kind === 'document' || (entry.kind === 'mutation' && changed && (turn || after.revision > before.revision + 1));
     const ids = completed || changed ? result.affectedIds : entry.kind === 'transient' ? [before.host.sceneId] : [];
     if (turn && changed) for (const id of ids) { turn.affectedIds.add(id); turn.mark?.since.add(id); }
-    const build = level => validateReceipt({ ok: true, commandId: request.commandId, receiptId: crypto.randomUUID(), host: before.host,
+    // told: a line after the level's warnings, so it takes none of their places (receipt-sizes.js).
+    const build = (level, output = result.output, cut = [], told = []) => validateReceipt({ ok: true, commandId: request.commandId, receiptId: crypto.randomUUID(), host: before.host,
       action: entry.id, summary: result.summary, status: completed ? 'completed' : entry.kind === 'transient' ? 'transient' : changed ? 'applied' : 'noop',
-      authored: changed, ...(completed ? { kind: entry.kind, ...(result.output === undefined ? {} : { output: result.output }), ...(same(before.host, after.host) ? {} : { nextHost: after.host }) } : entry.kind === 'transient' ? { view: { before: before.viewRevision ?? 0, after: after.viewRevision ?? 0 } } : { mutated: changed }),
+      authored: changed, ...(completed ? { kind: entry.kind, ...(output === undefined ? {} : { output }), ...(same(before.host, after.host) ? {} : { nextHost: after.host }) } : entry.kind === 'transient' ? { view: { before: before.viewRevision ?? 0, after: after.viewRevision ?? 0 } } : { mutated: changed }),
       revision: { before: before.revision, after: after.revision }, affectedIds: ids,
       delta: ids.slice(0, 8).map(id => ({ id, after: ports.readback?.(id, after, level > 0) ?? { removed: true } })),
       // The command's own measurements (an arrangement's overlap evidence) ride beside the coverage tag.
-      checks: { coverage: `studio-action:${entry.id}`, ...result.checks }, warnings: receiptWarnings(result.warnings, toasts, Math.max(0, ids.length - 8), level > 1 ? 4 : 12),
+      checks: { coverage: `studio-action:${entry.id}`, ...result.checks }, warnings: [...receiptWarnings([...cut, ...(result.warnings ?? [])], toasts, Math.max(0, ids.length - 8), level > 1 ? 4 : 12), ...told],
       undo: retainedHistoryEntryId ? { historyEntryId: retainedHistoryEntryId, entries: 1, canUndoDirect: !turn } : null, ...(ids.length > 8 ? { detailCursor: request.commandId } : {}) });
-    // Full readback and warnings are richer than the 8 KiB receipt always allows; shed the extras
-    // (box and children, then all but the first warnings) rather than fail an edit that was applied.
-    for (let level = 0; ; level++) {
-      try { return build(level); }
-      catch (error) { if (level >= 2 || error?.code !== 'INVALID_RECEIPT' || !/8 KiB/.test(error.message)) throw error; }
-    }
+    // Full readback, warnings and a long output list are richer than the 8 KiB receipt always allows; shed the
+    // extras (box and children, all but the first warnings, then the list's end) rather than fail a command that ran.
+    // The agent's completed receipt (in its turn or task) also states the size of every object it added or resized (receipt-sizes.js).
+    return fitSized(build, result.output, (turn || request.taskId) && completed && changed && same(before.host, after.host) ? receiptSizes(before, after) : null);
   }
   function run(id, args = {}, options = {}) {
     const request = { origin: 'ui', commandId: crypto.randomUUID(), ...options };
@@ -246,10 +248,11 @@ export function createCommandBus({ registry, ports }) {
       clearTimer();
       releaseToasts?.(); releaseToasts = null;
       if (!(error instanceof StudioProtocolError)) error = toastRefusal() ?? error;
-      if (request.origin === 'ui' && error.uiMessage) ports.showRefusal?.(error.uiMessage);
+      if (request.origin === 'ui' && holdRefusal(error, Boolean(agentTurn), request.origin).uiMessage) ports.showRefusal?.(error.uiMessage);
       const value = refusal(request, before, error, job ? applied : undefined);
       // Session friction and studio:refused, by who asked and what (command-bus-telemetry.js).
-      noteRefusal(value, request.origin, action ?? id, registry.ids?.().includes(action ?? id) === true);
+      // A bus control (job.await, edit.undo, agent.turn.*, task.*) is code-defined too, so it is reported by name (#1042).
+      noteRefusal(value, request.origin, action ?? id, registry.ids?.().includes(action ?? id) === true || (!action && Object.hasOwn(controls, id)), error);
       const recorded = begun ? remember(value) : value;
       if (job && !job.completion) { job.outcome = recorded; job.completion = Promise.resolve(recorded); emit({ type: 'job.completed', jobId: job.id, receipt: recorded }); }
       return recorded;
@@ -271,9 +274,9 @@ export function createCommandBus({ registry, ports }) {
         if (!entry?.readOnly && before.busy && !turn && !transactions.has(validated.txId) && !id.startsWith('job.') && !GESTURE_FREE_TASK_CONTROLS.has(id)) fail('TARGET_BUSY', 'Finish the current editor gesture first.');
       }
       if (controls[id]) return mapResult(control(id, validated, request, before), remember, rejected);
-      if (transactions.size) fail('TARGET_BUSY', 'Finish or cancel the open command transaction first.');
+      if (transactions.size) fail('TARGET_BUSY', turn && uiTransactionOpen(transactions) ? 'Finish the current editor gesture first.' : 'Finish or cancel the open command transaction first.'); // a user's drag before the turn authored: the sidecar waits it out
       if (turn && entry.kind === 'document') fail('TARGET_BUSY', 'Finish the agent turn before changing documents.');
-      exposure(entry, validated, request);
+      exposure(entry, validated, request); checkNoteRange(entry.id, validated, request); if (entry.kind === 'document') tasks.leavingScene(); // #1058: task.undo across scene switches; the note range guard (note-range-guard.js)
       const scoped = tasks.admit(task, entry, validated, request, before);
       releaseToasts = ports.captureToasts?.(toast => toasts.push(typeof toast === 'string' ? { message: toast } : toast));
       const domain = entry.domain ?? entry.undoDomain;
@@ -308,7 +311,7 @@ export function createCommandBus({ registry, ports }) {
         },
         run(nestedId, nestedArgs = {}) {
           if (job) context.check(); else controller.signal.throwIfAborted();
-          const nested = registry.prepare(nestedId, nestedArgs); exposure(nested.entry, nested.args, request);
+          const nested = registry.prepare(nestedId, nestedArgs); exposure(nested.entry, nested.args, request); checkNoteRange(nested.entry.id, nested.args, request);
           const invoke = () => registry.invoke(nested.entry, nested.args, context);
           const value = nested.entry.kind === 'mutation' ? recordAction(nested.entry.undoDomain, invoke, nested.args.characterId ?? null, true) : { result: invoke() };
           // Only the synchronous owned step may advance the fence. Never absorb
@@ -339,7 +342,7 @@ export function createCommandBus({ registry, ports }) {
         clearTimer();
         releaseToasts?.(); releaseToasts = null;
         const refused = output?.output === undefined ? toastRefusal() : null; // a job that answered was not refused by a toast that showed meanwhile
-        if (refused) throw refused;
+        if (refused) throw refused; if (entry.kind === 'document') tasks.openedScene(entry.id);
         return tasks.record(scoped, recordTurnEdit(turn, point, remember(receipt(entry, request, before, { ...output, affectedIds: [...new Set([...output.affectedIds, ...nestedIds])] }, historyEntryId ?? committedHistoryId, toasts, turn))));
       });
       const finished = value?.then ? value.then(finish) : finish(value);

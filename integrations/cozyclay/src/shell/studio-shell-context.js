@@ -11,12 +11,11 @@ import { playbackFrame, usePlaybackSnapshot } from "../motion/playback-frame-sto
 //   subscribeToasts (the Content Log can tee notifications without replacing UI);
 // - generation, blocks/refine, takes/recipe and preserve strength;
 // - agentOpen/toggleAgent, preferencesOpen/setPreferencesOpen;
-// - statusText/setStatusText, previewRanges/setPreviewRanges, liveHubStatus,
-//   flySpeed (the navigation multiplier, not metres per second);
+// - liveHubStatus, flySpeed/setFlySpeed (the navigation multiplier, not metres per second);
 // - castStyle ("rig" | "capsule" | "hybrid"), which orders Add > Character;
-// - previsMode ("storyboard" | "animation"), sceneRevision (bumps on every
-//   authored edit) and capturePanelThumbnail(shot) (the shot's first frame as
-//   a PNG data URL, or null) for the Board dock tab.
+// - hostProject ({ token(), save() }): the host app's token of the open project
+//   file (null for any other project) and the Save command, for a brief the
+//   host hands the agent (src/host-agent-brief.js).
 export const StudioShellContext = createContext(null);
 
 export function useStudioShell() {

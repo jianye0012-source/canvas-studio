@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -36,6 +37,24 @@ function missingImports(packedRoot) {
 	return missing;
 }
 
+// The lowvis development files stay in the repository and out of the package: package.json#files leaves the source
+// ones out (bin/package-signature.mjs ignores the same paths) and tools/prune-dist.mjs takes the clips out of dist/.
+const DEVELOPMENT_ONLY = ["tools/lowvis", "src/lowvis/engine-m3", "src/lowvis/engine-simple/demos", "src/lowvis/kick-cc-free.js", "src/lowvis/viewer/main.js", "dist/lowvis"];
+
+// The npm package is the one build that ships the Auto Pose model (git and the hosted site do not). A release
+// without it, or with another file under its name, must not go out: check the bytes against src/poser/config.js.
+async function verifyPoserModel(packedRoot) {
+	const { POSER_MODEL } = await import(pathToFileURL(join(packageRoot, "src", "poser", "config.js")).href);
+	const relativePath = join("dist", ...POSER_MODEL.url.split("/").filter(Boolean)), path = join(packedRoot, relativePath);
+	const where = `copy the model to public/models/${POSER_MODEL.url.split("/").pop()} (git-ignored) and run npm run build before packing`;
+	if (!existsSync(path)) throw new Error(`npm tarball has no Auto Pose model at ${relativePath}: ${where}`);
+	const bytes = statSync(path).size, sha256 = createHash("sha256").update(readFileSync(path)).digest("hex");
+	if (bytes !== POSER_MODEL.bytes || sha256 !== POSER_MODEL.sha256) {
+		throw new Error(`npm tarball's ${relativePath} is not the configured model (${bytes} bytes, sha256 ${sha256.slice(0, 12)}…; expected ${POSER_MODEL.bytes} bytes, ${POSER_MODEL.sha256.slice(0, 12)}…): ${where}`);
+	}
+	console.log(`package Auto Pose model PASS (${relativePath}, ${bytes} bytes, sha256 matches src/poser/config.js)`);
+}
+
 async function verifySignature(packedRoot) {
 	const metadataPath = join(packedRoot, "package.json");
 	const markerPath = join(packedRoot, "dist", "cozyclay-package.json");
@@ -69,6 +88,10 @@ try {
 	const missing = missingImports(packedRoot);
 	if (missing.length > 0) throw new Error(`npm tarball is missing modules its bin/ and mcp/ code imports:\n  ${missing.join("\n  ")}`);
 	console.log("package tarball imports PASS (every relative import in bin/ and mcp/ resolves inside the tarball)");
+	const shipped = DEVELOPMENT_ONLY.filter((path) => existsSync(join(packedRoot, path)));
+	if (shipped.length > 0) throw new Error(`npm tarball carries development-only files: ${shipped.join(", ")} (package.json#files, tools/prune-dist.mjs)`);
+	console.log("package tarball development files PASS (no lowvis bench, sheet, demo or clip is in the tarball)");
+	if (!importsOnly) await verifyPoserModel(packedRoot);
 	if (!importsOnly) await verifySignature(packedRoot);
 } finally {
 	rmSync(temporaryRoot, { recursive: true, force: true });

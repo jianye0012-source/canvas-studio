@@ -151,8 +151,10 @@ jobs:
   # test step pages.yml runs before deploying: green here means the merge
   # cannot break the deploy. Each shard has its own runner, so wall-clock time
   # follows the slowest quarter of the suite instead of the whole suite (#666):
-  # minutes are free on this public repository, and ten jobs per run stay
-  # under the free plan's 20 concurrent jobs with two pull requests in flight.
+  # minutes are free on this public repository. One run starts 21 jobs (12
+  # of them the browser matrix below), above the free plan's limit of 20
+  # concurrent jobs, so jobs queue and every job
+  # added here costs wall-clock time on all of them (#1173).
   test-shard:
     if: needs.changes.outputs.source == 'true'
     needs: changes
@@ -210,11 +212,6 @@ jobs:
       - run: |
           if [ ! -f test-selection.json ]; then echo "::error title=test selection missing::the changes job's test-selection artifact did not arrive; rerun the job"; exit 1; fi
           node tools/run-tests.mjs --shard "${{ matrix.shard }}/4" --durations-out test-durations.json --only-from test-selection.json
-        env:
-          # test/verify-morphgs-exporter.mjs: the MorphGS truth comparison
-          # needs uv + a torch wheel; the runner has neither, so only its
-          # structural checks run here. Run the full test locally.
-          MORPHGS_SKIP_TRUTH: "1"
       - uses: actions/upload-artifact@v4
         with:
           name: test-durations-${{ matrix.shard }}
@@ -278,10 +275,12 @@ jobs:
           exit "$failed"
 
   # Real-browser rendering regressions via the CDP QA wrapper. The suites
-  # proven green on the hosted runner gate pull requests; the motion3 suites
-  # that still fail are tracked in browser-observation.yml. The previs-mode
-  # suites (#654) run here as observation: a failure is a warning in the step
-  # summary, not a red check.
+  # proven green on the hosted runner gate pull requests. The observation
+  # suites here pass on the hosted runner too: a failure is a warning in the
+  # step summary, not a red check. A suite that fails on the hosted runner
+  # belongs in browser-observation.yml, not here: `gate` waits for every job
+  # in this matrix, and a failing suite waits out its timeouts on every pull
+  # request (qa-annotate-browser alone took 7-11 min, #1173).
   browser:
     if: needs.changes.outputs.source == 'true'
     needs: changes
@@ -292,7 +291,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - suite: verify-install-browser
+            tier: gating
           - suite: verify-camera-rail-browser
+            tier: gating
+          - suite: qa-camera-record-browser
             tier: gating
           - suite: qa-gizmo-click-through-browser
             tier: gating
@@ -302,21 +305,13 @@ jobs:
             tier: gating
           - suite: motion3/qa-motion3-objects-browser
             tier: gating
-          - suite: motion3/qa-motion3-grab-browser
+          - suite: qa-recent-work-browser
             tier: observation
-          - suite: motion3/qa-motion3-held-gizmo-browser
+          - suite: qa-pose-keys-browser
             tier: observation
-          - suite: qa-proxy-figure-browser
-            tier: observation
-          - suite: qa-storyboard-board-browser
-            tier: observation
-          - suite: qa-storyboard-export-browser
-            tier: observation
-          - suite: qa-previs-start-browser
+          - suite: qa-lie-down-browser
             tier: observation
           - suite: qa-sculpt-mode-browser
-            tier: observation
-          - suite: qa-sculpt-parts-browser
             tier: observation
           - suite: qa-sculpt-shelf-browser
             tier: observation
@@ -331,7 +326,7 @@ jobs:
       # OAuth nor the agent sidecar that `npm run dev` adds.
       - name: Start dev server (vite)
         run: |
-          npm run dev:ui -- --host 127.0.0.1 --port 5180 --strictPort &
+          npm run dev:ui -- --host 127.0.0.1 --port 5180 --strictPort > /tmp/qa-vite.log 2>&1 &
           for _ in $(seq 1 120); do
             curl -sf -o /dev/null http://127.0.0.1:5180/app/ && exit 0
             sleep 1
@@ -339,6 +334,8 @@ jobs:
           echo "dev server did not come up" >&2
           exit 1
       - name: Run ${{ matrix.suite }} (${{ matrix.tier }})
+        env:
+          QA_SERVER_LOG: /tmp/qa-vite.log
         run: |
           t="${{ matrix.suite }}"
           tier="${{ matrix.tier }}"

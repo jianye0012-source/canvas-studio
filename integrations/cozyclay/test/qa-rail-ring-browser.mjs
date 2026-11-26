@@ -5,7 +5,7 @@
 // restores it, and the move tool (W) brings the arrows back. Seeds the real
 // Vintage Car scene like qa-rail-lean-browser.
 //
-// Run: `CCLAY_KIMODO_HOST= COZYCLAY_LIVE_PORT=5932 npm run dev -- --port 5832`
+// Run: `COZYCLAY_LIVE_PORT=5932 npm run dev -- --port 5832`
 // then `QA_OUT=/tmp/ring QA_URL=http://127.0.0.1:5832/app/ CDP_PORT=9832 node tools/qa-browser.mjs -- node test/qa-rail-ring-browser.mjs`
 import fs from "node:fs";
 // Browser contract for lean marks on a travel route, against a real scene: the
@@ -19,12 +19,11 @@ import fs from "node:fs";
 //   3. "Add dot at playhead" drops a dot where the prop is on that frame.
 //   4. The Bank field edits the selected dot; the ends stay level (disabled).
 //
-// Run: `CCLAY_KIMODO_HOST= COZYCLAY_LIVE_PORT=5932 npm run dev -- --port 5832` in
+// Run: `COZYCLAY_LIVE_PORT=5932 npm run dev -- --port 5832` in
 // one shell, then
 // `QA_URL=http://127.0.0.1:5832/app/ CDP_PORT=9832 node tools/qa-browser.mjs -- node test/qa-rail-lean-browser.mjs`
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { Matrix4, Quaternion, Vector3 } from "three";
 
 const doc = readFileSync(process.env.SEED_DOC || new URL("./fixtures/vintage-car-scene.json", import.meta.url), "utf8");
 const cdpPort = Number(process.env.CDP_PORT || 9832);
@@ -42,32 +41,18 @@ const navigate = async (url) => { await send("Page.enable"); const loaded = new 
 const mouse = (type, x, y) => send("Input.dispatchMouseEvent", { type, x: Math.round(x), y: Math.round(y), button: "left", clickCount: 1, buttons: type === "mouseReleased" ? 0 : 1 });
 const click = async (x, y) => { await mouse("mousePressed", x, y); await mouse("mouseReleased", x, y); };
 const center = (selector) => evaluate(`(() => { const e = document.querySelector(${JSON.stringify(selector)}); if (!e) return null; const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
-const shot = async (name) => {
-	if (!process.env.QA_OUT) return;
-	const fs = await import("node:fs");
-	const s = await send("Page.captureScreenshot", { format: "png" });
-	fs.writeFileSync(`${process.env.QA_OUT}/${name}.png`, Buffer.from(s.data, "base64"));
-};
-
 const base = new URL(page.url);
 await navigate(`${base.origin}/favicon.ico`);
-await evaluate(`(() => { localStorage.clear(); localStorage.setItem('cozyclay.locale','en'); localStorage.setItem('cozyclay.project-session.v1', JSON.stringify({ name: 'Rail Lean QA', updatedAt: Date.now() })); localStorage.setItem('cozyclay.scenes.v4', ${JSON.stringify(doc)}); return true; })()`);
+await evaluate(`(() => { localStorage.clear(); localStorage.setItem('cozyclay.shell.agent-pane.v1','folded'); localStorage.setItem('cozyclay.locale','en'); localStorage.setItem('cozyclay.project-session.v1', JSON.stringify({ name: 'Rail Lean QA', updatedAt: Date.now() })); localStorage.setItem('cozyclay.scenes.v4', ${JSON.stringify(doc)}); return true; })()`);
 await navigate(`${base.origin}/app/`);
 await waitFor("hook", () => evaluate("Boolean(window.__cozyclay?.sceneObject) && (window.__cozyclay.objects||[]).length > 100"));
 await waitFor("stage", () => evaluate("Boolean(window.__cclayPropWorld?.['cube'] && window.__cclayPropWorld?.['cylinder'])"));
 await sleep(800);
 
-const frameCount = await evaluate("window.__cozyclay.frameCount");
-const take = { frameCount, fps: 24 };
 const objects = () => evaluate("JSON.parse(JSON.stringify(window.__cozyclay.objects))");
 const object = async (id) => (await objects()).find((o) => o.id === id);
 const update = async (id, patch) => { await evaluate(`window.__cozyclay.sceneObject.update({ id: ${JSON.stringify(id)}, ...${JSON.stringify(patch)} }); true`); await sleep(500); };
 const seek = async (frame) => { await evaluate(`window.__cozyclay.scrub(${frame}); true`); await sleep(450); };
-// The page's own pure functions, so the QA asks the same math the studio does.
-const pagePath = (expression) => evaluate(`(async () => { const m = await import('/src/object-path.js'); const o = window.__cozyclay.objects.find((e) => e.id === 'cube'); const take = ${JSON.stringify(take)}; return JSON.parse(JSON.stringify((${expression})(m, o.path, take))); })()`);
-const frameAtProgress = (target) => pagePath(`(m, path, take) => { let best = 0, bestError = 9; for (let f = 0; f < take.frameCount; f += 1) { const e = Math.abs(m.pathProgressAt(path, f, take) - ${target}); if (e < bestError) { best = f; bestError = e; } } return best; }`);
-const progressAt = (frame) => pagePath(`(m, path, take) => m.pathProgressAt(path, ${frame}, take)`);
-const leanAt = (frame) => pagePath(`(m, path, take) => m.pathLeanAt(path, m.pathProgressAt(path, ${frame}, take))`);
 
 /* ---------------------------------------------------------------- 1. */
 const start = await objects();
@@ -91,9 +76,6 @@ console.log(`1. empty rotZ 15 and back: ${start.length} records, routes untouche
 /* ---------------------------------------------------------------- 2. */
 const routePath = chassisStart.path;
 await update("cube", { path: { ...routePath, marks: [{ t: 0.4, bank: 12, pitch: 0 }, { t: 0.6, bank: 0, pitch: 0 }] } });
-const subtree = (rows, root) => { const out = new Set(); const grow = (id) => { for (const o of rows) if (o.parent === id && !out.has(o.id)) { out.add(o.id); grow(o.id); } }; grow(root); return out; };
-const rows = await objects();
-const riders = [...subtree(rows, "cube")].filter((id) => !rows.find((o) => o.id === id).path && !rows.find((o) => o.id === id).hidden);
 /* ---- ring probe: E on a selected dot shows bank/pitch rings; dragging them writes the lean ---- */
 import { pathMarkFractions, pathPointAtFraction } from "../src/object-path.js";
 const OUT = process.env.QA_OUT;
@@ -175,4 +157,4 @@ console.log("after 2 undos:", JSON.stringify(o.path.marks[0]));
 const mv = await center('[data-tool="move"]'); await click(mv.x, mv.y); await sleep(300);
 await png("ring-move-mode");
 console.log("ring probe: rings appear with E, drags write bank/pitch, W restores arrows");
-process.exit(0);
+ws.close();

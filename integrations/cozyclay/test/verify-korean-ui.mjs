@@ -37,15 +37,6 @@ function assertKoPairsHaveBothSides(path) {
 	}
 }
 
-function assertKoEnglishDefaults(path, text = source(path)) {
-	const calls = [...text.matchAll(/ko\(\s*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|`((?:\\.|[^`\\])*)`)\s*,/g)];
-	assert.ok(calls.length > 0, `${path} has no literal ko() defaults to verify`);
-	for (const call of calls) {
-		const english = call[1] ?? call[2] ?? call[3];
-		assert.doesNotMatch(english, /[\uAC00-\uD7AF]/, `${path} has Korean text as the English ko() default: ${english}`);
-	}
-}
-
 // Korean may only appear inside ko(...) calls, isKo branches, or the
 // *_KO mapping tables — never as bare Korean in JSX or strings.
 function assertKoreanInsideLocaleConstructs(path) {
@@ -131,14 +122,15 @@ for (const path of ["src/result-modal.jsx", "src/hierarchy-panel.jsx", "src/obje
 // The PR's Korean copy is preserved, now living inside the locale constructs.
 // The language choice moved into the Settings menu (#193); its Korean copy —
 // and the first-run "한국어" cue — travelled with it.
-includesAll("src/settings-menu.jsx", ["한국어로 전환", "한국어", "Switch to English", "설정"]);
+includesAll("src/settings-menu.jsx", ["한국어", "설정"]);
+includesAll("src/shell/preference-controls.jsx", ["한국어로 전환", "한국어", "Switch to English"]);
 includesAll("src/result-modal.jsx", ["장면이 준비됐어요", "프롬프트 복사", "프레임 내보내기", "AI에 넣는 순서", "AI에 이미지 첨부"]);
 // "재생 보기" was the PlayView centre tab's label; the tabs are gone (#195)
 // and look-through now flies the shot camera from the camera bar / PiP.
 includesAll("src/App.jsx", ["장면", "샷 카메라 시점으로 보기", "속성", "변환", "카메라 레일 완성"]);
 includesAll("src/hierarchy-panel.jsx", ["이름 바꾸기", "장면 구조", "장면 계층", "프레임 맞추기", "장면 선택", "+ 새 장면", "장면은 최소 하나 필요합니다"]);
 includesAll("src/motion/timeline.jsx", ["애니메이션 타임라인", "타임라인 펼치기"]);
-includesAll("src/posestudio.jsx", ["포즈 스튜디오", "포즈 적용", "포즈 저장"]);
+includesAll("src/posestudio.jsx", ["포즈 스튜디오", "포즈 적용"]); // "포즈 저장" went with the saved-pose library
 includesAll("src/motion/waypoints.js", ["핀 사이에는 최소", "자연스럽게 걷기엔 너무 느려요", "이전 구간보다 속도가"]);
 
 // English is the default, so the document and manifest metadata are English.

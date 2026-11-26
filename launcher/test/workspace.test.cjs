@@ -31,15 +31,14 @@ test('专属 MCP 凭据与原项目分离；拒绝无凭据、错误来源，端
   const store = await new ConfigStore(root, async s => Buffer.from(s), async b => b.toString()).initialize();
   const gateway = new Gateway({ store, root, log() {} }); const url = await gateway.listen(0);
   assert.equal((await fetch(url + '/mcp/canvas', { method: 'POST', body: '{}' })).status, 401);
-  assert.equal((await fetch(url + '/mcp/director', { method: 'POST', headers: { authorization: 'Bearer ' + gateway.mcpToken, origin: 'https://other.example' }, body: '{}' })).status, 403);
+  assert.equal((await fetch(url + '/mcp/canvas', { method: 'POST', headers: { authorization: 'Bearer ' + gateway.mcpToken, origin: 'https://other.example' }, body: '{}' })).status, 403);
   assert.equal((await fetch(url + '/local/mcp/config')).status, 401);
   const headers = { cookie: `canvas_session=${gateway.cookie}` };
   const config = await (await fetch(url + '/local/mcp/config', { headers })).json();
-  assert.deepEqual(Object.keys(config.mcpServers), ['canvas-studio-canvas','canvas-studio-director']);
+  assert.deepEqual(Object.keys(config.mcpServers), ['canvas-studio-canvas']);
   assert.ok(config.mcpServers['canvas-studio-canvas'].args.includes(path.join(store.dataDir, 'config/mcp-connection.json')));
   assert.ok(!JSON.stringify(config).includes('@tigerowo'));
   assert.match(config.instructions['canvas-studio-canvas'], /canvas_studio_list_canvases/);
-  assert.match(config.instructions['canvas-studio-director'], /canvas_studio_director_list_workspaces/);
   assert.ok(!JSON.stringify(config.instructions).includes(gateway.mcpToken));
   const saved = JSON.parse(await fs.readFile(gateway.mcpConfigFile, 'utf8'));
   assert.equal(saved.token.length, 64);

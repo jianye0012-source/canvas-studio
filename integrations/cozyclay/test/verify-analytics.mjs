@@ -9,14 +9,15 @@ import { noteRefusal as noteBusRefusal } from "../src/command-bus-telemetry.js";
 import { STRICT_EVENT_KEYS, bucketAge, bucketLong, refusalCodeOf, strictPropValidator } from "../src/analytics-strict.js";
 import * as postTurn from "../src/post-turn-edits.js";
 import { draftTelemetrySeam, noteDraftCompiled } from "../src/motion-draft-telemetry.js";
+import { uiLocale } from "../src/analytics-values.js";
 import { crashTelemetrySeam, reportGlLost, reportRenderCrash } from "../src/crash-telemetry.js";
 import { noteNoticeShown, noteUpdateClicked, noteUpdatePolled, updateTelemetrySeam } from "../src/update/update-telemetry.js";
 import * as promptTelemetry from "../src/workflow/prompt-telemetry.js";
 import * as shortcuts from "../src/shortcut-friction.js";
 import * as search from "../src/search-friction.js";
 import * as thrash from "../src/thrash-friction.js";
-import { createAppContext } from "../src/app-context.js";
 import { exportMenuOpenedProps } from "../src/export-menu-telemetry.js";
+import { REPLAY_OPTIONS, recordsReplay } from "../src/analytics-values.js";
 import { readFileSync } from "node:fs";
 import packageInfo from "../package.json" with { type: "json" };
 import {
@@ -73,11 +74,6 @@ assert.deepEqual(sanitizeProps("motion:generate_blocked", { surface: "timeline",
 
 import { readStudioSource } from "./bus/verify-domain-modules.mjs";
 const appSource = readStudioSource();
-const appFunction = (name) => {
-	const start = appSource.indexOf(`function ${name}(`);
-	assert.notEqual(start, -1, `${name} exists`);
-	return appSource.slice(start, appSource.indexOf("\n\t}\n", start) + 3);
-};
 assert.doesNotMatch(appSource, /trackGenerateBlocked|motion:generate_blocked/);
 
 // The 2.x motion-generation funnel and the sample player have no emitter in
@@ -93,6 +89,7 @@ assert.doesNotMatch(appSource, /latency_bucket/);
 assert.deepEqual(sanitizeProps("feature:used", { name: "pose_edit", prompt: "secret" }), { name: "pose_edit" });
 assert.deepEqual(sanitizeProps("feature:used", { name: "private-feature" }), {});
 assert.deepEqual(sanitizeProps("install:first_launch", { heard_from: "github" }), { heard_from: "github" });
+assert.deepEqual(sanitizeProps("install:first_launch", { heard_from: "installer" }), { heard_from: "installer" });
 assert.deepEqual(sanitizeProps("install:first_launch", { heard_from: "skip" }), {});
 assert.equal(bucketCount(0), "0");
 assert.equal(bucketCount(4), "4-10");
@@ -176,6 +173,18 @@ assert.deepEqual(
 		updateStatus: null,
 	},
 );
+{
+	// #1321: session replay is the hosted studio only, never npm or the landing page.
+	const hosted = resolveAnalyticsRuntime({ env: { PROD: true, VITE_POSTHOG_KEY: "phc_hosted" }, origin: "https://cozyclay.org", runtime: null });
+	assert.equal(recordsReplay(hosted, false), true, "the hosted studio records replays");
+	assert.equal(recordsReplay(hosted, true), false, "the landing page (lite) never records replays");
+	assert.equal(recordsReplay({ kind: "enabled", distribution: "npm" }, false), false, "the npm package never records replays");
+	assert.equal(recordsReplay({ kind: "disabled", reason: "opted out" }, false), false);
+	assert.equal(REPLAY_OPTIONS.maskAllInputs, true);
+	assert.equal(REPLAY_OPTIONS.maskTextSelector, ".agent-transcript");
+	assert.equal(REPLAY_OPTIONS.recordBody, false);
+	assert.equal(REPLAY_OPTIONS.recordHeaders, false);
+}
 const npmRuntime = {
 	distribution: "npm",
 	telemetryEnabled: true,
@@ -331,7 +340,7 @@ for (const event of lifecycleEvents) {
 		}
 	}
 }
-for (const export_kind of ["video", "depth_video", "frame", "keyframe_pack", "animation_project"]) {
+for (const export_kind of ["video", "depth_video", "frame", "keyframe_pack"]) {
 	for (const format of ["mp4", "png", "zip"]) {
 		for (const surface of ["studio", "workflow", "embed"]) {
 			const props = { export_kind, format, surface };
@@ -584,7 +593,7 @@ console.log("PASS motion:draft_compiled: buckets, flags, closed schema, and the 
 	const valid = {
 		"agent:connect_opened": { entry: "failure_card" },
 		"agent:connect_started": { provider: "openai-compatible", method: "oauth" },
-		"agent:connect_finished": { provider: "other", method: "api_key", outcome: "abandoned", step: "prompt", duration: "1-2m" },
+		"agent:connect_finished": { provider: "other", method: "api_key", outcome: "abandoned", step: "prompt", duration: "1-2m", reason: "callback_error" },
 		"agent:model_changed": { provider: "cliproxy", after_failure: true },
 	};
 	for (const [event, props] of Object.entries(valid)) {
@@ -593,10 +602,11 @@ console.log("PASS motion:draft_compiled: buckets, flags, closed schema, and the 
 	for (const [event, key, value] of [
 		["agent:connect_opened", "entry", "toolbar"], ["agent:connect_started", "provider", "private-cloud"], ["agent:connect_started", "method", "password"],
 		["agent:connect_finished", "outcome", "timeout"], ["agent:connect_finished", "step", "callback"], ["agent:connect_finished", "duration", "lt1s"],
+		["agent:connect_finished", "reason", "EADDRINUSE"], ["agent:connect_finished", "reason", "access_denied: the user said no"],
 		["agent:model_changed", "after_failure", "yes"],
 	]) assert.deepEqual(sanitizeProps(event, { [key]: value }), {}, `${event} rejects ${key}=${value}`);
 }
-console.log("PASS connect funnel schemas: closed entries, providers, methods, outcomes, steps and durations");
+console.log("PASS connect funnel schemas: closed entries, providers, methods, outcomes, steps, durations and failure reasons");
 
 // U1: the update notice's closed schemas and caps. Never a version string, path, command or npm output.
 {
@@ -717,24 +727,24 @@ console.log("PASS agent:prompt_sent: device-side words, Jaccard grades, length b
 	assert.doesNotThrow(() => postTurn.closePostTurnWindow(), "a failing transport cannot break editing");
 	console.log("PASS bus friction schemas, and the post-turn window: 120 s, next turn, closed groups only");
 }
-// export:menu_opened: surface, mode, a synchronous WebCodecs check and the shot
-// (storyboard: panel) count bucket; nothing else leaves.
+// export:menu_opened: surface, a synchronous WebCodecs check and the shot count
+// bucket; nothing else leaves.
 {
 	const encoder = { VideoEncoder: class {}, VideoFrame: class {} };
-	const shots = [{ kind: "clip" }, { kind: "still" }, { kind: "still" }, { kind: "clip" }, { kind: "clip" }];
-	assert.deepEqual(exportMenuOpenedProps({ embedMode: false, previsMode: "animation", shots }, encoder),
-		{ surface: "studio", mode: "animation", webcodecs: true, shots: "4-10" });
-	assert.deepEqual(exportMenuOpenedProps({ embedMode: true, previsMode: "storyboard", shots }, {}),
-		{ surface: "embed", mode: "storyboard", webcodecs: false, shots: "1-3" }, "storyboard counts panels; no VideoEncoder reads false");
-	assert.deepEqual(exportMenuOpenedProps({ previsMode: undefined, shots: undefined }, { VideoEncoder: class {} }),
-		{ surface: "studio", mode: "animation", webcodecs: false, shots: "0" }, "VideoEncoder without VideoFrame is not WebCodecs");
-	const props = exportMenuOpenedProps({ embedMode: false, previsMode: "animation", shots }, encoder);
-	assert.deepEqual(sanitizeProps("export:menu_opened", { ...props, shot_id: "s1", name: "Private" }), props, "only the closed properties pass");
-	assert.deepEqual(STRICT_EVENT_KEYS["export:menu_opened"], ["surface", "mode", "webcodecs", "shots"]);
+	const shots = [{}, {}, {}, {}, {}];
+	assert.deepEqual(exportMenuOpenedProps({ embedMode: false, shots }, encoder),
+		{ surface: "studio", webcodecs: true, shots: "4-10" });
+	assert.deepEqual(exportMenuOpenedProps({ embedMode: true, shots: shots.slice(0, 2) }, {}),
+		{ surface: "embed", webcodecs: false, shots: "1-3" }, "no VideoEncoder reads false");
+	assert.deepEqual(exportMenuOpenedProps({ shots: undefined }, { VideoEncoder: class {} }),
+		{ surface: "studio", webcodecs: false, shots: "0" }, "VideoEncoder without VideoFrame is not WebCodecs");
+	const props = exportMenuOpenedProps({ embedMode: false, shots }, encoder);
+	assert.deepEqual(sanitizeProps("export:menu_opened", { ...props, mode: "animation", shot_id: "s1", name: "Private" }), props, "only the closed properties pass");
+	assert.deepEqual(STRICT_EVENT_KEYS["export:menu_opened"], ["surface", "webcodecs", "shots"]);
 	for (const [key, value] of [["surface", "workflow"], ["mode", "film"], ["webcodecs", "true"], ["shots", 5], ["shots", "2"]]) {
 		assert.deepEqual(sanitizeProps("export:menu_opened", { [key]: value }), {}, `export:menu_opened rejects ${key}=${value}`);
 	}
-	console.log("PASS export:menu_opened closed props: surface, mode, webcodecs, shots bucket");
+	console.log("PASS export:menu_opened closed props: surface, webcodecs, shots bucket");
 }
 // P2-b: shortcut:ignored, shortcut:unbound, help:shortcuts_opened, search:no_results,
 // nav:thrash and camera:thrash. Closed values only, input elements and IME never
@@ -876,12 +886,12 @@ console.log("PASS agent:prompt_sent: device-side words, Jaccard grades, length b
 console.log("PASS shortcut, search and thrash friction: closed combos and classes, input/IME guard, 1 s search, 10 s/20 s windows, 30 s cooldowns and caps");
 assert.deepEqual(sanitizeProps("export:blocking_frame_succeeded", { ...allProps, format: "png" }), { format: "png" });
 
-// Previs events (#653): closed values only, never a caption, name or prompt.
-for (const previs_mode of ["storyboard", "animation"]) assert.deepEqual(sanitizeProps("scene:created", { scene_source: "ui", previs_mode }), { scene_source: "ui", previs_mode });
-assert.deepEqual(sanitizeProps("scene:created", { scene_source: "ui", previs_mode: "private mode" }), { scene_source: "ui" });
+// Cast events (#653): closed values only, never a name or prompt; a scene:created
+// previs_mode from an older caller is dropped.
+assert.deepEqual(sanitizeProps("scene:created", { scene_source: "ui", previs_mode: "animation" }), { scene_source: "ui" });
+assert.deepEqual(sanitizeProps("scene:created", { scene_source: "new_project", cast_style: "rig" }), { scene_source: "new_project", cast_style: "rig" });
+for (const event of ["storyboard:panel_created", "storyboard:panel_stylized"]) assert.deepEqual(sanitizeProps(event, { source: "agent", outcome: "ok" }), {}, `${event} is no longer an event`);
 const previsContracts = {
-	"storyboard:panel_created": { key: "source", good: ["agent", "manual"], bad: ["mcp", "private", true, 1, null] },
-	"storyboard:panel_stylized": { key: "outcome", good: ["ok", "error"], bad: ["succeeded", "private", true, 1, null] },
 	"cast:proxy_added": { key: "surface", good: ["assets", "agent", "mcp"], bad: ["studio", "private", true, 1, null] },
 };
 for (const [event, { key, good, bad }] of Object.entries(previsContracts)) {
@@ -894,8 +904,11 @@ for (const [event, { key, good, bad }] of Object.entries(previsContracts)) {
 	);
 	assert.deepEqual(sanitizeProps(event, { caption: "A man opens the door" }), {}, `${event} with only a caption sends nothing`);
 }
-for (const export_kind of ["contact_sheet", "panel_pack", "animatic", "animation_project", "workflow_send"]) {
+for (const export_kind of ["workflow_send"]) {
 	assert.deepEqual(sanitizeProps("export:attempt_started", { export_kind }), { export_kind }, `export_kind ${export_kind}`);
+}
+for (const export_kind of ["contact_sheet", "panel_pack", "animatic", "animation_project"]) {
+	assert.deepEqual(sanitizeProps("export:attempt_started", { export_kind }), {}, `export_kind ${export_kind} is no longer sent`);
 }
 assert.deepEqual(sanitizeProps("export:attempt_started", { export_kind: "panel pack" }), {});
 
@@ -1080,7 +1093,7 @@ async function runtimeFixture({
 	runtime = { distribution: "npm", telemetryEnabled: true, installationId, appVersion: "1.8.1", apiKey: "test", apiHost: "https://telemetry.invalid", internalQa: false, installKind: "npx" },
 	origin = "http://127.0.0.1:5180", search = "", store = new Map(),
 	env = { PROD: true, VITE_POSTHOG_KEY: "test", VITE_APP_VERSION: "1.8.1" },
-	dnt = false, beacon = true, sync, sessionId = "0192f0d6-3a4b-7c2d-8e9f-abcdefabcdef",
+	dnt = false, beacon = true, sync, sessionId = "0192f0d6-3a4b-7c2d-8e9f-abcdefabcdef", early,
 } = {}) {
 	const records = [], beacons = [], requests = [];
 	const listeners = new Map();
@@ -1128,9 +1141,12 @@ async function runtimeFixture({
 		// A data: module cannot resolve analytics.js's relative imports itself.
 		.replace(/from "\.\/([a-z-]+\.js)"/g, (_match, file) => `from ${JSON.stringify(new URL(`../src/${file}`, import.meta.url).href)}`)
 		.replace("import.meta.env", JSON.stringify(env))
+		.replace('await import("posthog-js/dist/posthog-recorder")', "await Promise.resolve()")
 		.replace('import("posthog-js")', "Promise.resolve({ default: globalThis.__analyticsSdkFixture })");
 	const module = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}#${++runtimeFixtureId}`);
-	await module.initAnalytics();
+	const ready = module.initAnalytics();
+	early?.(module); // what the studio sends at mount, while the SDK is still loading
+	await ready;
 	await Promise.resolve(); // settle the resolved health probe, never a timing wait
 	return {
 		module, records, beacons, requests, store, sdk, options, listeners,
@@ -1189,6 +1205,25 @@ try {
 		console.log("PASS allowlist gate drops unlisted events; session end goes through the validator with session_id");
 	}
 	{
+		// #1364: the first project is made at mount, before the SDK has loaded. Its event used to be dropped.
+		const run = await runtimeFixture({ early: (module) => {
+			module.track("scene:created", { scene_source: "startup", prompt: "private" });
+			module.track("private:unlisted", { scene_source: "startup" });
+		} });
+		const events = run.records.map((record) => record.event);
+		assert.equal(events.filter((event) => event === "scene:created").length, 1, "an event sent while the SDK loads arrives once, not zero times and not twice");
+		assert.ok(events.indexOf("scene:created") > events.indexOf("$pageview"), "and it arrives after the SDK's own first events");
+		assert.deepEqual(run.records.find((record) => record.event === "scene:created").properties.scene_source, "startup");
+		assert.equal(Object.hasOwn(run.records.find((record) => record.event === "scene:created").properties, "prompt"), false, "the held event still goes through the validator");
+		assert.equal(events.includes("private:unlisted"), false, "the allowlist still gates what waits");
+		const [ended] = await run.unload();
+		assert.equal(ended.properties.scenes_touched, 1, "the held event counts toward the session like any other");
+		const off = await runtimeFixture({ runtime: { distribution: "npm", telemetryEnabled: false, installationId: null, appVersion: "1.8.1", apiKey: "test", apiHost: "https://telemetry.invalid", internalQa: false, installKind: "npx" },
+			early: (module) => module.track("scene:created", { scene_source: "startup" }) });
+		assert.equal(off.records.length, 0, "with telemetry off nothing waits and nothing is sent");
+		console.log("PASS an event sent while the SDK loads is delivered once it has; telemetry off still sends nothing");
+	}
+	{
 		friction.reset();
 		const run = await runtimeFixture();
 		friction.bump("refusals_ui");
@@ -1199,6 +1234,7 @@ try {
 		for (let i = 0; i < 2; i += 1) run.listeners.get("error")({ error: new TypeError("private"), filename: "http://127.0.0.1:5180/src/App.jsx", lineno: 3, colno: 4 });
 		run.listeners.get("error")({ message: "ResizeObserver loop limit exceeded" });
 		assert.equal(run.records.filter(({ event }) => event === "app:error").length, 1, "one app:error per signature");
+		assert.equal(run.records.find(({ event }) => event === "app:error").properties.locale, "en", "app:error carries the UI locale (#1046)");
 		run.module.track("app:friction_summary", { active_time: "lt1m", undos: "private" });
 		const [ended, summary] = await run.unload();
 		assert.equal(ended.event, "app:session_ended");
@@ -1320,6 +1356,18 @@ const { mcpToolCategory, mcpToolName, startWorkflowExecution } = await import(".
 	assert.equal(mcpToolCategory("studio_commands"), "read");
 	assert.equal(mcpToolCategory("studio_run"), "other");
 }
+{
+	// #1364: the sidecar names the category and the browser's closed list has to accept it, or the frame is dropped.
+	// The sidecar cannot import src/ (minimal installs omit it), so this is what holds the two together.
+	const { agentToolCategory } = await import("../bin/agent/turn-telemetry.mjs");
+	const { STUDIO_TOOLS } = await import("../src/studio-agent-protocol.js");
+	const named = { inspect_studio: "scene_read", verify_result: "scene_read", operate_studio: "view", patch_elements: "scene_write", run_action: "other",
+		motion: "motion", motion_result: "motion", design_motion: "motion", plan: "planning", script: "scripting", capture_blocking_frame: "frame_capture", private_unlisted_tool: "other" };
+	for (const [name, category] of Object.entries(named)) assert.equal(agentToolCategory(name), category, name);
+	for (const name of [...STUDIO_TOOLS, ...Object.keys(named)]) assert.ok(analytics.AGENT_TOOL_CATEGORIES.includes(agentToolCategory(name)), `${name} lands in the closed list`);
+	assert.equal(STUDIO_TOOLS.filter(name => agentToolCategory(name) === "other").join(), "run_action", "run_action is the one Studio tool without a family");
+	console.log("PASS every Studio agent tool reports a family the analytics list accepts");
+}
 const executionId = "0123456789abcdef0123456789abcdef";
 assert.deepEqual(
 	sanitizeProps("workflow:run_requested", {
@@ -1399,7 +1447,7 @@ const executionSchemas = {
 	"agent:turn_requested": ["surface", "turn_id"],
 	"agent:tool_executed": ["turn_id", "tool_category", "outcome", "duration_bucket"],
 	"agent:turn_succeeded": ["turn_id", "duration_bucket"],
-	"agent:turn_failed": ["turn_id", "duration_bucket", "failure_code"],
+	"agent:turn_failed": ["turn_id", "duration_bucket", "failure_code", "provider", "endpoint"],
 	"agent:turn_cancelled": ["turn_id", "duration_bucket", "failure_code"],
 	"agent:result_applied": ["turn_id"],
 	"mcp:tool_requested": ["tool_category", "tool_name", "request_id"],
@@ -1410,7 +1458,7 @@ assert.deepEqual([...executionDisclosure.keys()].sort(), Object.keys(executionSc
 const executionProps = {
 	surface: "workflow", run_id: executionId, turn_id: executionId, request_id: executionId,
 	node_count_bucket: "1-3", tool_category: "other", tool_name: "describe_scene", outcome: "succeeded",
-	duration_bucket: "1-3s", failure_code: "unknown",
+	duration_bucket: "1-3s", failure_code: "unknown", provider: "openai-compatible", endpoint: "local",
 };
 for (const [event, properties] of Object.entries(executionSchemas)) {
 	assert.deepEqual(Object.keys(sanitizeProps(event, executionProps)).sort(), [...properties].sort(), `${event}: exact property contract`);
@@ -1435,7 +1483,8 @@ const executionEnums = [
 	["workflow:run_requested", "node_count_bucket", ["0", "1-3", "4-10", "gte11"]],
 	["workflow:run_failed", "failure_code", ["aborted", "capture_failed", "generation_failed", "unknown"]],
 	["agent:turn_failed", "failure_code", ["aborted", "auth", "rate_limited", "tool_failed", "upstream", "network", "unknown"]],
-	["agent:tool_executed", "tool_category", ["workflow_read", "workflow_write", "workflow_run", "frame_capture", "image_generate", "scene_write", "other"]],
+	["agent:turn_failed", "endpoint", ["local", "lan", "hosted", "unknown"]],
+	["agent:tool_executed", "tool_category", ["workflow_read", "workflow_write", "workflow_run", "frame_capture", "image_generate", "scene_write", "scene_read", "view", "motion", "planning", "scripting", "other"]],
 	["mcp:tool_executed", "tool_category", ["read", "camera", "scene_write", "prompt_authoring", "frame_capture", "motion_generate", "motion_apply", "project_io", "other"]],
 	["agent:tool_executed", "outcome", ["succeeded", "failed", "cancelled"]],
 	["mcp:tool_executed", "outcome", ["succeeded", "failed", "uncertain", "cancelled"]],
@@ -1455,6 +1504,9 @@ for (const event of Object.keys(executionSchemas).filter((event) => executionSch
 		assert.deepEqual(sanitizeProps(event, { duration_bucket }), { duration_bucket });
 	}
 }
+// agent:turn_failed provider: agent:prompt_sent's closed list (its privacy row points there), "other" for the rest.
+for (const provider of ["google", "openai-compatible", "openai-codex", "other"]) assert.deepEqual(sanitizeProps("agent:turn_failed", { provider }), { provider });
+assert.deepEqual(sanitizeProps("agent:turn_failed", { provider: "my-gateway" }), {});
 assert.deepEqual(sanitizeProps("workflow:run_requested", { surface: "studio" }), {});
 assert.deepEqual(sanitizeProps("agent:tool_executed", { outcome: "uncertain" }), {});
 for (const capture of [() => { throw new Error("transport"); }, () => Promise.reject(new Error("transport"))]) {
@@ -1497,6 +1549,7 @@ console.log("PASS Workflow, Agent and MCP execution allowlists and disclosure sc
 			error_kind: ["error", "unhandled_rejection"],
 			error_type: ["TypeError", "DOMException", "other", "non_error"],
 			error_source: ["app", "extension", "external", "unknown"],
+			locale: ["en", "ko", "zh", "other"],
 		},
 		"device:profile": {
 			gpu_vendor: ["nvidia", "amd", "intel", "apple", "qualcomm", "arm", "software", "other", "unknown"],
@@ -1565,8 +1618,8 @@ console.log("PASS Workflow, Agent and MCP execution allowlists and disclosure sc
 		reportRenderCrash(new CustomerNamedError());
 		reportRenderCrash("string throw");
 		assert.deepEqual(sent, [
-			{ event: "app:render_crash", props: { error_type: "TypeError" } },
-			{ event: "app:render_crash", props: { error_type: "other" } },
+			{ event: "app:render_crash", props: { error_type: "TypeError", locale: "en" } },
+			{ event: "app:render_crash", props: { error_type: "other", locale: "en" } },
 		], "a type label only, and at most two per session");
 		assert.equal(friction.snapshot().errors, "3", "every caught crash moves the errors counter, past the cap too");
 		assert.equal(JSON.stringify(sent).includes("private"), false, "never the message or stack");
@@ -1578,12 +1631,31 @@ console.log("PASS Workflow, Agent and MCP execution allowlists and disclosure sc
 		assert.deepEqual(sanitizeProps("app:render_crash", { error_type: "AcmeStudioError", stack: secret }), {}, "app:render_crash rejects an open type and a stack");
 		assert.deepEqual(sanitizeProps("app:render_crash", { error_type: "RangeError" }), { error_type: "RangeError" });
 		assert.deepEqual(sanitizeProps("app:gl_lost", { kind: "restored" }), {}, "app:gl_lost rejects an unknown kind");
-		assert.deepEqual(STRICT_EVENT_KEYS["app:render_crash"], ["error_type"]);
+		assert.deepEqual(STRICT_EVENT_KEYS["app:render_crash"], ["error_type", "locale"]);
+		assert.deepEqual(sanitizeProps("app:render_crash", { error_type: "NotFoundError", locale: "zh" }), { error_type: "NotFoundError", locale: "zh" });
+		assert.deepEqual(sanitizeProps("app:render_crash", { locale: "zh-CN" }), {}, "locale is the closed UI set, never a browser tag");
 		assert.deepEqual(STRICT_EVENT_KEYS["app:gl_lost"], ["kind"]);
 		restoreCrash();
 		friction.reset();
 	}
 	console.log("PASS app:render_crash and app:gl_lost: closed values, 2 crashes and 1 per GL kind per session");
+	// #1046: the UI locale is the stored studio language, never the browser's.
+	{
+		const saved = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+		const withStored = (value) => {
+			Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: () => value } });
+			return uiLocale();
+		};
+		try {
+			assert.deepEqual(["en", "ko", "zh", null, "zh-CN", "fr"].map(withStored), ["en", "ko", "zh", "en", "other", "other"]);
+			Object.defineProperty(globalThis, "localStorage", { configurable: true, get() { throw new Error("denied"); } });
+			assert.equal(uiLocale(), "en", "unreadable storage is the English default the studio shows");
+		} finally {
+			if (saved) Object.defineProperty(globalThis, "localStorage", saved);
+			else delete globalThis.localStorage;
+		}
+	}
+	console.log("PASS UI locale label: en, ko, zh, other");
 	// P2-c: playback:summary, the first-success guide, agent:panel_toggled, studio:ready and delete regret.
 	{
 		const { bucketCatchup, bucketPlaybackFps, bucketSpeed, playbackTelemetrySeam, startPlaybackRun } = await import("../src/playback-telemetry.js");
@@ -1672,10 +1744,10 @@ console.log("PASS Workflow, Agent and MCP execution allowlists and disclosure sc
 			{ event: "guide:completed", props: { mode: "animation" } },
 		], "each guide event and step once per session; closed modes and steps only");
 		for (const { event, props } of guide) assert.deepEqual(sanitizeProps(event, { ...props, text: "private" }), props, `${event} passes its closed schema`);
-		assert.deepEqual(sanitizeProps("guide:step", { mode: "film", step: 5, step_ms: 4000 }), {}, "guide values are closed");
+		assert.deepEqual(sanitizeProps("guide:step", { mode: "film", step: 9, step_ms: 4000 }), {}, "guide values are closed");
 		const guideSource = readFileSync(new URL("../src/first-success-guide.jsx", import.meta.url), "utf8");
-		assert.match(guideSource, /const STEPS_BY_MODE = \{ animation: ANIMATION_STEPS, storyboard: STORYBOARD_STEPS \};/, "the schema's modes are the component's own");
-		for (const name of ["ANIMATION_STEPS", "STORYBOARD_STEPS"]) {
+		assert.match(guideSource, /const mode = "animation";/, "the guide reports the schema's animation mode");
+		for (const name of ["ANIMATION_STEPS"]) {
 			const block = guideSource.slice(guideSource.indexOf(`const ${name} = [`), guideSource.indexOf("];", guideSource.indexOf(`const ${name} = [`)));
 			assert.equal(block.match(/^\t\ten: /gm)?.length, 4, `${name} has the schema's 4 steps`);
 		}
@@ -1764,19 +1836,19 @@ console.log("PASS Workflow, Agent and MCP execution allowlists and disclosure sc
 	const frictionTokens = rowTokens("app:friction_summary");
 	for (const key of friction.FRICTION_SUMMARY_KEYS) assert.ok(frictionTokens?.has(key), `the privacy page discloses friction summary ${key}`);
 	for (const value of ["4-5", "6-10", "gte11", "150-500", "gte2000", "5-20", "gte50"]) assert.ok(frictionTokens.has(value), `the privacy page lists friction value ${value}`);
-	assert.ok(FEATURE_USAGE_NAMES.includes("pose_save"));
+	assert.equal(FEATURE_USAGE_NAMES.includes("pose_save"), false, "the saved-pose library is gone");
 	for (const name of ["export_depth_video", "export_keyframe_pack", "export_render_pass", "export_storyboard"]) assert.ok(FEATURE_USAGE_NAMES.includes(name), `${name} is no longer silently dropped`);
-	assert.deepEqual(sanitizeProps("feature:used", { name: "pose_save" }), { name: "pose_save" });
-	for (const name of ["pose_edit", "pose_save"]) {
+	assert.deepEqual(sanitizeProps("feature:used", { name: "pose_save" }), {});
+	for (const name of ["pose_edit"]) {
 		assert.ok(FEATURE_USAGE_NAMES.includes(name), `${name} is a closed feature name`);
 		assert.ok(rowTokens("feature:used").has(name), `feature:used discloses ${name}`);
 	}
-	console.log("PASS per-group edit gestures, real pose_edit vs pose_save, and session-end disclosure");
+	console.log("PASS per-group edit gestures, real pose_edit, and session-end disclosure");
 
 
 	const { FIRST_LAUNCH_SOURCES } = await import("../bin/telemetry-state.mjs");
 	assert.deepEqual([...HEARD_FROM_SOURCES].sort(), [...FIRST_LAUNCH_SOURCES].sort(), "the CLI and the browser agree on install sources");
-	for (const heard_from of ["site", "playground"]) {
+	for (const heard_from of ["site", "playground", "installer"]) {
 		assert.deepEqual(sanitizeProps("install:first_launch", { heard_from }), { heard_from });
 		assert.ok(rowTokens("install:first_launch").has(heard_from), `install source ${heard_from} is disclosed`);
 	}
@@ -1806,6 +1878,14 @@ try {
 	const answers = survey.records.filter((record) => record.event === "survey:use_case").map((record) => [record.properties.use_case, record.properties.team]);
 	assert.deepEqual(answers, [["film", "team"], ["skip", "skip"]]);
 	console.log("PASS update_status parity, passive action counts, edit buckets in the end beacon and the one-time use-case answer");
+	const hostedInit = await runtimeFixture({ runtime: null, origin: "https://cozyclay.org" });
+	assert.equal(hostedInit.options.disable_session_recording, false, "the hosted studio init turns replay on");
+	assert.equal(hostedInit.options.session_recording.maskAllInputs, true);
+	assert.equal(hostedInit.options.enable_recording_console_log, false);
+	const npmInit = await runtimeFixture();
+	assert.equal(npmInit.options.disable_session_recording, true, "the npm package init keeps replay off");
+	assert.equal(npmInit.options.session_recording, undefined);
+	console.log("PASS session replay is on for the hosted studio only (#1321)");
 } finally {
 	for (const [key, descriptor] of savedGlobals) {
 		if (descriptor) Object.defineProperty(globalThis, key, descriptor);

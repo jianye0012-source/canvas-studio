@@ -2,8 +2,10 @@
 // The camera-move contract: interpolation reproduces its endpoints, an orbit
 // stays on the arc instead of cutting the chord, and the classifier only
 // claims a move the two framings geometrically prove.
+import { PerspectiveCamera, Vector3 } from "three";
 import {
 	CAMERA_PRESETS,
+	EASES,
 	cameraMoveAt,
 	cameraPresetFraming,
 	captureFraming,
@@ -50,6 +52,27 @@ function framingAt(r, azimuthDeg, height, fovDeg = 40) {
 }
 
 const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
+
+// The YXZ camera convention defines the screen top even at a vertical aim.
+{
+	for (const pitch of [-Math.PI / 2, Math.PI / 2]) for (const yaw of [0, 0.7, -2]) for (const roll of [0, 90]) {
+		const camera = new PerspectiveCamera();
+		camera.rotation.set(pitch, yaw, roll * Math.PI / 180, "YXZ");
+		const forward = new Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+		const up = new Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+		const expectedUp = roll ? new Vector3(-Math.cos(yaw), 0, Math.sin(yaw)) : new Vector3(Math.sign(pitch) * Math.sin(yaw), 0, Math.sign(pitch) * Math.cos(yaw));
+		expect("pole camera has finite forward and yaw-defined up", forward.distanceTo(new Vector3(0, Math.sign(pitch), 0)) < 1e-10 && up.distanceTo(expectedUp) < 1e-10 && [...forward, ...up].every(Number.isFinite));
+	}
+	const a = { pos: { x: 0, y: 4, z: 0 }, yaw: 1, pitch: -Math.PI / 2, fovDeg: 40 };
+	const b = { ...a, yaw: 0.3, pitch: -Math.PI / 3 };
+	let previous = null;
+	for (let frame = 0; frame <= 100; frame++) {
+		const sample = cameraMoveAt([{ frame: 0, framing: a }, { frame: 100, framing: b }], SUBJECT, frame);
+		const q = new PerspectiveCamera(); q.rotation.set(sample.pitch, sample.yaw, 0, "YXZ");
+		expect("pole interpolation stays finite and continuous", [sample.pos.x, sample.pos.y, sample.pos.z, sample.yaw, sample.pitch].every(Number.isFinite) && (!previous || previous.angleTo(q.quaternion) < 0.03));
+		previous = q.quaternion.clone();
+	}
+}
 
 /* ----------------------------------------------------------- filmbacks --- */
 {
@@ -290,6 +313,23 @@ const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
 	expect("a 4 m prop fits the interaction frame", propHalfAngle < (inter.fovDeg * Math.PI) / 360,
 		`prop ${(propHalfAngle * 360 / Math.PI).toFixed(1)} deg vs fov ${inter.fovDeg.toFixed(1)} deg`);
 	expect("an unknown preset id builds nothing", cameraPresetFraming("nope", { x: 0, z: 0 }, filmbacks[0]) === null);
+}
+
+// Cover outgoing easing and the legacy default.
+{
+ const keys = [0, 10, 20].map((frame, i) => ({ frame, framing: framingAt(2 + i, 0, 1.6), ease: "linear" }));
+ const x = (frame) => cameraMoveAt(keys, SUBJECT, frame).pos.z;
+ expect("linear segment midpoint", near(x(5), 2.5));
+ expect("linear camera crosses the middle key at constant nonzero speed", near(x(10) - x(9), 0.1) && near(x(11) - x(10), 0.1));
+ for (const frame of [1, 5, 9, 11, 15, 19]) {
+  const plain = keys.map(({ ease, ...key }) => key), i = frame <= 10 ? 0 : 1;
+  expect(`default easing matches legacy at ${frame}`, JSON.stringify(cameraMoveAt(plain, SUBJECT, frame)) === JSON.stringify(interpolateFraming(plain[i].framing, plain[i + 1].framing, SUBJECT, (frame - plain[i].frame) / 10, easeInOut)));
+ }
+ expect("unknown easing falls back", JSON.stringify(cameraMoveAt([{ ...keys[0], ease: "__proto__" }, ...keys.slice(1)], SUBJECT, 5)) === JSON.stringify(interpolateFraming(keys[0].framing, keys[1].framing, SUBJECT, 0.5, easeInOut)));
+ for (const name of ["easeIn", "easeOut"]) {
+  const values = Array.from({ length: 101 }, (_, i) => EASES[name](i / 100));
+  expect(`${name} endpoints and monotonicity`, values[0] === 0 && values[100] === 1 && values.every ( (v, i) => i === 0 || v >= values[i - 1] ));
+ }
 }
 
 if (failures > 0) {

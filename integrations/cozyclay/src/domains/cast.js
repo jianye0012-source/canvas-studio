@@ -3,39 +3,32 @@ import { useState, useMemo, useEffect, useSyncExternalStore, useContext } from "
 import { AppContext } from '../app-context.js';
 import { createDocumentStore } from "../document-store.js";
 import { createSceneUndo } from "./scene-undo.js";
-import { useDocumentDomain } from "../store/use-document-store.js";
 import { arrangement } from "../studio-agent-commands.js";
 import { timelineContentExtent, timelineSpan } from '../timeline-extent.js';
 import {
-	loadCustomPoses,
 	DEFAULT_POSE,
 	capturePose,
 	captureHipsOffset,
-	saveCustomPoses,
 } from "../poses.js";
-import { createCharacterEntry, createCharacterLayer, isProxyFigure, PROXY_FIGURE_MODEL } from "../scenes.js";
-import {
-	DEFAULT_SUBJECT,
-	DEFAULT_SUBJECT2,
-	nextCharacterId,
-	MAX_WAYPOINTS,
-} from "../app-stage.jsx";
+import { createCharacterEntry, createCharacterLayer, isProxyFigure, NEW_CHARACTER_MODEL, PROXY_FIGURE_MODEL } from "../scenes.js";
+import { nextCharacterId, MAX_WAYPOINTS } from "../app-stage.jsx"; import { characterName } from "../character-name.js";
 import { ko } from "../locale.js";
 import { createIkState } from "../motion/ik.js";
 import { createCastPlacements } from "./cast-placement.js";
 import { judgeNextWaypoint } from "../motion/waypoints.js";
-import { StudioProtocolError } from "../studio-agent-protocol.js";
+import { StudioProtocolError } from "../studio-agent-protocol.js"; import { settleUiRefusal } from "./ui-refusal.js";
 import { studioActionRefusal } from "../studio-actions.js";
 import { createStableItemId, removeStableItem } from "../stable-items.js";
-import { track, trackFeature } from "../analytics.js";
+import { track } from "../analytics.js";
 
-import { shotAtFrame } from "../cuts.js";
+import { characterRowId, characterIdFromHierarchyId as charIdFromHierarchyId } from "../hierarchy-model.js";
 
 const sameCastValue = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-function createCastDomain(appContext, initial, customPoses = []) {
-	const normalize = value => ({ characters: (Array.isArray(value) ? value : value.characters).map(createCharacterEntry),
-		customPoses: Array.isArray(value) ? customPoses : value.customPoses ?? customPoses });
+// The cast document holds the characters only. A saved pose library from an
+// older build is dropped on load without an error.
+function createCastDomain(appContext, initial) {
+	const normalize = value => ({ characters: (Array.isArray(value) ? value : value.characters).map(createCharacterEntry) });
 	let native = createDocumentStore({ owned: { cast: normalize(initial) } });
 	const listeners = new Set(), motions = new Map(), placements = createCastPlacements(() => { publish(); notify(); });
 	const notify = () => { for (const listener of listeners) listener(); };
@@ -43,14 +36,12 @@ function createCastDomain(appContext, initial, customPoses = []) {
 	const documentStore = { ...Object.fromEntries(Object.keys(native).map(key => [key, (...args) => native[key](...args)])),
 		subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
 	const state = () => documentStore.read('cast'), read = () => state().characters;
-	let projection = read(), previous = state();
+	let projection = read();
 	function publish() {
 		projection = read().map(entry => motions.has(entry.id) ? { ...placements.withKeys(entry), sessionMotion: motions.get(entry.id) } : placements.withKeys(entry));
 		appContext.publishCharacters(projection);
 		if (appContext.live.state) appContext.patchLive({ characters: projection });
 		domain.syncLayer?.();
-		if (!sameCastValue(previous.customPoses, state().customPoses) && !saveCustomPoses(state().customPoses)) console.warn('[cozyclay] could not save the pose library');
-		previous = state();
 	}
 	const unsubscribe = documentStore.subscribe(publish);
 	function writeState(update) {
@@ -73,20 +64,7 @@ function createCastDomain(appContext, initial, customPoses = []) {
 	function update(characterId, patch) {
 		const entry = read().find(entry => entry.id === characterId);
 		if (!entry) throw new StudioProtocolError('STALE_TARGET', `Character ${characterId} is not in this scene.`);
-		const raw = appContext.ports.read(), shot = shotAtFrame(raw.shots, raw.view.frame);
-		const fields = ['x', 'z', 'rot', 'posture', 'pose'];
-		const panelPatch = Object.fromEntries(Object.entries(patch).filter(([key, value]) => fields.includes(key) && value !== undefined));
-		if (shot?.kind === 'still' && !raw.targets?.get?.(characterId)?.motion && Object.keys(panelPatch).length) {
-			const current = { ...entry, ...shot.cast[characterId] };
-			const normalized = createCharacterEntry({ ...current, ...panelPatch });
-			const override = { x: normalized.x, z: normalized.z, rot: normalized.rot };
-			for (const key of ['posture', 'pose']) if (normalized[key] != null) override[key] = normalized[key];
-			// Enlist the shot owner in the already-open command/drag session:
-			// even a mixed scale + placement edit is one shared Undo entry.
-			const shots = appContext.storeDomain('shot');
-			appContext.recordAction('shot', () => shots.setCastOverride(shot.id, characterId, override), null, true);
-			patch = Object.fromEntries(Object.entries(patch).filter(([key]) => !fields.includes(key)));
-		}
+		const raw = appContext.ports.read();
 		// A character keyed in Pose mode (placement keys, no take) moves at the playhead: the move keys its placement there.
 		patch = placements.redirect(appContext, characterId, raw.view.frame, patch, motions.has(characterId)); if (Object.keys(patch).length) write(rows => rows.map(row => row.id === characterId ? { ...row, ...patch } : row));
 	}
@@ -130,7 +108,7 @@ function createCastDomain(appContext, initial, customPoses = []) {
 		bindRender(context) { appContext = context; },
 		beginAction: () => documentStore.beginAction('cast'), canUndo: id => documentStore.canUndo(id),
 		stepHistory: redo => { finishGesture(); return Boolean((redo ? documentStore.redo : documentStore.undo)()); },
-		document: () => ({ characters: read(), customPoses: state().customPoses }), publish: value => write(value.characters), commitDraft: write,
+		document: () => ({ characters: read() }), publish: value => write(value.characters), commitDraft: write,
 		arrange(args) {
 			const current = appContext.ports.read();
 			const plan = arrangement({ name: 'arrange_characters', args }, { ...current, characters: read(), frame: current.view.frame }, { bounds: appContext.ports.bounds });
@@ -139,7 +117,7 @@ function createCastDomain(appContext, initial, customPoses = []) {
 		load(value) {
 			finishGesture(true);
 			release(); native.dispose(); motions.clear();
-			const next = normalize(Array.isArray(value) ? { characters: value, customPoses: state().customPoses } : value);
+			const next = normalize(value);
 			native = createDocumentStore({ owned: { cast: next } }); release = native.subscribe(notify);
 			domain.activeId = read()[0]?.id ?? null; domain.loadView?.(); notify();
 		},
@@ -155,9 +133,8 @@ export function useCastTransaction() {
 }
 
 export function useCast(appContext) {
-	const [domain] = useState(() => appContext.storeDomain('cast') ?? createCastDomain(appContext, appContext.shared.startupStage.characters, loadCustomPoses()));
+	const [domain] = useState(() => appContext.storeDomain('cast') ?? createCastDomain(appContext, appContext.shared.startupStage.characters));
 	domain.bindRender(appContext);
-	const { customPoses } = useDocumentDomain(domain.documentStore, 'cast');
 	const characters = useSyncExternalStore(domain.documentStore.subscribe, domain.projection, domain.projection);
 	const editCharacters = value => domain.write(value);
 	useEffect(() => {
@@ -178,47 +155,16 @@ export function useCast(appContext) {
 
 	const [poseRevision, setPoseTick] = useState(0);
 
-	// Fallback second slot mirrors the old charB defaults so preset math and
-	// the two-subject inspector never see a hole before B exists.
-	const charA = characters[0] ?? createCharacterEntry(null, 0);
-
-	const charB = characters[1] ?? { ...createCharacterEntry(null, 1), x: 1.15, z: 0.1, rot: -14 };
-
-	const showB = characters.some((entry, index) => index > 0 && !entry.hidden);
-
-	const poseA = charA.pose ?? DEFAULT_POSE;
-
-	const poseB = charB.pose ?? DEFAULT_POSE;
-
-	const subject = charA.subject ?? DEFAULT_SUBJECT;
-
-	const subject2 = charB.subject ?? DEFAULT_SUBJECT2;
+	// Empty-stage tools need a stable neutral editing layer, never a cast identity.
+	const [emptyLayer] = useState(() => ({ ...createCharacterEntry(), id: null }));
 
 	function updateCharacterAt(index, next) {
-		const base = domain.read()[index], raw = appContext.ports.read();
-		const entry = base && { ...base, ...shotAtFrame(raw.shots, raw.view.frame)?.cast[base.id] };
+		const entry = domain.read()[index];
 		if (entry) return domain.edit('character.update', { characterId: entry.id, patch: typeof next === 'function' ? next(entry) : next });
 	}
 
-	function setShowB(next) {
-		return domain.run('cast.showExtras', { show: typeof next === 'function' ? next(domain.read().some((entry, i) => i > 0 && !entry.hidden)) : next });
-	}
-	function applyShowB(on) {
-		editCharacters((list) => {
-			const anyVisibleExtra = list.some((entry, i) => i > 0 && !entry.hidden);
-			if (on) {
-				if (anyVisibleExtra) return list;
-				const hiddenIdx = list.findIndex((entry, i) => i > 0 && entry.hidden);
-				if (hiddenIdx > 0) return list.map((entry, i) => (i === hiddenIdx ? { ...entry, hidden: false } : entry));
-				return [...list, createCharacterEntry({ id: nextCharacterId(list), x: 1.15, z: 0.1, rot: -14, pose: DEFAULT_POSE, subject: DEFAULT_SUBJECT2 }, list.length)];
-			}
-			return list.map((entry, i) => (i > 0 && !entry.hidden ? { ...entry, hidden: true } : entry));
-		});
-	}
-
 	function moveCharacter(charId, next) {
-		const base = domain.read().find(entry => entry.id === charId), raw = appContext.ports.read();
-		const entry = { ...base, ...shotAtFrame(raw.shots, raw.view.frame)?.cast[charId] };
+		const entry = domain.read().find(row => row.id === charId);
 		return domain.edit('character.update', { characterId: charId, patch: typeof next === 'function' ? next(entry) : next });
 	}
 
@@ -252,30 +198,17 @@ export function useCast(appContext) {
 
 	const spawnCharacter = (model, x, z) => {
 		const id = nextCharacterId(domain.read());
-		domain.run('character.add', { character: { id, model, x, z, pose: DEFAULT_POSE, subject: 'a person' } });
+		domain.run('character.add', { character: { id, model, x, z, pose: DEFAULT_POSE } });
 		if (model === PROXY_FIGURE_MODEL) track("cast:proxy_added", { surface: "assets" });
-		appContext.shared.setSelectedHierarchyId(`character:${id}`);
+		appContext.shared.setSelectedHierarchyId(characterRowId(id));
 		appContext.notify(ko("Character added to the scene", "인물을 씬에 추가했어요"));
 	};
 
-	// Viewport picks tag bodies with "A"/"B"/charId and surfaces route the
-	// result to a hierarchy row: the first two keep their legacy row ids.
-	const charKeyToHierarchyId = (key) => {
-		if (key === "A" || key === "a" || key === "char:A") return "characterA";
-		if (key === "B" || key === "b" || key === "char:B") return "characterB";
-		return `character:${key.startsWith("char:") ? key.slice(5) : key}`;
-	};
+	const charKeyToHierarchyId = key => characterRowId(characters.some(entry => entry.id === key) ? key : key.startsWith("char:") ? key.slice(5) : key);
 
 	// Every character owns an animation layer (root path, prompt blocks,
 	// generated clip, IK keys). The studio's motion machinery edits ONE layer
 	// at a time — the ACTIVE character's — and selection decides who that is.
-	const charIdFromHierarchyId = (hierarchyId) => {
-		if (hierarchyId === "characterA") return characters[0]?.id ?? null;
-		if (hierarchyId === "characterB") return characters[1]?.id ?? null;
-		if (hierarchyId?.startsWith("character:")) return hierarchyId.slice(10);
-		return null;
-	};
-
 	// State, not a ref: a ref written inside an effect never re-renders, so
 	// with an idle app the active character silently stayed behind the row
 	// the user just clicked.
@@ -285,18 +218,16 @@ export function useCast(appContext) {
 		renderActiveCharacterId(domain.activeId);
 	}
 
-	/** The hierarchy row id a cast LIST index owns — mirror of
-	 * hierarchy-model's characterRowId, for building namespaced rig ids. */
-	const rowIdForCharIndex = (index) => index === 0 ? "characterA" : index === 1 ? "characterB" : characters[index] ? `character:${characters[index].id}` : "characterA";
+	const rowIdForCharIndex = index => characterRowId(characters[index]?.id);
 
-	const activeChar = characters.find((entry) => entry.id === activeCharacterId) ?? characters[0] ?? charA;
+	const activeChar = characters.find((entry) => entry.id === activeCharacterId) ?? characters[0] ?? emptyLayer;
 
 	// Root paths and prompt blocks are the active character's animation layer.
 	// With the Inspector driven by selection, showing those tools means putting
 	// that character in the hierarchy selection.
 	const selectActiveCharacterInHierarchy = () => {
 		const id = activeCharacterId ?? characters[0]?.id;
-		if (id) appContext.shared.setSelectedHierarchyId(`character:${id}`);
+		if (id) appContext.shared.setSelectedHierarchyId(characterRowId(id));
 	};
 
 	const activeCharIndex = Math.max(0, characters.findIndex((entry) => entry.id === activeChar.id));
@@ -381,16 +312,9 @@ export function useCast(appContext) {
 
 	
 
-	// The library is the user's own material: poses read from photographs and
-	// poses saved off the rig, accumulating across sessions and projects. No
-	// presets ship in it — DEFAULT_POSE is the character's spawn state, not a
-	// library entry.
-	const allPoses = customPoses;
-
-	// The dropdowns must be able to show and re-select the pose a character is
-	// actually in, and a fresh character is in the default — which is not a
-	// library entry. An empty library would otherwise render a blank select.
-	const selectablePoses = useMemo(() => [DEFAULT_POSE, ...customPoses], [customPoses]);
+	// The pose tiles: the default standing pose a character spawns in and
+	// "Reset pose" returns to. There is no saved-pose library.
+	const selectablePoses = useMemo(() => [DEFAULT_POSE], []);
 
 	// The pose studio follows the character it was opened for: `posing` is a
 	// charId, so every cast member gets the same studio, not just the first two.
@@ -399,10 +323,6 @@ export function useCast(appContext) {
 	const posingChar = posingIndex >= 0 ? characters[posingIndex] : null;
 
 	const posedRig = () => rigs[posing] ?? null;
-
-	const setPosed = (pose) => {
-		if (posingIndex >= 0) updateCharacterAt(posingIndex, entry => ({ pose: typeof pose === "function" ? pose(entry.pose ?? DEFAULT_POSE) : pose }));
-	};
 
 	// A walking pace turns clicked distance into clip time, so pins land at
 	// frames the character can actually reach without ice-skating.
@@ -518,7 +438,7 @@ export function useCast(appContext) {
 		const character = castMemberOf(characterId);
 		const ordered = [...readCharacterWaypoints(characterId)].sort((a, b) => a.frame - b.frame);
 		const index = ordered.findIndex((waypoint) => waypoint.frame === frame);
-		if (index === -1) throw new StudioProtocolError("STALE_TARGET", `${character.subject || character.id} has no root waypoint at frame ${frame}.`);
+		if (index === -1) throw new StudioProtocolError("STALE_TARGET", `${characterName(character)} has no root waypoint at frame ${frame}.`);
 		const moved = { ...ordered[index], x: clampRootPosition(point.x), z: clampRootPosition(point.z) };
 		if (moved.x === ordered[index].x && moved.z === ordered[index].z) return { waypoint: ordered[index], index, warnings: [] };
 		const next = ordered.map((waypoint, i) => (i === index ? moved : waypoint));
@@ -535,7 +455,7 @@ export function useCast(appContext) {
 		const character = castMemberOf(characterId);
 		const current = readCharacterWaypoints(characterId);
 		const waypoint = current.find((entry) => entry.frame === frame);
-		if (!waypoint) throw new StudioProtocolError("STALE_TARGET", `${character.subject || character.id} has no root waypoint at frame ${frame}.`);
+		if (!waypoint) throw new StudioProtocolError("STALE_TARGET", `${characterName(character)} has no root waypoint at frame ${frame}.`);
 		writeCharacterWaypoints(characterId, removeStableItem(current, waypoint.id, "waypoints"));
 		return waypoint;
 	}
@@ -611,7 +531,7 @@ export function useCast(appContext) {
 			return;
 		}
 
-		appContext.notify(ko("Root path on — click the set floor in the Shot view to drop waypoints; Subject 1 is the frame 0 start", "루트 경로 켜짐 — 샷 뷰의 세트 바닥을 클릭해 웨이포인트를 놓으세요. 인물 1이 0프레임 시작점입니다"));
+		appContext.notify(ko("Root path on — click the set floor in the Shot view to drop waypoints; Character 1 is the frame 0 start", "루트 경로 켜짐 — 샷 뷰의 세트 바닥을 클릭해 웨이포인트를 놓으세요. 인물 1이 0프레임 시작점입니다", "根路径已开启 — 在镜头视图中点击布景地面放置路径点；角色 1 是第 0 帧的起点"));
 	}
 
 	function openStudio(charId) {
@@ -630,37 +550,10 @@ export function useCast(appContext) {
 		}, 190);
 	}
 
-	/** Save the ACTIVE character's rig exactly as it stands — the motion frame
-	 * with any IK corrections already composited — into the pose library.
-	 * Unlike savePose (the studio's FK author), this never writes back onto the
-	 * character: a running take must survive having its best frame bottled. */
-	function saveCurrentPose() {
-		if (!activeRig) return;
-		// Saving to the library, not editing: real bone edits are `pose_edit`
-		// from the semantic boundary (#466).
-		trackFeature("pose_save");
-		const pose = {
-			id: `custom_${Date.now()}`,
-			label: ko(`My Pose ${customPoses.length + 1}`, `내 포즈 ${customPoses.length + 1}`, `我的姿势 ${customPoses.length + 1}`),
-			prompt: "in the exact body pose shown in the blocking frame",
-			bones: capturePose(activeRig),
-			// A take frame carries its measured hips height; bottling the frame
-			// without it would save every crouch as a float.
-			rootY: captureHipsOffset(activeRig),
-			custom: true,
-		};
-		domain.run('cast.savePose', { pose });
-		setStudioPick(pose.id);
-		appContext.notify(appContext.shared.motion
-			? ko(`Saved this frame's pose to the library as “${pose.label}”`, `지금 프레임의 자세를 “${pose.label}”로 라이브러리에 저장했어요`, `已将当前帧的姿势以“${pose.label}”保存到姿势库`)
-			: ko(`Saved the current pose to the library as “${pose.label}”`, `지금 자세를 “${pose.label}”로 라이브러리에 저장했어요`, `已将当前姿势以“${pose.label}”保存到姿势库`));
-	}
-
 	/** A handle drag is an authored pose. When it ends, the rig as it now
 	 * stands becomes the posed character's own pose — so the scene autosaves
 	 * it and undo can step it back — instead of living only on the rig until
-	 * a reload re-applies the stored pose over it. The library is untouched;
-	 * Save pose still bottles a pose there. */
+	 * a reload re-applies the stored pose over it. */
 	function commitPosedPose() {
 		const rig = posedRig();
 		if (!rig || !posingChar) return;
@@ -673,29 +566,9 @@ export function useCast(appContext) {
 		} });
 	}
 
-	function savePose() {
-		const rig = posedRig();
-		if (!rig) return;
-		trackFeature("pose_save");
-		const pose = {
-			id: `custom_${Date.now()}`,
-		label: ko(`My Pose ${customPoses.length + 1}`, `내 포즈 ${customPoses.length + 1}`, `我的姿势 ${customPoses.length + 1}`),
-			prompt: "in the exact body pose shown in the blocking frame",
-			bones: capturePose(rig),
-			custom: true,
-		};
-		domain.run('cast.savePose', { pose, ...(posingChar ? { characterId: posingChar.id } : {}) });
-		setStudioPick(pose.id);
-		appContext.notify(ko("Pose saved", "포즈 저장됨"));
-	}
-
-	function removePose(id) {
-		domain.run('cast.removePose', { id });
-		if (studioPick === id) setStudioPick(DEFAULT_POSE.id);
-	}
-
+	// Runs from the cross-tab scene subscription: a refusal ends here, logged, never in window.onerror (#1040).
 	function applyExternalCharacters(characters) {
-		appContext.storeDomain('cast').run('cast.replace', { characters });
+		try { appContext.storeDomain('cast').run('cast.replace', { characters }); } catch (error) { if (error?.name !== "StudioProtocolError") throw error; console.warn('[cozyclay] the cast from another tab was not applied', error.code, error.message); }
 	}
 	function publishStudioCharacters(next) {
 		if (typeof next === 'function') next = next(appContext.live.characters);
@@ -729,7 +602,7 @@ export function useCast(appContext) {
 			renderer: target?.rig ? appContext.shared.snapshotExportRig(target.rig) : null };
 	}
 	function removeLegacyRootWaypoint() {
-		// Subject 1 is the sole frame-zero root start. Drop any legacy seeded
+		// The first character is the sole frame-zero root start. Drop any legacy seeded
 		// waypoint so Top-View never renders two start markers.
 		setWaypoints((current) => current.filter((waypoint) => waypoint.frame !== 0));
 		setActiveWaypointId(null);
@@ -760,7 +633,7 @@ export function useCast(appContext) {
 			const live = appContext.live.state;
 			const patch = finitePatch(args, ["x", "z", "rot"]);
 			const id = nextCharacterId(live.characters);
-			const entry = createCharacterEntry({ id, model: args.model, subject: args.subject, pose: DEFAULT_POSE, ...patch }, live.characters.length);
+			const entry = createCharacterEntry({ id, model: args.model ?? NEW_CHARACTER_MODEL, subject: args.subject, pose: DEFAULT_POSE, ...patch }, live.characters.length);
 			replaceCharacters([...live.characters, entry]);
 			if (isProxyFigure(entry)) track("cast:proxy_added", { surface: "mcp" });
 			return { id };
@@ -791,7 +664,8 @@ export function useCast(appContext) {
 		}
 		return { add_character: addLiveCharacter, update_character: updateLiveCharacter, remove_character: removeLiveCharacter };
 	}
-	function toggleCharacterHidden(charId) { return domain.run('character.update', { characterId: charId, patch: { hidden: castMemberOf(charId).hidden !== true } }); }
+	// The Outliner's eye (a UI door): a refusal is logged here, never in window.onerror (#1185).
+	function toggleCharacterHidden(charId) { return settleUiRefusal('the visibility toggle was not applied', () => domain.run('character.update', { characterId: charId, patch: { hidden: castMemberOf(charId).hidden !== true } })); }
 	domain.snapshotMotion = snapshotNativeMotion;
 	domain.syncLayer = () => {
 		// An empty stage has no layer to edit: the buffer holds no route.
@@ -802,19 +676,19 @@ export function useCast(appContext) {
 		setActiveWaypointId(id => entry.layer.waypoints.some(waypoint => waypoint.id === id) ? id : null);
 	};
 	domain.loadView = () => { appContext.shared.loadedLayerCharRef.current = domain.activeId; setActiveCharacterId(domain.activeId); };
-	domain.poses = () => [...new Map([...appContext.ports.poses(), ...domain.state().customPoses].map(pose => [pose.id, pose])).values()];
-	domain.showExtras = applyShowB;
-	domain.setTimeline = frameCount => {
+	domain.poses = () => appContext.ports.poses();
+	// follow(shots) -> shots: the shot ranges to write with the length, in the same entry
+	domain.setTimeline = (frameCount, follow = null) => {
 		const shots = appContext.storeDomain('shot');
-		if (shots && frameCount !== shots.state().frameCount) appContext.recordAction('shot', () => shots.writeState(before => ({ ...before, frameCount })), null, true);
+		if (shots && (follow || frameCount !== shots.state().frameCount)) appContext.recordAction('shot', () => shots.writeState(before => ({ ...before, frameCount, ...(follow && { shots: follow(before.shots) }) })), null, true);
 	};
-	domain.syncTimeline = () => {
+	domain.syncTimeline = (follow = null) => {
 		const shots = appContext.storeDomain('shot');
 		if (!shots) return;
 		const current = domain.projection(), active = current.find(entry => entry.id === domain.activeId) ?? current[0];
 		const extent = timelineContentExtent(current, active?.id ?? null, appContext.shared.bufferRef.current.motion, null);
 		// grow only: a take shorter than the timeline (or a 43-frame fill) never cuts the frames the user set
-		domain.setTimeline(Math.max(24, shots.state().frameCount, timelineSpan(extent, shots.read(), shots.state().frameCount)));
+		domain.setTimeline(Math.max(24, shots.state().frameCount, timelineSpan(extent, follow ? follow(shots.read()) : shots.read(), shots.state().frameCount)), follow);
 	};
 	domain.extendTimeline = domain.syncTimeline;
 	domain.applyPose = (characterId, pose, clearMotion) => {
@@ -828,18 +702,17 @@ export function useCast(appContext) {
 	return {
 		...domain,
 		applyExternalCharacters, publishStudioCharacters, syncStudioLayerBuffer, undoScene, redoScene, snapshotStudioDomain, removeLegacyRootWaypoint, switchActiveCharacterLayer, createLegacyCastHandlers, toggleCharacterHidden,
-		characters, editCharacters, customPoses, posing, setPosing, posingClosing,
-		studioPick, setStudioPick, commitPosedPose, rigs, rigMountEpoch, setRigMountEpoch, setPoseTick, charA, charB, showB,
-		poseA, poseB, subject, subject2, updateCharacterAt, setShowB, moveCharacter, removeCharacter, reportRig,
+		characters, editCharacters, posing, setPosing, posingClosing,
+		studioPick, setStudioPick, commitPosedPose, rigs, rigMountEpoch, setRigMountEpoch, setPoseTick,
+		updateCharacterAt, moveCharacter, removeCharacter, reportRig,
 		spawnCharacter, charKeyToHierarchyId, charIdFromHierarchyId, activeCharacterId, setActiveCharacterId,
 		rowIdForCharIndex, activeChar, selectActiveCharacterInHierarchy, activeCharIndex, activeRig, waitForRig,
 		ghostLayers, snapshotCast, changeInspectorCharacter, hasCharSheet,
 		setHasCharSheet, waypointMode,
 		setWaypointMode, waypoints, setWaypoints, activeWaypointId, setActiveWaypointId, pendingWaypointFrame,
-		setPendingWaypointFrame, allPoses, selectablePoses,
-		posingIndex, posingChar, posedRig, setPosed, rootStart, queueRootWaypointFrame, castMemberOf,
+		setPendingWaypointFrame, selectablePoses,
+		posingIndex, posingChar, posedRig, rootStart, queueRootWaypointFrame, castMemberOf,
 		addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints,
 		addFloorWaypoint, moveWaypoint, removeWaypoint, toggleWaypointMode, openStudio, closeStudio,
-		saveCurrentPose, savePose, removePose,
 	};
 }

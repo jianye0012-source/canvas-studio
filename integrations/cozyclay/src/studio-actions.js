@@ -3,14 +3,13 @@
 // input schemas, kinds); the editor registers ONE implementation per id, and
 // both its UI controls and the agent's `run_action` family call
 // `registry.run(id, args)`. No React, renderer or Node imports.
-import { StudioProtocolError, StudioSchemas, freezeStudioData, validateStudioSchema } from "./studio-agent-protocol.js";
+import { StudioProtocolError, StudioSchemas, freezeStudioData, validateStudioSchema } from "./studio-agent-protocol.js"; import { WORLD } from "./world-scale.js";
 
 /** mutation: authored, undoable, answered with a journal receipt.
  * transient: view state only. job: long-running work (a generation, an
  * export); it answers "started", or "completed" with its output when it runs
  * to its end. A job that needs longer than the hub's 30 s default declares
- * `timeoutMs` (at most the hub's 300 s ceiling); one that starts a motion
- * generation declares `generation: "motion"`, the agent's one per message.
+ * `timeoutMs` (at most the hub's 300 s ceiling).
  * document: project-level work outside the undo history (scenes, the project
  * file); it answers "completed", with the new host when the open scene moved. */
 export const STUDIO_ACTION_KINDS = freezeStudioData(["mutation", "transient", "job", "document"]);
@@ -23,20 +22,9 @@ const sceneId = { sceneId: idSchema };
 const NOT_UNDOABLE = "Scenes are outside the undo history: undo_edit and Ctrl+Z cannot revert this.";
 const SCENE_MOVES = "The open scene changes, so later commands in this message are admitted in it; the receipt's host names it.";
 const characterId = { characterId: idSchema };
-const castOverride = {
-	type: "object",
-	properties: {
-		x: { type: "number" },
-		z: { type: "number" },
-		rot: { type: "number" },
-		posture: { type: "string", enum: ["stand", "sit", "lie"] },
-		pose: { type: "object", properties: {}, required: [], additionalProperties: true },
-	},
-	required: [],
-	additionalProperties: false,
-};
 /** A world floor point in metres; y is the floor. */
 const floorPoint = input({ x: { type: "number" }, z: { type: "number" } });
+const worldPoint = input({ x: { type: "number" }, y: { type: "number" }, z: { type: "number" } });
 const waypointFrame = { ...frame, minimum: 1 };
 /** The tracks an IK key stores (src/motion/ik.js IK_TRACKS and FK_TRACKS). A
  * chain track keys its three bones (upper, lower, end); a joint track one. */
@@ -65,38 +53,26 @@ export const STUDIO_ATTACH_BONES = freezeStudioData(["hips", "spine", "chest", "
 const GUIDE_MODES = freezeStudioData(["off", "thirds", "golden", "center", "safe"]);
 /** The image models the Studio writes Send-to-AI prompts for (src/shot.js IMAGE_MODELS). */
 const AI_IMAGE_MODELS = freezeStudioData(["nano_banana_pro", "nano_banana_2", "gpt_image_2", "seedream_5", "flux_2"]);
-const stillHold = { type: "integer", minimum: 1, maximum: 240 };
-const stillIndex = { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
-const STORYBOARD_CAP = "Refused when the stills would run past the 28800-frame timeline.";
 const WAYPOINT_RULES = "Pins sit at least 8 frames apart, the walk between two pins must stay within 0.5-3 m/s, and x/z are clamped to +/-11 m; a pin that breaks a rule is refused with the frame or distance that would work.";
 
 export const STUDIO_ACTIONS = freezeStudioData([
 	{ id: "shot.create", label: "Add shot", kind: "mutation", undoDomain: "shot", input: input(),
-		description: "Add a new shot at the playhead, keyed with the current camera framing (the timeline's + Add shot). Move the playhead first with operate_studio { frame }. When the playhead is inside a shot, the new one goes in the next free gap. In a storyboard project it adds a still instead, exactly like shot.createStill with no arguments." },
-	{ id: "shot.createStill", label: "Add still", kind: "mutation", undoDomain: "shot", input: input({}, { caption: { type: "string", maxLength: 500 }, hold: stillHold }),
-		description: `Add a still (a storyboard panel: one picture held for hold frames at 24 fps, default 48, 1-240) after the last still, keyed with the current camera framing. Stills sit end to end from frame 0 in order. ${STORYBOARD_CAP}` },
-	{ id: "shot.setCaption", label: "Set shot caption", kind: "mutation", undoDomain: "shot", input: input({ ...shotId, caption: { type: "string", maxLength: 500 } }),
-		description: "Set a shot's caption (the panel's action or dialogue line), trimmed, at most 500 characters; an empty caption clears it." },
-	{ id: "shot.setCastOverride", label: "Set shot cast override", kind: "mutation", undoDomain: "shot",
-		input: input({ ...shotId, ...characterId, override: { oneOf: [castOverride, { type: "null" }] } }),
-		description: "Set or clear one character's placement and pose override for a shot. Overrides apply only when the character has no installed take; a root path still wins." },
-	{ id: "shot.setHold", label: "Set still hold", kind: "mutation", undoDomain: "shot", input: input({ ...shotId, hold: stillHold }),
-		description: `Set how many frames (1-240 at 24 fps) a still holds; the stills after it move so they stay end to end. Stills only. ${STORYBOARD_CAP}` },
+		description: "Add a new shot at the playhead, keyed with the current camera framing (the timeline's + Add shot). Move the playhead first with operate_studio { frame }. When the playhead is inside a shot, the new one goes in the next free gap." },
 	{ id: "shot.split", label: "Split shot", kind: "mutation", undoDomain: "shot", input: input(shotId),
 		description: "Cut a shot in two at the playhead. The playhead must be inside that shot, after its first frame; the second half starts at the playhead." },
 	{ id: "shot.duplicate", label: "Duplicate shot", kind: "mutation", undoDomain: "shot", input: input(shotId),
-		description: "Copy a shot, its camera, keys, caption, per-shot cast and stylized image. A still's copy goes right after it and the stills after it move along; a clip's copy goes into the next free gap on the timeline." },
+		description: "Copy a shot, its camera and keys into the next free gap on the timeline." },
 	{ id: "shot.remove", label: "Delete shot", kind: "mutation", undoDomain: "shot", input: input(shotId),
 		description: "Delete a shot and leave its frames as free-camera time." },
 	{ id: "shot.setRange", label: "Set shot range", kind: "mutation", undoDomain: "shot", input: input({ ...shotId, range: StudioSchemas.FrameRange }),
 		description: "Move a shot's start and end to a half-open frame range, e.g. { shotId, range: { startFrame: 0, endFrameExclusive: 240 } } for frames 0-239. range: [0, 240] ([start, endExclusive]) and flat { shotId, startFrame: 0, endFrameExclusive: 240 } are taken as the same range. Edges are clamped to the timeline and refused where they would overlap another shot; the receipt's summary shows the range that landed (\"Set shot range: Shot 1 [0, 240).\")." },
 	{ id: "shot.reorder", label: "Move shot", kind: "mutation", undoDomain: "shot",
-		input: input(shotId, { startFrame: frame, index: stillIndex }),
-		description: "Move a shot; give exactly one of startFrame or index. With startFrame, a clip moves in time to start there, keeping its length and camera keys (a noop where it would overlap another shot), and a still moves to the place in the still order that frame falls in. With index (stills only), the still moves to that position among the stills (0 is first; past the end means last). Stills stay end to end from frame 0." },
+		input: input({ ...shotId, startFrame: frame }),
+		description: "Move a shot in time to start at startFrame, keeping its length and camera keys (a noop where it would overlap another shot)." },
 	{ id: "character.addWaypoint", label: "Add root waypoint", kind: "mutation", undoDomain: "cast", input: input({ ...characterId, position: floorPoint }, { frame: waypointFrame }),
 		description: `Pin a character's root path: at frame, the character's root stands at position (world x/z metres). Frame 0 is the character's own spot, so pins start at frame 1 and each frame holds one pin. Omit frame to pace the pin at a walk (1.4 m/s) from the previous one. ${WAYPOINT_RULES} Read paths with inspect_studio { scope: "motion" }.` },
 	{ id: "character.move", label: "Move character", kind: "mutation", undoDomain: "cast", input: input(characterId, { x: num, z: num, rot: num }),
-		description: "Move a character's stage placement. Inside a still this writes that panel's cast override; outside a still it changes the stage record." },
+		description: "Move a character's stage placement." },
 	{ id: "character.moveWaypoint", label: "Move root waypoint", kind: "mutation", undoDomain: "cast", input: input({ ...characterId, frame: waypointFrame, position: floorPoint }),
 		description: `Move the character's root waypoint at frame to a new floor position (world x/z metres), keeping its frame. ${WAYPOINT_RULES}` },
 	{ id: "character.removeWaypoint", label: "Remove root waypoint", kind: "mutation", undoDomain: "cast", input: input({ ...characterId, frame: waypointFrame }),
@@ -110,8 +86,8 @@ export const STUDIO_ACTIONS = freezeStudioData([
 	{ id: "character.clearIkKeys", label: "Clear IK keys", kind: "mutation", undoDomain: "motion", input: input(characterId),
 		description: "Delete every IK key of the character, returning it to its take or pose without corrections." },
 	{ id: "shot.setCameraRail", label: "Set camera rail", kind: "mutation", undoDomain: "shot",
-		input: input({ ...shotId, points: { type: "array", items: floorPoint, minItems: 2, maxItems: 512 } }, { height: { oneOf: [{ type: "number", minimum: 0.1, maximum: 30 }, { type: "array", items: input({ t: { type: "number", minimum: 0, maximum: 1 }, height: { type: "number", minimum: 0.1, maximum: 30 } }), minItems: 2, maxItems: 8 }] }, aim: { oneOf: [{ type: "array", items: idSchema, minItems: 1, maxItems: 4 }, input({ x: num, y: num, z: num }), { type: "null" }] }, aimHeight: { type: "number", minimum: 0, maximum: 30 }, focalMm: { oneOf: [{ type: "number", minimum: 10, maximum: 300 }, { type: "null" }] } }),
-		description: "Lay a shot's dolly rail through points (world floor x/z metres, in travel order) and put the shot's camera on it, like drawing the rail in the Top-View: the camera runs the rail at an even speed over the whole shot (or its authored rail-follow range), so a push-in, pull-out, orbit, track or crane is one call with 2-6 points (a line, or an arc through a few points; the rail is a smooth curve through them). height is the lens height in metres, one number or crane marks [{ t: 0..1 along the rail, height }] (default the follow height, 1.6). aim is what the camera holds: up to 4 character or object ids (their middle, frame by frame: a character's chest, an object's middle) or a world point { x, y, z }; without an aim it follows the scene's first character. aimHeight puts a cast aim at that world height instead of the chest, e.g. 0.9 to hold a whole standing body, 1.6 for faces. focalMm is the shot's lens (default the scene lens). It replaces any rail the shot had and keeps any height, aim or lens you leave out (null clears aim and lens), and it removes the camera keys the rail covers. Answers the rail's length, speed, height, aim and lens; check the framing with verify_result { targets, checks: [\"framing\"], range: the shot's frames } and a contact sheet. Read rails with inspect_studio { scope: \"shot\" }." },
+		input: input({ ...shotId, points: { type: "array", items: floorPoint, minItems: 2, maxItems: 512 } }, { height: { oneOf: [{ type: "number", minimum: 0.1, maximum: WORLD.railHeight }, { type: "array", items: input({ t: { type: "number", minimum: 0, maximum: 1 }, height: { type: "number", minimum: 0.1, maximum: WORLD.railHeight } }), minItems: 2, maxItems: 8 }] }, aim: { oneOf: [{ type: "array", items: idSchema, minItems: 1, maxItems: 4 }, input({ x: num, y: num, z: num }), { type: "null" }] }, aimHeight: { type: "number", minimum: 0, maximum: WORLD.railHeight }, focalMm: { oneOf: [{ type: "number", minimum: 10, maximum: 300 }, { type: "null" }] }, rollDeg: { type: "number", minimum: -180, maximum: 180 } }),
+		description: "Lay a shot's dolly rail through points (world floor x/z metres, in travel order) and put the shot's camera on it, like drawing the rail in the Top-View: the camera runs the rail at an even speed over the whole shot (or its authored rail-follow range), so a push-in, pull-out, orbit, track or crane is one call with 2-6 points (a line, or an arc through a few points; the rail is a smooth curve through them). height is the lens height in metres, one number or crane marks [{ t: 0..1 along the rail, height }] (default the follow height, 1.6). aim is what the camera holds: up to 4 character or object ids (their middle, frame by frame: a character's chest, an object's middle) or a world point { x, y, z }; without an aim it follows the scene's first character. aimHeight puts a cast aim at that world height instead of the chest, e.g. 0.9 to hold a whole standing body, 1.6 for faces. focalMm is the shot's lens (default the scene lens). rollDeg rolls the camera about its lens axis for the whole rail, in degrees (a dutch angle; positive turns the top toward screen left, 0 is level and the default). It replaces any rail the shot had and keeps any height, aim or lens you leave out (null clears aim and lens), and it removes the camera keys the rail covers. Answers the rail's length, speed, height, aim and lens; check the framing with verify_result { targets, checks: [\"framing\"], range: the shot's frames } and a contact sheet. Read rails with inspect_studio { scope: \"shot\" }." },
 	{ id: "shot.clearCameraRail", label: "Delete camera rail", kind: "mutation", undoDomain: "shot", input: input(shotId),
 		description: "Delete a shot's camera rail; the shot's camera goes back to following its subject at the current distance." },
 	{ id: "shot.setCameraMode", label: "Set shot camera mode", kind: "mutation", undoDomain: "shot", input: input({ ...shotId, mode: { type: "string", enum: ["keys", "follow", "rail"] } }),
@@ -119,8 +95,8 @@ export const STUDIO_ACTIONS = freezeStudioData([
 	{ id: "shot.rename", label: "Rename shot", kind: "mutation", undoDomain: "shot", input: input({ ...shotId, name: { type: "string", maxLength: 240 } }),
 		description: "Rename a shot: its label on the timeline and in shot lists." },
 	{ id: "object.attach", label: "Attach to character", kind: "mutation", undoDomain: "objects",
-		input: input({ objectId: idSchema, ...characterId }, { bone: { type: "string", enum: STUDIO_ATTACH_BONES } }),
-		description: "Make a scene object ride a character, like dropping it on the character's Hierarchy row: on one bone (a cup in the right hand: bone \"rightHand\") or, with bone omitted, on the character's animated root so it travels with the body. The object keeps its place on screen: its position, rotation and scale are rewritten into the new frame (local to that bone while attached), and it leaves any group. Needs the character's rig on stage." },
+		input: input({ objectId: idSchema, ...characterId }, { bone: { type: "string", enum: STUDIO_ATTACH_BONES }, local: input({}, { x: num, y: num, z: num, rotX: num, rot: num, rotZ: num }) }),
+		description: "Make a scene object ride a character, like dropping it on the character's Hierarchy row: on one bone (a cup in the right hand: bone \"rightHand\") or, with bone omitted, on the character's animated root so it travels with the body. The object keeps its place on screen: its position, rotation and scale are rewritten into the new frame (local to that bone while attached), and it leaves any group. Needs the character's rig on stage. With local { x, y, z, rotX, rot, rotZ } (metres and degrees in the bone's own unscaled frame; left out: 0) it is put at that place in the frame instead, keeping its scale, and the rig need not be on stage." },
 	{ id: "object.detach", label: "Detach object", kind: "mutation", undoDomain: "objects", input: input({ objectId: idSchema }),
 		description: "Put an attached or grouped object back in the world where it is now, like the Inspector's Detach or dropping it on the Props row: it stops following the character, keeps its current world placement and leaves any group." },
 	{ id: "view.setPartColours", label: "Part colours", kind: "transient", input: input({ mode: { type: "string", enum: ["off", "flat", "shaded"] } }),
@@ -131,8 +107,10 @@ export const STUDIO_ACTIONS = freezeStudioData([
 		description: "Fold (collapsed: true) or unfold the Top-View inset pane over the viewport. A viewer setting that is never undone." },
 	{ id: "view.setGhosts", label: "Ghosts", kind: "transient", input: input({ mode: { type: "string", enum: ["off", "step", "keys"] } }, { count: { type: "integer", minimum: 1, maximum: 6 }, step: { type: "integer", minimum: 1, maximum: 24 } }),
 		description: "Onion skin in the editor viewport, like the View menu's Ghosts: translucent poses of the active character's installed take, count (1-6, default 3) before the playhead in blue and as many after it in orange, fading with distance in time; props the take carries (a kit's bat) ghost with the body. mode step spaces them every step frames (1-24, default 4), keys puts them on the spec's key frames, off hides them; e.g. { mode: \"step\", count: 3, step: 4 }. An editor overlay: never in capture_frame, exports or contact sheets (verify_result ghosts: true draws them on a views sheet). A viewer setting: never saved or undone." },
-	{ id: "export.shotVideo", exposure: "confirm", confirmationReason: "Exporting writes a video file outside the Studio.", label: "Export video (mp4)", kind: "job", timeoutMs: 300_000, input: input({}, { ...shotId, scope: { type: "string", enum: ["timeline", "shot"], description: "timeline: the whole timeline, every shot back to back; shot: one shot (shotId, or the one under the playhead)." } }),
-		description: "Record a shot to an MP4 (camera move and character motion, no editor chrome), like the Export menu's Video (mp4), and hand it to the configured export folder or, when none is usable, the browser download. With shotId it records that shot's own range; without it, what the menu records: the whole take when there is motion, else the shot under the playhead (else the first shot), keyed from the current camera if it has no keys. Waits until the file is encoded (up to 5 minutes) and answers status \"completed\" with output.fileName and output.frameCount. One export at a time; not a motion generation." },
+	{ id: "view.frame", label: "Move editor view", kind: "transient", input: input({ position: worldPoint, lookAt: worldPoint }),
+		description: "Move the editor view the user is looking at (world metres) and leave Look Through, so they see what you point at. The shot camera, its keys and the export do not change (frame_shot frames those). A viewer setting that is never undone." },
+	{ id: "export.shotVideo", exposure: "confirm", confirmationReason: "Exporting writes a video file outside the Studio.", label: "Export video (mp4)", kind: "job", timeoutMs: 300_000, input: input({}, { ...shotId, passKind: { type: "string", enum: ["depth"], description: "Export a depth video instead of beauty." }, depthCurve: { type: "string", enum: ["log", "linear", "inverse"], description: "How the greys are shared out over the distance: log (by ratio, the default), linear (by metres) or inverse (by nearness)." }, scope: { type: "string", enum: ["timeline", "shot"], description: "timeline: the whole timeline, every shot back to back; shot: one shot (shotId, or the one under the playhead)." }, output: { ...input({ width: { type: "integer", minimum: 64, maximum: 3840 }, height: { type: "integer", minimum: 64, maximum: 3840 } }), description: "Render at this pixel size instead of the shot aspect's preset (16:9 is 1920x1080); odd sizes round down to even. A smaller size exports faster." } }),
+		description: "Record a shot to an MP4 (camera move and character motion, no editor chrome), like the Export menu's Video (mp4), and hand it to the configured export folder or, when none is usable, the browser download. With shotId it records that shot's own range; without it, what the menu records: the whole take when there is motion, else the shot under the playhead (else the first shot), keyed from the current camera if it has no keys. Waits until the file is encoded (up to 5 minutes) and answers status \"completed\" with output.fileName and output.frameCount. One export at a time (a second one is refused while one runs)." },
 	{ id: "scene.create", label: "New scene", kind: "document", input: input(),
 		description: `Add an empty scene (named SCENE 01, SCENE 02, ...) after the others and open it, like the scene menu's New scene. ${SCENE_MOVES} ${NOT_UNDOABLE}` },
 	{ id: "scene.duplicate", label: "Duplicate scene", kind: "document", input: input(sceneId),
@@ -145,18 +123,14 @@ export const STUDIO_ACTIONS = freezeStudioData([
 		description: `Open another scene of the project, like the scene pill's menu; the scene being left keeps its state. ${SCENE_MOVES}` },
 	{ id: "project.save", exposure: "confirm", confirmationReason: "Saving may overwrite a file or open a file picker.", label: "Save project", kind: "document", input: input(),
 		description: "Save the whole project to its current file, like the Project menu's Save Project, and answer status \"completed\" with output.fileName. A browser file picker opens only from the user's own click, so it is refused, with the reason, when the project has no file yet this session or the browser must re-grant access to it; ask the user to press Save Project once. An unnamed project opens the Save dialog for the user to name it. Browsers without file access download the project file instead." },
-	{ id: "project.exportAsAnimation", exposure: "confirm", confirmationReason: "Exporting writes an animation project file outside the Studio.", label: "Export as Animation project", kind: "document", input: input(),
-		description: "Export the current storyboard as a new Animation project file, leaving the storyboard open and unchanged. Still shots become clip shots with their ranges, camera keys, captions, cast overrides and stylized asset references preserved. The browser asks where to save the new .cclayproject or downloads it when file access is unavailable." },
 	{ id: "asset.import", label: "Import asset", kind: "mutation", undoDomain: "objects",
 		input: input({ source: { type: "string", minLength: 1, maxLength: 8_000_000, pattern: "^(data:|https?://)" }, name: { type: "string", minLength: 1, maxLength: 120 },
 			placeAs: { type: "string", enum: ["cutout", "backdrop", "mesh"] } }),
 		description: "Import a picture or a 3D model into the scene through the editor's own import path and place it: \"cutout\" stands a picture up as a 1.8 m card in front of the camera, \"backdrop\" as a 5 m plate 12 m down the shot camera's view, facing it, and \"mesh\" stands a GLB, OBJ or FBX model on the floor in front of the camera. source is a data: URL (up to 8 MB of text) or an http(s) URL the editor fetches (its server must allow cross-origin reads); name is the file name with its extension (poster.png, chair.glb). One undo entry; the new object is in affectedIds and its asset id in the summary. A file on the user's disk needs their own click: ask them to drop it on the Assets shelf." },
-	{ id: "object.duplicate", label: "Duplicate object", kind: "mutation", undoDomain: "objects", input: input({}, { objectId: idSchema }),
-		description: "Copy a scene object (the selected one when objectId is omitted) and place the copy half a metre beside it." },
+	{ id: "object.duplicate", label: "Duplicate object", kind: "mutation", undoDomain: "objects", input: input({}, { objectId: idSchema, copies: { type: "array", minItems: 1, maxItems: 64, items: input({ x: { type: "number" }, z: { type: "number" } }, { y: { type: "number" }, rot: { type: "number" }, scale: { oneOf: [{ type: "number" }, { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3 }] }, color: { type: "string", maxLength: 32 } }) } }),
+		description: "Copy a scene object (the selected one when objectId is omitted). Without copies: one copy half a metre beside it. With copies [{ x, z, y?, rot?, scale?, color? }] (1-64): every copy in one call and one undo entry; x, z (-240..240 m) is the copy's base pivot, y (0..240) defaults to the source's, rot is yaw in degrees (-360..360, default the source's), scale multiplies the source's size (one number, or [x, y, z] factors, each 0.1..10), color (#rrggbb) tints it. Sculpt copies share one built mesh, so sculpt each kind of prop once and place the rest as copies. A group root copies the whole group: scale must be one number and resizes it about the root's pivot; at most 100 new objects per call (copies x group size). Answers output.copies [{ id, size { width, height, depth } m, scale, memberIds? }] in the order given; invalid input is refused, never clamped." },
 	{ id: "ai.prepareShot", label: "Send to AI", kind: "job", input: input({}, { mode: { type: "string", enum: ["image", "video"] }, model: { type: "string", enum: AI_IMAGE_MODELS } }),
-		description: "Prepare the Studio's Send-to-AI package for the shot under the playhead (else the current camera): the prompt for an external image or video model, written from the shot's camera, cast, poses, environment and style, plus reference frames rendered from the shot camera (its first and last camera key when it has keys). No AI service is called. mode \"image\" is a still, \"video\" a shot with its camera move; model is the image model the prompt is written for (image mode only). Each omitted choice keeps the Studio's current one; a given one becomes it. The Studio opens its result panel, where the user copies the prompt and exports the frames to the configured export folder or browser downloads; the frame images stay there and are not in the answer. Answers status \"completed\" with output.prompt, mode, modelLabel, shot (id, name, range), aspectRatio, cameraMode and referenceFrames (how many frames the panel shows). Changes nothing in the scene; not a motion generation." },
-	// The instruction leads the H3 prompt, which the motion API caps at 4000
-	// characters with its camera-lock text (about 225) appended.
+		description: "Prepare the Studio's Send-to-AI package for the shot under the playhead (else the current camera): the prompt for an external image or video model, written from the shot's camera, cast, poses, environment and style, plus reference frames rendered from the shot camera (its first and last camera key when it has keys). No AI service is called. mode \"image\" is a still, \"video\" a shot with its camera move; model is the image model the prompt is written for (image mode only). Each omitted choice keeps the Studio's current one; a given one becomes it. The Studio opens its result panel, where the user copies the prompt and exports the frames to the configured export folder or browser downloads; the frame images stay there and are not in the answer. Answers status \"completed\" with output.prompt, mode, modelLabel, shot (id, name, range), aspectRatio, cameraMode and referenceFrames (how many frames the panel shows). Changes nothing in the scene; only a given mode or model becomes the Studio's choice." },
 ]);
 export const STUDIO_ACTION_IDS = freezeStudioData(STUDIO_ACTIONS.map(action => action.id));
 
@@ -173,7 +147,27 @@ export function studioActionRefusal(code, message, uiMessage) {
 export function resolveStudioToast(value, isKo, ko, isZh = false) {
 	return typeof value === "function" ? { uiMessage: value(isKo, ko, isZh), message: value(false, en => en, false) } : { uiMessage: value, message: value };
 }
-const unknown = (id, known) => fail("INVALID_ARGUMENT", `Unknown Studio action "${id}". Known actions: ${known.join(", ")}. List them with inspect_studio { scope: "actions" }.`);
+/** The known ids nearest to an unknown one: same family first ("shot.framing" -> shot.frame), then by edit distance. */
+function nearestActions(id, known, count = 3) {
+	const distance = (a, b) => {
+		let row = Array.from({ length: b.length + 1 }, (_, j) => j);
+		for (let i = 1; i <= a.length; i++) {
+			const next = [i];
+			for (let j = 1; j <= b.length; j++) next[j] = Math.min(row[j] + 1, next[j - 1] + 1, row[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+			row = next;
+		}
+		return row[b.length];
+	};
+	const text = String(id).slice(0, 64), lower = text.toLowerCase(), family = lower.split(".")[0];
+	return known.map(candidate => ({ candidate, score: distance(lower, candidate.toLowerCase()) - (candidate.toLowerCase().split(".")[0] === family ? 4 : 0) }))
+		.filter(({ candidate, score }) => score <= Math.max(3, Math.floor(candidate.length / 2)))
+		.sort((a, b) => a.score - b.score).slice(0, count).map(({ candidate }) => candidate);
+}
+// The refusal names the nearest ids first, so a retry is right even when the full list is cut (#1042).
+const unknown = (id, known) => {
+	const near = nearestActions(id, known);
+	throw new StudioProtocolError("INVALID_ARGUMENT", `Unknown Studio action "${String(id).slice(0, 64)}".${near.length ? ` Did you mean ${near.join(", ")}?` : ""} Tool names (frame_shot, arrange_objects, ...) are not action ids. Known actions: ${known.join(", ")}. List them with inspect_studio { scope: "actions" }.`, { path: "$.action", rule: "unknown_action" });
+};
 
 export function studioActionDeclaration(id) {
 	return STUDIO_ACTIONS.find(action => action.id === id) ?? unknown(id, STUDIO_ACTION_IDS);
@@ -214,13 +208,13 @@ export function createStudioActionRegistry({ readState } = {}) {
 		state() { return readState?.(); },
 		/** Available actions carry their description and input schema;
 		 * unavailable ones carry the reason instead of arguments. The declared
-		 * hub timeout and generation travel with each, so no caller keeps its
+		 * hub timeout travels with each, so no caller keeps its
 		 * own copy of them. */
 		list(state = readState?.()) {
 			return [...entries.values()].map(entry => {
 				const verdict = availability(entry, state);
 				const row = { id: entry.id, label: entry.label, kind: entry.kind, description: entry.description, exposure: entry.exposure, ...(entry.agentHidden ? { agentHidden: true } : {}), ...(entry.readOnly ? { readOnly: true } : {}),
-					...(entry.timeoutMs === undefined ? {} : { timeoutMs: entry.timeoutMs }), ...(entry.generation ? { generation: entry.generation } : {}) };
+					...(entry.timeoutMs === undefined ? {} : { timeoutMs: entry.timeoutMs }) };
 				return verdict === true ? { ...row, available: true, input: entry.input } : { ...row, available: false, reason: verdict };
 			});
 		},

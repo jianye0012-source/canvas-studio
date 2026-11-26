@@ -12,14 +12,13 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
-import { once } from "node:events";
 import { cameraBrowser } from "./camera-browser-harness.mjs";
 import { connectController, discoverEndpoint } from "../bin/live/client.mjs";
 import { spawnOwned, terminateOwned } from "../tools/process-supervisor.mjs";
 import { createSceneStage, SCENES_STORAGE_KEY } from "../src/scenes.js";
 import { normalizeSceneObject } from "../src/scene-objects.js";
 import { createShotAuthoringDocument } from "../src/shot-authoring.js";
-import { createStudioTools, studioToolSchemas } from "../bin/agent/studio-tools.mjs";
+import { createStudioTools } from "../bin/agent/studio-tools.mjs";
 
 const legacy = process.argv.includes("--legacy");
 assert(process.argv.slice(2).every(arg => arg === "--legacy"), "only --legacy is supported");
@@ -121,7 +120,7 @@ async function seedReconstruction() {
 		}] }),
 	}] };
 	await b.navigate(`${b.base.origin}/favicon.ico`);
-	await b.evaluate(`localStorage.clear(); localStorage.setItem('${SCENES_STORAGE_KEY}', ${JSON.stringify(JSON.stringify(document))});
+	await b.evaluate(`localStorage.clear(); localStorage.setItem('cozyclay.shell.agent-pane.v1','folded'); localStorage.setItem('${SCENES_STORAGE_KEY}', ${JSON.stringify(JSON.stringify(document))});
 		localStorage.setItem('cozyclay.locale', 'en'); localStorage.setItem('cozyclay.project-session.v1', JSON.stringify({name:'Issue 398 QA', updatedAt:1}));`);
 	log("RECONSTRUCTION", { objects: snapshot.objects.length, missingObjects: meta.scene.objectCount - snapshot.objects.length,
 		nameOnlyRows: snapshot.objects.filter(row => !row.renderer).length, frameCount: meta.scene.frameCount, aspect: meta.scene.aspect,
@@ -138,7 +137,7 @@ async function issue398(handle) {
 	await assertion(1, "published transform schema and catalogue per-axis ranges", async () => {
 		const catalogue = await command("inspect_studio", { scope: "catalogue" }, handle);
 		// This is the actual model-facing schema supplier, not a test-built schema.
-		const schema = studioToolSchemas().find(tool => tool.name === "patch_elements").parameters;
+		const schema = createStudioTools({ liveHub: { command: async () => ({}) }, workspaceHandle: handle }).find(tool => tool.name === "patch_elements").parameters;
 		const branches = schema.properties.ops.items.oneOf;
 		const expected = {
 			"character.position": [[-240, 0, -240], [240, 240, 240]],
