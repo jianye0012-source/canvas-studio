@@ -70,4 +70,8 @@ description: 现有导演台与上游 3.3.2 的差异、风险和升级步骤
   **范围内的取舍**：没有做「自动把文字提示词填进智能体对话框」——`AgentPanel.jsx` 的会话状态（`createAgentChatStore`）是面板组件内部 `useMemo` 创建的，没有向上提升到 `appContext`，要做到这点需要改动这个上游改动最多的文件之一，风险和收益不成比例。现在的效果是：参考图会出现在 3D 场景里，用户仍需自己在智能体里输入"照这张图摆姿势"之类的话。
 - 测试：`node tools/run-tests.mjs`（680 个可运行文件）跑了两次，都只有同一个文件失败：`test/motion3/verify-motion3-repair.mjs`。单独跑该文件通过（exit 0，官方记录的基准耗时本来就要 339 秒）。查看失败日志确认是 `FAIL exit car, hips sunk: under 10 s — 27895 ms`——这是用例自己对真实墙钟时间的断言（10 秒内完成），不是数据或逻辑断言；在本沙盒 12 路并发下 11 个同样吃 CPU 的用例一起跑，把这条路径的真实耗时从几秒推到了 27.9 秒。判定为**与本次合并无关的环境资源争用偶发失败**，不是回归。
 - 已完成：把合并后的工作树同步回 `integrations/cozyclay`（`rsync --delete`，排除 `node_modules`/`dist`），`launcher` 单元测试 110/110 全部通过（`node --test launcher/test/*.test.cjs`），`npm run build`（`COZYCLAY_MOTION_ENGINE=old`）在同步后的目录里重新跑通，并确认 `oldMotionEngine(process.env)` 和 `launchValue(process.env)` 确实解析为 `true`/`"block"`。
-- 尚未做：跑 Go+launcher+web 全链路集成测试（`director-lifecycle.cjs`、`workspace-smoke.cjs` 需要先用 `prepareBundle('linux')` 构建一份完整的 `work/bundle-linux`——Go 服务、Next.js、Electron 全部编译，耗时和资源都明显超过本次会话规模，建议作为合并前的最后一步，在 Windows 发布流程或专门的下一次会话里做）、提交推送。
+- **全链路集成测试已完成**：本地装了 Go 工具链、bun、ffmpeg 测试素材后，用 `prepareBundle('linux')` 实打实编译了一份完整安装包（Go 服务、Next.js standalone、CozyClay dist、启动器文件）到 `work/bundle-linux`（未提交，`.gitignore` 已排除）。
+  - `launcher/test/director-lifecycle.cjs`：4/4 通过——真实 Electron + 真实 Chromium 跑完整导演台生命周期（打开、保存、重连、克隆、AI 生成 3D 模型导入），直接验证了 `previsMode` 删除、首次打开抢跑修复、画布会话握手都没问题。
+  - `launcher/test/workspace-smoke.cjs`：发现并修了一个由本次改动引入的测试问题——`.canvas-return-bar` 里「已连接画布」这行字只是连接成功那一刻的瞬时提示，代码立刻就继续往下把它改写成「正在保存到本机…」「已保存到本机」，Playwright 轮询经常错过这个窗口导致超时；`director-lifecycle.cjs` 自己一直等的是稳定落地的「已保存到本机」，照抄这个写法后两个测试都稳定通过。这不是产品本身的 bug——截图显示导演台当时已经正常连上、场景已保存、新按钮也正确渲染，只是测试选的等待文案不够稳定。
+  - 跑完以上两个集成测试后，`launcher` 单元测试 110/110 仍然全部通过。
+  - 没有验证的：真实 Windows 打包流程（Electron 签名、安装/卸载、在线更新）和真实模型渠道下的动作生成效果，这些需要 Windows 实机或下一次专门会话。
