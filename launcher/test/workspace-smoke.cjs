@@ -70,7 +70,7 @@ const { pathToFileURL } = require('node:url');
     await page.getByLabel('导演台',{exact:true}).click(); await page.mouse.click(950,460);
     await page.getByRole('button',{name:'打开导演台',exact:true}).last().click();
     const frame = page.frameLocator('iframe[title="3D导演台"]'); await frame.locator('.canvas-return-bar').waitFor();
-    await frame.locator('.canvas-return-bar').getByText('已连接画布',{exact:true}).waitFor({timeout:30000});
+    await frame.locator('.canvas-return-bar').getByText('已保存到本机',{exact:true}).waitFor({timeout:30000});
     const input=frame.locator('input[type=file][accept*="video"]').first(); if(!await input.count()) await frame.locator('.agent-rail-toggle').click();
     await input.setInputFiles(path.join(root,'work/video-fixture/h264-10bit.mp4'));
     await frame.locator('.agent-attachments img').first().waitFor({state:'attached',timeout:30000}); assert.ok((await frame.locator('.agent-attachments img').first().getAttribute('alt')).includes('9 frames'));
