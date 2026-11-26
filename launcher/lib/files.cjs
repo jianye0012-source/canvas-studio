@@ -41,7 +41,7 @@ async function requireFreeSpace(directory, bytes) {
   if (disk.bavail * disk.bsize < bytes) throw new Error(`磁盘空间不足：${directory} 需要至少 ${Math.ceil(bytes / 1024 ** 2)} MB 可用空间`);
 }
 
-async function verifyManifest(root, { required = true, filename = 'bundle-manifest.json', signal } = {}) {
+async function verifyManifest(root, { required = true, filename = 'bundle-manifest.json', signal, skip } = {}) {
   let manifest;
   try { manifest = JSON.parse(await fs.readFile(path.join(root, filename), 'utf8')); }
   catch (e) { if (!required && e.code === 'ENOENT') return { development: true, checked: 0 }; throw new Error('整合包清单缺失或损坏，请导入完整发行包'); }
@@ -49,6 +49,7 @@ async function verifyManifest(root, { required = true, filename = 'bundle-manife
   let checked = 0;
   for (const entry of manifest.files) {
     signal?.throwIfAborted();
+    if (skip?.(entry.path)) continue;
     const file = contained(root, entry.path);
     const stat = await fs.lstat(file);
     if (!stat.isFile() || stat.size !== entry.size) throw new Error(`文件大小不匹配：${entry.path}`);

@@ -295,6 +295,7 @@ test('文件清单识别损坏，路径越界被拒绝，端口冲突可选择�
   await fs.writeFile(path.join(root, 'bundle-manifest.json'), JSON.stringify({ format: 1, files: [{ path: 'runtime.txt', size: 2, sha256: crypto.createHash('sha256').update('ok').digest('hex') }] }));
   assert.equal((await verifyManifest(root)).checked, 1);
   await fs.writeFile(path.join(root, 'runtime.txt'), 'no'); await assert.rejects(() => verifyManifest(root), /校验失败/);
+  assert.equal((await verifyManifest(root, { skip: file => file === 'runtime.txt' })).checked, 0);
   const server = http.createServer(); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise(resolve => server.close(resolve)));
   assert.notEqual(await freePort(server.address().port), server.address().port);
 });

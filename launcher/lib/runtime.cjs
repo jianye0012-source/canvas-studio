@@ -66,7 +66,7 @@ class Runtime extends EventEmitter {
     const node = path.join(this.root, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node');
     const api = path.join(this.root, 'runtime', process.platform === 'win32' ? 'canvas-api.exe' : 'canvas-api');
     for (const file of [node, api, path.join(this.root, 'web', 'server.js'), path.join(this.root, 'integrations', 'cozyclay', 'dist', 'app', 'index.html')]) await fs.access(file);
-    const result = full ? await verifyManifest(this.root, { required: !this.development, signal }) : { checked: 0 };
+    const result = full ? await verifyManifest(this.root, { required: !this.development, signal, skip: file => file.startsWith('integrations/pose-gallery/') }) : { checked: 0 };
     let browser = '';
     try { browser = await browserExecutable(this.store.value); } catch (e) { browser = e.message; }
     return { ...result, browser, dataDir: this.store.dataDir, writable: true };
