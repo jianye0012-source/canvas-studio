@@ -26,4 +26,6 @@
 
 本项目由 Infinite Canvas 和 CozyClay 整合改造，保留原作者版权及许可。 [Infinite Canvas](https://github.com/tigerowo/infinite-canvas) · [CozyClay](https://github.com/NomaDamas/CozyClay)
 
+参考图库来自 [ai-pose-gallery-zh](https://github.com/anhao/ai-pose-gallery-zh)，图片版权归原作者ギア（[ai-pose-gallery](https://ai-pose-gallery.pages.dev)）所有，仅供非商业参考使用；中国历代服装图来自 [Shisei](https://github.com/wquguru/shisei)（CC0）。
+
 整合版按 AGPL-3.0 分发，第三方许可随包提供。每个发行版页面提供对应源码与构建脚本。 [发行版本](https://github.com/jianye0012-source/canvas-studio/releases) · [项目许可](LICENSE) · [开源说明](launcher/SOURCE-NOTICE.txt) · [CozyClay 许可](integrations/cozyclay/LICENSING.md)

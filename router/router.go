@@ -137,6 +137,10 @@ func New() *gin.Engine {
 		handler.AgentSkillFile(c.Writer, c.Request, c.Param("id"))
 	})
 	api.GET("/assets", middleware.OptionalAuth, gin.WrapF(handler.Assets))
+	api.GET("/pose-gallery", middleware.OptionalAuth, gin.WrapF(handler.PoseGallery))
+	api.GET("/pose-gallery/files/*path", func(c *gin.Context) {
+		handler.PoseGalleryFile(c.Writer, c.Request, c.Param("path"))
+	})
 	api.POST("/admin/login", gin.WrapF(handler.AdminLogin))
 
 	admin := api.Group("/admin", middleware.AdminAuth)

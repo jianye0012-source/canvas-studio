@@ -13,11 +13,12 @@ import { useAssetStore, type Asset } from "@/stores/use-asset-store";
 import { fetchAssetLibrary, type AssetLibraryItem } from "@/services/api/assets";
 import { uploadAssetMediaFile } from "@/services/file-storage";
 import { uploadImage } from "@/services/image-storage";
+import { PoseGalleryBrowser } from "@/components/pose-gallery/pose-gallery-browser";
 import type { InsertAssetPayload } from "../types";
 
 export type { InsertAssetPayload } from "../types";
 
-export type AssetPickerTab = "my-assets" | "library";
+export type AssetPickerTab = "my-assets" | "library" | "pose-gallery";
 
 type Props = {
     open: boolean;
@@ -41,6 +42,11 @@ export function AssetPickerModal({ open, defaultTab = "my-assets", onInsert, onC
                 items={[
                     { key: "my-assets", label: "我的素材", children: <MyAssetsTab onInsert={onInsert} /> },
                     { key: "library", label: "素材库", children: <LibraryTab onInsert={onInsert} /> },
+                    {
+                        key: "pose-gallery",
+                        label: "参考图库",
+                        children: <PoseGalleryBrowser pageSize={8} columns="grid-cols-4" actionLabel="插入" onPick={({ item, view, url }) => onInsert({ kind: "image", dataUrl: url, title: `${item.name}${item.views.length > 1 ? `・${view.angle}` : ""}`, source: "library" })} />,
+                    },
                 ]}
             />
         </Modal>

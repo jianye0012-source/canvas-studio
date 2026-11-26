@@ -3,12 +3,14 @@
 import { Copy, FolderPlus, Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { App, Button, Card, Drawer, Empty, Image, Input, Pagination, Spin, Tag, Typography } from "antd";
+import { App, Button, Card, Drawer, Empty, Image, Input, Pagination, Segmented, Spin, Tag, Typography } from "antd";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { getProxyUrl } from "@/services/image-storage";
 import { cn } from "@/lib/utils";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { fetchAssetLibrary, type AssetLibraryItem } from "@/services/api/assets";
+import { PoseGalleryBrowser, type PoseGalleryPick } from "@/components/pose-gallery/pose-gallery-browser";
+import { poseViewPrompt } from "@/services/api/pose-gallery";
 
 const PAGE_SIZE = 12;
 
@@ -21,6 +23,8 @@ export default function AssetLibraryPage() {
     const [selectedTags, setSelectedTags] = useState<string[]>([]);
     const [page, setPage] = useState(1);
     const [selectedAsset, setSelectedAsset] = useState<AssetLibraryItem | null>(null);
+    const [section, setSection] = useState<"assets" | "reference">("assets");
+    const [selectedRef, setSelectedRef] = useState<PoseGalleryPick | null>(null);
     const addAsset = useAssetStore((state) => state.addAsset);
 
     const query = useQuery({
@@ -105,6 +109,30 @@ export default function AssetLibraryPage() {
         }
     };
 
+    const saveRefToMyAssets = async ({ item, view, url }: PoseGalleryPick) => {
+        const assetId = `pose-gallery:${item.id}:${view.angle}:${url}`;
+        if (useAssetStore.getState().assets.some((asset) => asset.metadata?.source === "pose-gallery" && asset.metadata.assetId === assetId)) return void message.info("该参考图已在我的素材中");
+        try {
+            const blob = await (await fetch(url)).blob();
+            const bitmap = await createImageBitmap(blob);
+            const { width, height } = bitmap;
+            bitmap.close();
+            addAsset({
+                kind: "image",
+                title: `${item.name}${item.views.length > 1 ? `・${view.angle}` : ""}`,
+                coverUrl: url,
+                tags: [item.category, ...(item.tags || [])].filter(Boolean),
+                category: "参考图库",
+                source: "参考图库",
+                data: { dataUrl: url, width, height, bytes: blob.size, mimeType: blob.type || "image/*" },
+                metadata: { source: "pose-gallery", assetId },
+            });
+            message.success("已加入我的素材");
+        } catch {
+            message.error("加入失败");
+        }
+    };
+
     if (!isReady) {
         return (
             <div className="flex h-full items-center justify-center">
@@ -119,8 +147,23 @@ export default function AssetLibraryPage() {
                 <div className="pb-8">
                     <div className="mx-auto max-w-5xl text-center">
                         <h1 className="text-4xl font-semibold tracking-tight text-stone-950 dark:text-stone-100">素材库</h1>
-                        <p className="mt-3 text-sm text-stone-500 dark:text-stone-400">挑选团队素材，加入我的素材后继续编辑和使用。</p>
+                        <p className="mt-3 text-sm text-stone-500 dark:text-stone-400">挑选团队素材或姿势、服装、人像参考图，加入我的素材后在画布中使用。</p>
+                        <Segmented
+                            className="!mt-5"
+                            value={section}
+                            options={[
+                                { label: "团队素材", value: "assets" },
+                                { label: "参考图库", value: "reference" },
+                            ]}
+                            onChange={(value) => setSection(value as "assets" | "reference")}
+                        />
                     </div>
+                    {section === "reference" ? (
+                        <div className="mx-auto mt-8 max-w-7xl">
+                            <PoseGalleryBrowser pageSize={24} columns="grid-cols-2 sm:grid-cols-3 lg:grid-cols-6" onPick={setSelectedRef} />
+                        </div>
+                    ) : (
+                    <>
                     <div className="mx-auto mt-8 w-full max-w-2xl">
                         <Input
                             size="large"
@@ -201,8 +244,11 @@ export default function AssetLibraryPage() {
                             </div>
                         </div>
                     </div>
+                    </>
+                    )}
                 </div>
 
+                {section === "assets" ? (
                 <div className="mx-auto flex max-w-7xl flex-col gap-5">
                     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                         {items.map((asset) => (
@@ -216,7 +262,46 @@ export default function AssetLibraryPage() {
                         <Pagination current={page} pageSize={PAGE_SIZE} total={total} showSizeChanger={false} onChange={(nextPage) => setPage(nextPage)} />
                     </div>
                 </div>
+                ) : null}
             </main>
+
+            <Drawer title="参考图详情" open={Boolean(selectedRef)} size="large" onClose={() => setSelectedRef(null)}>
+                {selectedRef ? (
+                    <div className="space-y-5">
+                        <Image src={selectedRef.url} alt={selectedRef.item.name} className="rounded-lg" />
+                        <div>
+                            <Typography.Title level={4} className="!mb-2">
+                                {selectedRef.item.name}
+                            </Typography.Title>
+                            <div className="flex flex-wrap gap-1.5">
+                                {[selectedRef.item.group, selectedRef.item.category, selectedRef.view.angle, ...(selectedRef.item.tags || [])].filter(Boolean).map((tag) => (
+                                    <Tag key={tag}>{tag}</Tag>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="rounded-lg border border-stone-200 p-4 dark:border-stone-800">
+                            <Typography.Text type="secondary" className="block text-xs">
+                                提示词
+                            </Typography.Text>
+                            <Typography.Paragraph className="mt-2 whitespace-pre-wrap">{poseViewPrompt(selectedRef.item, selectedRef.view)}</Typography.Paragraph>
+                            {selectedRef.item.promptEn ? <Typography.Paragraph type="secondary" className="!mb-0 whitespace-pre-wrap text-xs">{selectedRef.item.promptEn}</Typography.Paragraph> : null}
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                            <Button type="primary" icon={<Copy className="size-4" />} onClick={() => copyText(poseViewPrompt(selectedRef.item, selectedRef.view))}>
+                                复制提示词
+                            </Button>
+                            {selectedRef.item.promptEn ? (
+                                <Button icon={<Copy className="size-4" />} onClick={() => copyText(selectedRef.item.promptEn)}>
+                                    复制英文提示词
+                                </Button>
+                            ) : null}
+                            <Button icon={<FolderPlus className="size-4" />} onClick={() => void saveRefToMyAssets(selectedRef)}>
+                                加入我的素材
+                            </Button>
+                        </div>
+                    </div>
+                ) : null}
+            </Drawer>
 
             <Drawer title="素材详情" open={Boolean(selectedAsset)} size="large" onClose={() => setSelectedAsset(null)}>
                 {selectedAsset ? (
