@@ -19,8 +19,8 @@ var (
 	poseRefsErr  error
 )
 
-var poseSensitiveGroups = []string{"全身单人・性感系", "双人缠绵"}
-var costumeSensitiveCategories = []string{"内衣・睡衣", "性感穿搭"}
+// 性感系、双人缠绵姿势不导入。
+var poseExcludedGroups = []string{"全身单人・性感系", "双人缠绵"}
 
 type poseGalleryRecord struct {
 	ID       string   `json:"id"`
@@ -60,7 +60,7 @@ func ListPoseRefs(q model.PoseRefQuery) (model.PoseRefList, error) {
 	result := model.PoseRefList{Items: []model.PoseRef{}, Groups: []string{}, Categories: []string{}, Angles: []string{}}
 	matched := []model.PoseRef{}
 	for _, item := range poseRefs {
-		if item.Kind != q.Kind || (q.Safe && item.Sensitive) {
+		if item.Kind != q.Kind {
 			continue
 		}
 		result.Groups = appendUnique(result.Groups, item.Group)
@@ -97,7 +97,8 @@ func ListPoseRefs(q model.PoseRefQuery) (model.PoseRefList, error) {
 func PoseGalleryFilePath(name string) (string, bool) {
 	clean := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(name, "/")))
 	first := strings.Split(filepath.ToSlash(clean), "/")[0]
-	if !filepath.IsLocal(clean) || (first != "img" && first != "thumbs") {
+	base := filepath.Base(clean)
+	if !filepath.IsLocal(clean) || (first != "img" && first != "thumbs") || strings.HasPrefix(base, "full_sexy_") || strings.HasPrefix(base, "pair60_") {
 		return "", false
 	}
 	return filepath.Join(config.Cfg.PoseGalleryDir, clean), true
@@ -132,6 +133,9 @@ func loadPoseRefs() ([]model.PoseRef, error) {
 	items := []model.PoseRef{}
 	index := map[string]int{}
 	for _, r := range poses {
+		if slices.Contains(poseExcludedGroups, r.System) {
+			continue
+		}
 		key := r.System + r.PoseNo
 		view := model.PoseRefView{Angle: r.Angle, URL: r.Image, CoverURL: r.Thumb, DepthURL: poseDepthPath(r.Image)}
 		if i, ok := index[key]; ok {
@@ -141,11 +145,10 @@ func loadPoseRefs() ([]model.PoseRef, error) {
 		index[key] = len(items)
 		items = append(items, model.PoseRef{
 			ID: r.ID[:max(strings.LastIndex(r.ID, "_"), 0)], Kind: "pose", Group: r.System, Category: r.Category, Name: r.PoseName,
-			Prompt:    fmt.Sprintf("动作：%s（%s·%s）", r.PoseName, r.System, r.Category),
-			PromptEn:  fmt.Sprintf("pose: %s (%s)", r.PoseName, r.Category),
-			Views:     []model.PoseRefView{view},
-			Sensitive: slices.Contains(poseSensitiveGroups, r.System),
-			Search:    strings.ToLower(r.Search + r.PoseNo),
+			Prompt:   fmt.Sprintf("动作：%s（%s·%s）", r.PoseName, r.System, r.Category),
+			PromptEn: fmt.Sprintf("pose: %s (%s)", r.PoseName, r.Category),
+			Views:    []model.PoseRefView{view},
+			Search:   strings.ToLower(r.Search + r.PoseNo),
 		})
 	}
 	for _, r := range costumes {
@@ -186,8 +189,7 @@ func costumeRef(r poseGalleryRecord, group string, views []model.PoseRefView) mo
 	return model.PoseRef{
 		ID: r.ID, Kind: "costume", Group: group, Category: r.Category, Name: r.Name, Tags: r.Tags,
 		Prompt: prompt, PromptEn: r.Keywords, Views: views,
-		Sensitive: slices.Contains(costumeSensitiveCategories, r.Category),
-		Search:    strings.ToLower(r.Name + strings.Join(r.Tags, " ") + r.Keywords + r.ID),
+		Search: strings.ToLower(r.Name + strings.Join(r.Tags, " ") + r.Keywords + r.ID),
 	}
 }
 

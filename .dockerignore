@@ -12,3 +12,5 @@ web/out
 *.log
 .env*
 !.env.example
+integrations/pose-gallery/**/full_sexy_*
+integrations/pose-gallery/**/pair60_*

@@ -10,19 +10,18 @@ type PoseRefView struct {
 
 // PoseRef 内置参考图库条目（姿势 / 服装 / 人像）。
 type PoseRef struct {
-	ID        string        `json:"id"`
-	Kind      string        `json:"kind"`
-	Group     string        `json:"group"`
-	Category  string        `json:"category"`
-	Name      string        `json:"name"`
-	Tags      []string      `json:"tags"`
-	Prompt    string        `json:"prompt"`
-	PromptEn  string        `json:"promptEn"`
-	Views     []PoseRefView `json:"views"`
-	Width     int           `json:"width,omitempty"`
-	Height    int           `json:"height,omitempty"`
-	Sensitive bool          `json:"sensitive"`
-	Search    string        `json:"-"`
+	ID       string        `json:"id"`
+	Kind     string        `json:"kind"`
+	Group    string        `json:"group"`
+	Category string        `json:"category"`
+	Name     string        `json:"name"`
+	Tags     []string      `json:"tags"`
+	Prompt   string        `json:"prompt"`
+	PromptEn string        `json:"promptEn"`
+	Views    []PoseRefView `json:"views"`
+	Width    int           `json:"width,omitempty"`
+	Height   int           `json:"height,omitempty"`
+	Search   string        `json:"-"`
 }
 
 // PoseRefQuery 参考图库筛选参数。
@@ -31,7 +30,6 @@ type PoseRefQuery struct {
 	Kind  string
 	Group string
 	Angle string
-	Safe  bool
 }
 
 // PoseRefList 参考图库分页结果。

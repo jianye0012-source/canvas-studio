@@ -44,7 +44,7 @@ export async function prepareBundle(platform) {
   if (!process.argv.includes('--reuse-deps')) await run('npm', ['ci', '--prefix', director, '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund']);
   await fs.cp(path.join(sourceRoot, 'integrations/cozyclay/node_modules/three'), path.join(director, 'node_modules/three'), { recursive: true });
   if (!process.argv.includes('--reuse-deps')) await run('npm', ['ci', '--prefix', path.join(director, 'mcp'), '--ignore-scripts', '--no-audit', '--no-fund']);
-  for (const name of ['data', 'img', 'thumbs', 'LICENSE']) await copy(path.join(sourceRoot, 'integrations/pose-gallery', name), path.join(bundle, 'integrations/pose-gallery', name), []);
+  for (const name of ['data', 'img', 'thumbs', 'LICENSE']) await fs.cp(path.join(sourceRoot, 'integrations/pose-gallery', name), path.join(bundle, 'integrations/pose-gallery', name), { recursive: true, filter: file => !/^(full_sexy|pair60)_/.test(path.basename(file)) });
   await fs.mkdir(path.join(bundle, 'launcher'), { recursive: true });
   await fs.copyFile(path.join(sourceRoot, 'launcher/cozy-runtime.mjs'), path.join(bundle, 'launcher/cozy-runtime.mjs'));
   await fs.copyFile(path.join(sourceRoot, 'launcher/web-runtime.cjs'), path.join(bundle, 'launcher/web-runtime.cjs'));

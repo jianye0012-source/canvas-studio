@@ -2,7 +2,7 @@
 
 import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from "react";
 import { useParams } from "next/navigation";
-import { Empty, Input, Pagination, Select, Spin, Switch } from "antd";
+import { Empty, Input, Pagination, Select, Spin } from "antd";
 import { useQuery } from "@tanstack/react-query";
 import { BookOpen, ChevronRight, Clapperboard, Eye, FileText, FolderDown, Group, Image as ImageIcon, Music2, Plus, Search, Settings2, Type, Video } from "lucide-react";
 import { motion } from "motion/react";
@@ -16,7 +16,6 @@ import { cn } from "@/lib/utils";
 import { fetchAssetLibrary, type AssetLibraryItem } from "@/services/api/assets";
 import { fetchPrompts, type Prompt } from "@/services/api/prompts";
 import { fetchPoseGallery, poseFileUrl, type PoseRefKind } from "@/services/api/pose-gallery";
-import { usePoseGalleryStore } from "@/stores/use-pose-gallery-store";
 import { getImagePreviewRevision, previewUrlFor, subscribeImagePreviews } from "@/services/image-storage";
 import { useAssetStore, type Asset } from "@/stores/use-asset-store";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -407,22 +406,20 @@ function LibraryAssetsTab({ theme, onAssetDragStart, onAssetDragEnd }: { theme: 
 }
 
 function PoseRefAssetsTab({ theme, onAssetDragStart, onAssetDragEnd }: { theme: CanvasTheme; onAssetDragStart: (payload: InsertAssetPayload) => void; onAssetDragEnd: () => void }) {
-    const showSensitive = usePoseGalleryStore((state) => state.showSensitive);
-    const setShowSensitive = usePoseGalleryStore((state) => state.setShowSensitive);
     const [kind, setKind] = useState<PoseRefKind>("pose");
     const [group, setGroup] = useState("");
     const [category, setCategory] = useState("");
     const [keyword, setKeyword] = useState("");
     const [page, setPage] = useState(1);
     const query = useQuery({
-        queryKey: ["canvas-side-pose-gallery", kind, group, category, keyword, showSensitive, page],
-        queryFn: () => fetchPoseGallery({ kind, group, category, keyword, safe: showSensitive ? "0" : "1", page, pageSize: ASSET_PAGE_SIZE }),
+        queryKey: ["canvas-side-pose-gallery", kind, group, category, keyword, page],
+        queryFn: () => fetchPoseGallery({ kind, group, category, keyword, page, pageSize: ASSET_PAGE_SIZE }),
         placeholderData: (previous) => previous,
         retry: false,
     });
     const items = query.data?.items || [];
 
-    useEffect(() => setPage(1), [kind, group, category, keyword, showSensitive]);
+    useEffect(() => setPage(1), [kind, group, category, keyword]);
 
     return (
         <>
@@ -433,12 +430,8 @@ function PoseRefAssetsTab({ theme, onAssetDragStart, onAssetDragEnd }: { theme: 
                 <Select size="small" className="w-full" value={group} onChange={(value) => { setGroup(value); setCategory(""); }} options={[{ label: "全部体系", value: "" }, ...(query.data?.groups || []).map((item) => ({ label: item, value: item }))]} />
                 <Select size="small" className="w-full" value={category} onChange={setCategory} options={[{ label: "全部分类", value: "" }, ...(query.data?.categories || []).map((item) => ({ label: item, value: item }))]} />
             </div>
-            <div className="flex items-center gap-2 px-3 pb-2">
+            <div className="px-3 pb-2">
                 <Input size="small" allowClear prefix={<Search className="size-3.5 text-stone-400" />} placeholder="搜索参考图" value={keyword} onChange={(event) => setKeyword(event.target.value)} />
-                <label className="flex shrink-0 items-center gap-1 text-xs" style={{ color: theme.node.text }}>
-                    <Switch size="small" checked={showSensitive} onChange={setShowSensitive} />
-                    NSFW
-                </label>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
                 {query.isLoading ? <div className="flex justify-center pt-16"><Spin size="small" /></div> : items.length ? <div className="grid grid-cols-2 gap-2 px-1 pt-1">{items.map((item) => <DraggableAssetCard key={item.id} theme={theme} title={item.name} kind="image" imageUrl={poseFileUrl(item.views[0]?.coverUrl)} text="" payload={{ kind: "image", dataUrl: poseFileUrl(item.views[0]?.url), title: item.name, source: "library" }} onAssetDragStart={onAssetDragStart} onAssetDragEnd={onAssetDragEnd} />)}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无参考图" className="pt-16" />}

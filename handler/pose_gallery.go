@@ -9,7 +9,7 @@ import (
 
 func PoseGallery(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	result, err := service.ListPoseRefs(model.PoseRefQuery{Query: parseQuery(r), Kind: q.Get("kind"), Group: q.Get("group"), Angle: q.Get("angle"), Safe: q.Get("safe") != "0"})
+	result, err := service.ListPoseRefs(model.PoseRefQuery{Query: parseQuery(r), Kind: q.Get("kind"), Group: q.Get("group"), Angle: q.Get("angle")})
 	if err != nil {
 		FailError(w, err)
 		return

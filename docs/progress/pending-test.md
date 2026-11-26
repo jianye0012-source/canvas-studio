@@ -7,9 +7,9 @@ description: 当前版本已实现但仍需人工验证的变更项
 
 ## 参考图库（姿势 / 服装 / 人像）
 
-- 首次需执行 `git submodule update --init integrations/pose-gallery` 拉取图库（约 1.2 GB）；启动后 `GET /api/pose-gallery?kind=pose` 返回 288 组姿势，服装 1464 套（含中国历代 57 套多视角），人像 1499 张。
+- 首次需执行 `git submodule update --init integrations/pose-gallery` 拉取图库（约 1.2 GB）；启动后 `GET /api/pose-gallery?kind=pose` 返回 153 组姿势（性感系、双人缠绵不导入），服装 1464 套（含中国历代 57 套多视角，全部直接显示），人像 1499 张。
 - 素材库页顶部切换「参考图库」：按体系/分类/角度/关键词筛选，卡片内切换角度与深度图；详情可复制中英文提示词、加入我的素材。
-- NSFW 内容（性感系、双人缠绵、内衣・睡衣、性感穿搭）默认隐藏，打开「NSFW」开关后显示，开关状态在素材库、画布选择器和侧边栏共用并持久化。
+- 性感系、双人缠绵姿势图不在列表中，图片接口返回 404，便携版和 Docker 镜像不打包这部分图片。
 - 画布：素材选择器「参考图库」点击插入图片节点；侧边栏资产「参考图」可拖入画布；图片/视频节点提示词面板的「参考图库」按钮会插入参考图节点、自动连线为参考并把提示词追加到当前提示词。
 - `/api/pose-gallery/files/` 只允许读取 `img/`、`thumbs/` 下文件，`../` 路径返回 404。
 - 便携版打包后 bundle 内含 `integrations/pose-gallery/{data,img,thumbs}`，离线可浏览；Docker 镜像同样包含。

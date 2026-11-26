@@ -2,12 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Empty, Input, Pagination, Segmented, Select, Spin, Switch, Tag } from "antd";
+import { Empty, Input, Pagination, Segmented, Select, Spin, Tag } from "antd";
 import { Search } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { fetchPoseGallery, poseFileUrl, type PoseRefItem, type PoseRefKind, type PoseRefView } from "@/services/api/pose-gallery";
-import { usePoseGalleryStore } from "@/stores/use-pose-gallery-store";
 
 export type PoseGalleryPick = { item: PoseRefItem; view: PoseRefView; url: string };
 
@@ -18,8 +17,6 @@ const KIND_OPTIONS: { label: string; value: PoseRefKind }[] = [
 ];
 
 export function PoseGalleryBrowser({ pageSize = 12, columns = "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4", actionLabel = "查看", onPick }: { pageSize?: number; columns?: string; actionLabel?: string; onPick: (pick: PoseGalleryPick) => void }) {
-    const showSensitive = usePoseGalleryStore((state) => state.showSensitive);
-    const setShowSensitive = usePoseGalleryStore((state) => state.setShowSensitive);
     const [kind, setKind] = useState<PoseRefKind>("pose");
     const [group, setGroup] = useState("");
     const [category, setCategory] = useState("");
@@ -28,13 +25,13 @@ export function PoseGalleryBrowser({ pageSize = 12, columns = "grid-cols-2 sm:gr
     const [page, setPage] = useState(1);
 
     const query = useQuery({
-        queryKey: ["pose-gallery", kind, group, category, angle, keyword, showSensitive, page, pageSize],
-        queryFn: () => fetchPoseGallery({ kind, group, category, angle, keyword, safe: showSensitive ? "0" : "1", page, pageSize }),
+        queryKey: ["pose-gallery", kind, group, category, angle, keyword, page, pageSize],
+        queryFn: () => fetchPoseGallery({ kind, group, category, angle, keyword, page, pageSize }),
         placeholderData: (previous) => previous,
         retry: false,
     });
 
-    useEffect(() => setPage(1), [kind, group, category, angle, keyword, showSensitive]);
+    useEffect(() => setPage(1), [kind, group, category, angle, keyword]);
 
     const data = query.data;
     const filterSelect = (label: string, value: string, options: string[] | undefined, onChange: (value: string) => void) => (
@@ -62,12 +59,6 @@ export function PoseGalleryBrowser({ pageSize = 12, columns = "grid-cols-2 sm:gr
                 {filterSelect(kind === "portrait" ? "发长" : "分类", category, data?.categories, setCategory)}
                 {kind !== "portrait" ? filterSelect("角度", angle, data?.angles, setAngle) : null}
                 <Input size="small" className="!w-44" allowClear prefix={<Search className="size-3.5 text-stone-400" />} placeholder="搜索名称、标签" value={keyword} onChange={(event) => setKeyword(event.target.value)} />
-                {kind !== "portrait" ? (
-                    <label className="flex items-center gap-1.5 text-xs text-stone-500 dark:text-stone-400">
-                        <Switch size="small" checked={showSensitive} onChange={setShowSensitive} />
-                        NSFW
-                    </label>
-                ) : null}
             </div>
 
             {query.isLoading ? (

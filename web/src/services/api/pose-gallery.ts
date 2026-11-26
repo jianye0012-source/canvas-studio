@@ -21,7 +21,6 @@ export type PoseRefItem = {
     views: PoseRefView[];
     width?: number;
     height?: number;
-    sensitive: boolean;
 };
 
 export type PoseRefResponse = {
@@ -38,7 +37,6 @@ export type PoseRefQuery = {
     category?: string;
     angle?: string;
     keyword?: string;
-    safe?: "0" | "1";
     page?: number;
     pageSize?: number;
 };
