@@ -14,6 +14,7 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasCameraControl } from "./canvas-camera-control";
 import { CanvasPromptLibrary } from "./canvas-prompt-library";
+import { CanvasPoseReference } from "./canvas-pose-reference";
 import { CanvasTextSkills } from './canvas-text-skills';
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasPromptChipInput } from "./canvas-prompt-chip-input";
@@ -41,9 +42,10 @@ type CanvasNodePromptPanelProps = {
     videoFrameOptions?: CanvasVideoFrameOption[];
     videoResourceOptions?: CanvasVideoResourceOption[];
     onImageSettingsOpenChange?: (open: boolean) => void;
+    onAttachLibraryReference?: (nodeId: string, image: { url: string; title: string }, prompt: string) => void;
 };
 
-export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, mentionReferences = [], connectedNodes = [], videoFrameOptions = [], videoResourceOptions = [], onDisconnectReference, onStartReferenceSelection, onImageSettingsOpenChange }: CanvasNodePromptPanelProps) {
+export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, mentionReferences = [], connectedNodes = [], videoFrameOptions = [], videoResourceOptions = [], onDisconnectReference, onStartReferenceSelection, onImageSettingsOpenChange, onAttachLibraryReference }: CanvasNodePromptPanelProps) {
     const globalConfig = useEffectiveConfig();
     const modelCosts = useConfigStore((state) => state.publicSettings?.modelChannel.modelCosts);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
@@ -115,6 +117,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                         <Button type="text" className="!h-8 !w-8 !min-w-8 shrink-0 !rounded-full !bg-transparent !p-0" style={{ color: theme.node.text }} icon={<Maximize2 className="size-3.5" />} onClick={() => setExpanded(true)} aria-label="放大编辑" />
                     </Tooltip>
                     <CanvasPromptLibrary onSelect={updatePrompt} />
+                    {onAttachLibraryReference && mode !== "text" && mode !== "audio" ? <CanvasPoseReference onSelect={(image, text) => onAttachLibraryReference(node.id, image, [prompt.trim(), text].filter(Boolean).join("\n"))} /> : null}
                     {mode === "image" ? (
                         <>
                             <ModelPicker className="!w-[180px] !min-w-0 !shrink-0" config={config} value={config.model} channelId={config.imageChannelId} workflowRef={node.metadata?.workflowRef} onWorkflowChange={(workflowRef) => onConfigChange(node.id, { workflowRef })} onChange={(model, channelId) => onConfigChange(node.id, { model, channelId })} capability="image" onMissingConfig={() => openConfigDialog(true)} />

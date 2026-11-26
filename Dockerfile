@@ -44,6 +44,9 @@ COPY VERSION /app/VERSION
 COPY CHANGELOG.md /app/CHANGELOG.md
 COPY --from=api-build /server /app/server
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+COPY integrations/pose-gallery/data /app/integrations/pose-gallery/data
+COPY integrations/pose-gallery/img /app/integrations/pose-gallery/img
+COPY integrations/pose-gallery/thumbs /app/integrations/pose-gallery/thumbs
 RUN chmod +x /app/docker-entrypoint.sh
 COPY --from=web-build /app/web/public /app/web/public
 COPY --from=web-build /app/web/.next/standalone /app/web

@@ -27,6 +27,7 @@ type Config struct {
 	LinuxDoTokenURL     string `env:"LINUX_DO_TOKEN_URL" envDefault:"https://connect.linux.do/oauth2/token"`
 	LinuxDoUserInfoURL  string `env:"LINUX_DO_USERINFO_URL" envDefault:"https://connect.linux.do/api/user"`
 	AILogDir            string `env:"AI_LOG_DIR" envDefault:"data/logs/ai-calls"`
+	PoseGalleryDir      string `env:"POSE_GALLERY_DIR" envDefault:"integrations/pose-gallery"`
 }
 
 var Cfg Config

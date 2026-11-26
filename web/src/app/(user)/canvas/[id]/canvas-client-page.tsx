@@ -3206,6 +3206,18 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         return insertAssistantImage({ id: nodeId || `asset-${Date.now()}`, prompt: payload.title, dataUrl: payload.dataUrl, storageKey: payload.storageKey, source: payload.source }, position, nodeId);
     }
 
+    async function attachLibraryReference(targetNodeId: string, image: { url: string; title: string }, prompt: string) {
+        const target = nodesRef.current.find((node) => node.id === targetNodeId);
+        if (!target) return;
+        const id = `asset-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        const offset = connectionsRef.current.filter((connection) => connection.toNodeId === targetNodeId).length * 60;
+        await insertAssetAt({ kind: "image", dataUrl: image.url, title: image.title, source: "library" }, { x: target.position.x - 280, y: target.position.y + target.height / 2 + offset }, id);
+        setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: id, toNodeId: targetNodeId }]);
+        handleNodePromptChange(targetNodeId, prompt);
+        setSelectedNodeIds(new Set([targetNodeId]));
+        setDialogNodeId(targetNodeId);
+    }
+
     const handleDrop = useCallback(
         (event: ReactDragEvent<HTMLDivElement>) => {
             event.preventDefault();
@@ -4680,6 +4692,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                                         onStop={handleStopNode}
                                         onDisconnectReference={disconnectNodeReference}
                                         onStartReferenceSelection={startNodeReferenceSelection}
+                                        onAttachLibraryReference={(nodeId, image, prompt) => void attachLibraryReference(nodeId, image, prompt)}
                                         onImageSettingsOpenChange={(open) => {
                                             setNodeImageSettingsOpen(open);
                                             if (open) setToolbarNodeId(null);

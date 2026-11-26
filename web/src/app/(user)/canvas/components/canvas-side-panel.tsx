@@ -2,7 +2,7 @@
 
 import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from "react";
 import { useParams } from "next/navigation";
-import { Empty, Input, Pagination, Select, Spin } from "antd";
+import { Empty, Input, Pagination, Select, Spin, Switch } from "antd";
 import { useQuery } from "@tanstack/react-query";
 import { BookOpen, ChevronRight, Clapperboard, Eye, FileText, FolderDown, Group, Image as ImageIcon, Music2, Plus, Search, Settings2, Type, Video } from "lucide-react";
 import { motion } from "motion/react";
@@ -15,6 +15,8 @@ import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { cn } from "@/lib/utils";
 import { fetchAssetLibrary, type AssetLibraryItem } from "@/services/api/assets";
 import { fetchPrompts, type Prompt } from "@/services/api/prompts";
+import { fetchPoseGallery, poseFileUrl, type PoseRefKind } from "@/services/api/pose-gallery";
+import { usePoseGalleryStore } from "@/stores/use-pose-gallery-store";
 import { getImagePreviewRevision, previewUrlFor, subscribeImagePreviews } from "@/services/image-storage";
 import { useAssetStore, type Asset } from "@/stores/use-asset-store";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -284,7 +286,7 @@ function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, theme }: { nodes:
 }
 
 const CanvasAssetsTab = memo(function CanvasAssetsTab({ theme, onAssetDragStart, onAssetDragEnd }: { theme: CanvasTheme; onAssetDragStart: (payload: InsertAssetPayload) => void; onAssetDragEnd: () => void }) {
-    const [source, setSource] = useState<"mine" | "library">("mine");
+    const [source, setSource] = useState<"mine" | "library" | "pose">("mine");
     const [formOpen, setFormOpen] = useState(false);
 
     return (
@@ -292,9 +294,12 @@ const CanvasAssetsTab = memo(function CanvasAssetsTab({ theme, onAssetDragStart,
             <div className="flex items-center gap-4 px-3 pb-2 pt-1">
                 <AssetSourceTab label="我的素材" active={source === "mine"} theme={theme} onClick={() => setSource("mine")} />
                 <AssetSourceTab label="素材库" active={source === "library"} theme={theme} onClick={() => setSource("library")} />
+                <AssetSourceTab label="参考图" active={source === "pose"} theme={theme} onClick={() => setSource("pose")} />
             </div>
             {source === "mine" ? (
                 <MyAssetsTab theme={theme} onAdd={() => setFormOpen(true)} onAssetDragStart={onAssetDragStart} onAssetDragEnd={onAssetDragEnd} />
+            ) : source === "pose" ? (
+                <PoseRefAssetsTab theme={theme} onAssetDragStart={onAssetDragStart} onAssetDragEnd={onAssetDragEnd} />
             ) : (
                 <LibraryAssetsTab theme={theme} onAssetDragStart={onAssetDragStart} onAssetDragEnd={onAssetDragEnd} />
             )}
@@ -395,6 +400,48 @@ function LibraryAssetsTab({ theme, onAssetDragStart, onAssetDragEnd }: { theme: 
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
                 {query.isLoading ? <div className="flex justify-center pt-16"><Spin size="small" /></div> : items.length ? <div className="grid grid-cols-2 gap-2 px-1 pt-1">{items.map((asset) => <LibraryAssetDragCard key={asset.id} asset={asset} theme={theme} onAssetDragStart={onAssetDragStart} onAssetDragEnd={onAssetDragEnd} />)}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无素材" className="pt-16" />}
+                {query.data?.total && query.data.total > ASSET_PAGE_SIZE ? <Pagination className="!mt-3 flex justify-center" size="small" current={page} pageSize={ASSET_PAGE_SIZE} total={query.data.total} showSizeChanger={false} onChange={setPage} /> : null}
+            </div>
+        </>
+    );
+}
+
+function PoseRefAssetsTab({ theme, onAssetDragStart, onAssetDragEnd }: { theme: CanvasTheme; onAssetDragStart: (payload: InsertAssetPayload) => void; onAssetDragEnd: () => void }) {
+    const showSensitive = usePoseGalleryStore((state) => state.showSensitive);
+    const setShowSensitive = usePoseGalleryStore((state) => state.setShowSensitive);
+    const [kind, setKind] = useState<PoseRefKind>("pose");
+    const [group, setGroup] = useState("");
+    const [category, setCategory] = useState("");
+    const [keyword, setKeyword] = useState("");
+    const [page, setPage] = useState(1);
+    const query = useQuery({
+        queryKey: ["canvas-side-pose-gallery", kind, group, category, keyword, showSensitive, page],
+        queryFn: () => fetchPoseGallery({ kind, group, category, keyword, safe: showSensitive ? "0" : "1", page, pageSize: ASSET_PAGE_SIZE }),
+        placeholderData: (previous) => previous,
+        retry: false,
+    });
+    const items = query.data?.items || [];
+
+    useEffect(() => setPage(1), [kind, group, category, keyword, showSensitive]);
+
+    return (
+        <>
+            <div className="flex items-center gap-4 px-3 pb-2">
+                {([["pose", "姿势"], ["costume", "服装"], ["portrait", "人像"]] as const).map(([value, label]) => <AssetSourceTab key={value} label={label} active={kind === value} theme={theme} onClick={() => { setKind(value); setGroup(""); setCategory(""); }} />)}
+            </div>
+            <div className="grid grid-cols-2 gap-2 px-3 pb-2">
+                <Select size="small" className="w-full" value={group} onChange={(value) => { setGroup(value); setCategory(""); }} options={[{ label: "全部体系", value: "" }, ...(query.data?.groups || []).map((item) => ({ label: item, value: item }))]} />
+                <Select size="small" className="w-full" value={category} onChange={setCategory} options={[{ label: "全部分类", value: "" }, ...(query.data?.categories || []).map((item) => ({ label: item, value: item }))]} />
+            </div>
+            <div className="flex items-center gap-2 px-3 pb-2">
+                <Input size="small" allowClear prefix={<Search className="size-3.5 text-stone-400" />} placeholder="搜索参考图" value={keyword} onChange={(event) => setKeyword(event.target.value)} />
+                <label className="flex shrink-0 items-center gap-1 text-xs" style={{ color: theme.node.text }}>
+                    <Switch size="small" checked={showSensitive} onChange={setShowSensitive} />
+                    NSFW
+                </label>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+                {query.isLoading ? <div className="flex justify-center pt-16"><Spin size="small" /></div> : items.length ? <div className="grid grid-cols-2 gap-2 px-1 pt-1">{items.map((item) => <DraggableAssetCard key={item.id} theme={theme} title={item.name} kind="image" imageUrl={poseFileUrl(item.views[0]?.coverUrl)} text="" payload={{ kind: "image", dataUrl: poseFileUrl(item.views[0]?.url), title: item.name, source: "library" }} onAssetDragStart={onAssetDragStart} onAssetDragEnd={onAssetDragEnd} />)}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无参考图" className="pt-16" />}
                 {query.data?.total && query.data.total > ASSET_PAGE_SIZE ? <Pagination className="!mt-3 flex justify-center" size="small" current={page} pageSize={ASSET_PAGE_SIZE} total={query.data.total} showSizeChanger={false} onChange={setPage} /> : null}
             </div>
         </>
