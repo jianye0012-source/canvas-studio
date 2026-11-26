@@ -4,6 +4,7 @@ import { openModelGenerator } from './canvas-model-generator.js';
 import { createSaveQueue } from './canvas-save-queue.js';
 import { createOutputRequests } from './canvas-output-request.js';
 import { openAssetDb, listAssetIds, putAsset } from './scene-assets.js';
+import { localizedImportMessage } from './domains/import-message.js';
 import './canvas-bridge.css';
 
 // The .cclayproject envelope includes meshes, HDRs, images, motion specs and
@@ -77,37 +78,6 @@ export function useCanvasBridge(api) {
     button('← 返回画布', async () => { await save(); post('storyai:director-close'); });
     button('AI 生成 3D 模型', async () => { if (!initialized) throw new Error('请等待导演台连接完成'); await openModelGenerator({ sceneId: session.instanceId, save, importMesh: file => latest.current.appContext.storeDomain('objects').importMeshFile(file) }); });
     button('保存场景', () => save(true)); button('截图到画布', capture); button('动画到画布', video);
-    button('导演台 MCP', async () => {
-      const response = await fetch('/local/mcp/config'); if (!response.ok) throw new Error('MCP 配置读取失败');
-      const config = await response.json();
-      const dialog = document.createElement('dialog'); dialog.style.cssText = 'width:min(560px,90vw);background:var(--panel-bg,#fbfaf7);color:var(--text,#45413b);border:1px solid #95959555;border-radius:12px;padding:24px';
-      const title = document.createElement('h3'); title.textContent = 'Canvas Studio · 导演台专属 MCP';
-      const description = document.createElement('p'); description.textContent = '支持任意 MCP 客户端。先启动工作台并保持场景打开；重载 MCP 后先列出工作区。';
-      const area = document.createElement('textarea'); area.readOnly = true; area.setAttribute('aria-label', '导演台 MCP 配置'); area.style.cssText = 'width:100%;height:240px;font:12px monospace;background:transparent;color:inherit';
-      area.value = JSON.stringify({ mcpServers: { 'canvas-studio-director': config.mcpServers['canvas-studio-director'] } }, null, 2);
-      const copy = document.createElement('button'); copy.textContent = '复制配置'; copy.onclick = async () => { try { await navigator.clipboard.writeText(area.value); copy.textContent = '已复制'; } catch { area.select(); } };
-      const instruction = document.createElement('button'); instruction.textContent = '复制给 AI 的接入指令';
-      instruction.onclick = async () => {
-        const value = config.instructions?.['canvas-studio-director'];
-        if (!value) return;
-        try { await navigator.clipboard.writeText(value); instruction.textContent = '指令已复制'; }
-        catch { area.value = value; area.select(); }
-      };
-      const result = document.createElement('p'); result.setAttribute('role', 'status');
-      const test = document.createElement('button'); test.textContent = '测试连接';
-      test.onclick = async () => {
-        test.disabled = true; result.textContent = '正在测试 MCP…';
-        try {
-          const response = await fetch('/local/mcp/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ scope: 'director' }) });
-          const value = await response.json();
-          if (!response.ok) throw new Error(value.msg || '无法连接导演台');
-          result.textContent = value.workspaces ? `连接成功 · ${value.tools} 个工具 · ${value.workspaces} 个工作区` : `服务可用 · ${value.tools} 个工具 · 尚未打开工作区`;
-        } catch (error) { result.textContent = `连接失败：${error.message}`; }
-        finally { test.disabled = false; }
-      };
-      const close = document.createElement('button'); close.textContent = '关闭'; close.onclick = () => dialog.close(); dialog.addEventListener('close', () => dialog.remove(), { once: true });
-      dialog.append(title, description, instruction, test, result, area, copy, close); document.body.append(dialog); dialog.showModal();
-    });
     const panoramaSelect = document.createElement('select'); panoramaSelect.setAttribute('aria-label', '画布全景背景'); panoramaSelect.hidden = true;
     const applyPanorama = async item => {
       const response = await fetch(item.imageUrl); if (!response.ok) throw new Error('全景图片读取失败');
@@ -148,7 +118,7 @@ export function useCanvasBridge(api) {
             await run('project.open', { serialized: JSON.stringify(saved.project) });
             panoramas = saved.panoramas || []; activePanorama = saved.activePanorama || null;
           } else if (response.status === 404 && !session.project?.projectId) {
-            await run('project.new', { name: '白模导演台', previsMode: 'animation', castStyle: 'rig' });
+            await run('project.new', { name: '白模导演台', castStyle: 'rig' });
           } else throw new Error('已保存的导演台文件不可用，请检查数据目录');
           latest.current.scenesDomain.setProjectStartupOpen(false);
           latest.current.scenesDomain.setProjectBrowserOpen(false);
@@ -163,6 +133,21 @@ export function useCanvasBridge(api) {
           panoramaSelect.hidden = !panoramas.length;
           if (activePanorama) panoramaSelect.value = activePanorama;
           if (initialized && panoramas.length && !activePanorama) await applyPanorama(panoramas[0]);
+        }
+        // From the canvas's 参考图库: stand the picture up in the scene as a photo card (3.3's cutout import), so the
+        // author can block the character against it and tell the Agent to match the pose. Same-origin files (the
+        // reference gallery) are fetched directly; anything else arrives as a data URL already.
+        if (event.data?.type === 'storyai:director-reference-image') {
+          if (!initialized) throw new Error('请等待导演台连接完成');
+          const { url, name } = event.data.payload || {};
+          if (typeof url !== 'string' || !url) throw new Error('参考图片地址无效');
+          const response = url.startsWith('data:') ? await fetch(url) : await fetch(url, { credentials: 'same-origin' });
+          if (!response.ok) throw new Error('参考图片读取失败');
+          const blob = await response.blob();
+          const file = new File([blob], name || '参考图.jpg', { type: blob.type || 'image/jpeg' });
+          const receipt = await latest.current.appContext.storeDomain('objects').importCutoutFile(file);
+          if (!receipt?.ok) throw new Error(localizedImportMessage(receipt?.message ?? ''));
+          label.textContent = '参考图已加入场景，可在智能体面板里让角色照着摆姿势';
         }
       } catch (error) { fail(error); }
     }

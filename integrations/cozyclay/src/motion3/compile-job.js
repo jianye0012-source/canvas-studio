@@ -1,19 +1,22 @@
 // One motion compile as a job of plain data, the same in the compile worker (compile-worker.js) and on
 // the calling thread (commands/motion3-compile.js, where no worker runs: Node, tests): the rig by model
-// name, the motion scene (scene.js motionScene of the editor's objects: oriented boxes; shapes.js reads a sphere or a cylinder round from them), the spec as sent, and
+// name (an adapted rig's JSON rides along and is registered first: rigs/posted.js), the motion scene (scene.js motionScene of the editor's objects: oriented boxes; shapes.js reads a sphere or a cylinder round from them), the spec as sent, and
 // what to do with it (probes, checks, lenient, repair, bake). The answer is plain data and typed arrays
 // only (the compiler's out holds closures), so it crosses a worker boundary: QA, observations, the stored
 // spec, and the baked take when asked. The hint patches QA offers are compiled first (hint-check.js).
 // A refusal is an Error with a code (INVALID_ARGUMENT, MOTION_SPEC_INVALID turned into it), which the
 // client turns back into the Studio's protocol error.
 import { compileSpec, liftRequest } from "./pipeline.js";
+import { autoSpec, authoredOf } from "./auto-spec.js";
 import { prepareSpec } from "./correct.js";
 import { repairSpec } from "./repair.js";
 import { thinSpec } from "./thin.js";
 import { checkHints } from "./hint-check.js";
 import { bakeTake } from "./take.js";
 import { skeletonFor } from "./rigs/index.js";
+import { ensureRig } from "./rigs/posted.js";
 import { keptPeople } from "./people.js";
+import { installVerdict } from "./install-verdict.js";
 
 const TIMELINE_FPS = 24, HINT_LIMIT_MS = 20000;
 const refuse = (code, message) => { throw Object.assign(new Error(message), { code }); };
@@ -37,15 +40,23 @@ const fresh = value => (Array.isArray(value) ? value.map(fresh) : value && typeo
 	? Object.fromEntries(Object.keys(value).map(k => [k, fresh(value[k])])) : value);
 
 /**
- * runCompileJob({ model, scene, spec, probes?, checks?, lenient?, repair?, installing?, thin?, protect?, bake? }) -> { stored, qa,
+ * runCompileJob({ model, rigs?, scene, spec, probes?, checks?, lenient?, repair?, installing?, ifCleanOver?, thin?, protect?, bake? }) -> { stored, qa,
  * observations, used, fixed, search, timeline, probes?, notes?, ms (+ repair: its wall ms), frameCount, label, repair?, thinned?, take? }
+ * rigs: { model: rig JSON } of every adapted rig the job reads: the character's, and the rigs of scene.people (people.js
+ * looks a person up by its take's rig), registered first (rigs/posted.js ensureRig: unless they already are).
  * installing: the compile installs (motion3.js), so it thins its keys (thin.js) unless thin is false; protect: frames never thinned.
+ * ifCleanOver: install "ifClean": the installed take's { groups } (null when none is on); a repaired result that would not go on
+ * over it (install-verdict.js) is not thinned: its keys stay as repaired, and output.thinned is absent.
  * bake: { position, yaw, prompt? } bakes the final result's take (prompt: given, else the final spec's label).
  * hintLimitMs: the job's time after which hint patches are no longer compiled (default HINT_LIMIT_MS; tests pass 0).
  * thinLimitMs: the thinning's own time limit (default thin.js LIMIT_MS; tests pass more, so a loaded machine thins the same keys).
  */
-export function runCompileJob({ model, scene, spec: asked, probes: sentProbes, checks, lenient, repair, installing, thin, protect, bake, hintLimitMs, thinLimitMs }) {
+export function runCompileJob({ model, rigs, scene, spec: asked, probes: sentProbes, checks, lenient, repair, installing, ifCleanOver, thin, protect, bake, hintLimitMs, thinLimitMs }) {
+	for (const [id, rig] of Object.entries(rigs ?? {})) ensureRig(id, rig);
 	const sk = skeletonFor(model);
+	// what the agent wrote (#1083), then the spec with what it left to the compiler filled in (auto-spec.js): repair and thinning patch that one
+	const authored = authoredOf(asked);
+	asked = autoSpec(asked, sk);
 	const opts = { ...(checks ? { checks } : {}), ...(lenient ? { lenient: true } : {}) };
 	// spec.probes and bare moved ids are lifted before fps is filled in, so the specId stays the spec's own
 	const once = s => {
@@ -63,7 +74,9 @@ export function runCompileJob({ model, scene, spec: asked, probes: sentProbes, c
 	// repair.ms: the repair's own wall time (before thinning)
 	const repairMs = repair ? Math.round(performance.now() - t0) : 0;
 	// key thinning (thin.js): an installing compile drops the free-span keys QA does not miss; thin: false opts out
-	const thinned = installing && thin !== false && !lenient ? thinSpec(repaired.spec, repaired.result, measured, { protect: protect ?? [], ...(thinLimitMs === undefined ? {} : { limitMs: thinLimitMs }) }) : null;
+	// install "ifClean" over a take this one does not beat: it is not installed, so it is not thinned either
+	const staysOff = ifCleanOver !== undefined && !installVerdict(ifCleanOver, repaired.result.qa).wanted;
+	const thinned = installing && thin !== false && !lenient && !staysOff ? thinSpec(repaired.spec, repaired.result, measured, { protect: protect ?? [], ...(thinLimitMs === undefined ? {} : { limitMs: thinLimitMs }) }) : null;
 	const fixed = thinned ? { ...repaired, spec: thinned.spec, result: thinned.result } : repaired;
 	// a hint's patch is offered only when its compile helped (hint-check.js), and only by a compile that repairs: repair has
 	// compiled most of the patches already (seen), where a plain compile paid two more compiles for them (bench replay: first
@@ -81,7 +94,7 @@ export function runCompileJob({ model, scene, spec: asked, probes: sentProbes, c
 	const people = take && keptPeople(scene, [r.expanded, r.stored], r.out);
 	if (people) take.people = people;
 	return { stored: r.stored, qa: r.qa, observations: r.observations, used: r.used, fixed: r.fixed, search: r.search, timeline: r.timeline,
-		...(r.probes ? { probes: r.probes } : {}), ...(r.notes || corrected.length ? { notes: [...corrected, ...(r.notes ?? [])] } : {}), ms, frameCount: r.out.frameCount, label,
+		...(r.probes ? { probes: r.probes } : {}), ...(r.notes || corrected.length ? { notes: [...corrected, ...(r.notes ?? [])] } : {}), ms, frameCount: r.out.frameCount, label, authored,
 		...(fixed.repair ? { repair: { ...fixed.repair, ms: repairMs } } : {}), ...(thinned ? { thinned: thinned.thinned } : {}), ...(take ? { take } : {}) };
 }
 
@@ -93,11 +106,26 @@ function buffersOf(value, found = new Set()) {
 }
 
 /** The worker's answer to { id, job }: { message: { id, value }, transfer } or { message: { id, error: { message, code, name } }, transfer: [] }. */
+const failed = (id, error) => ({ id, error: { message: String(error?.message ?? error), code: error?.code ?? null, name: error?.name ?? "Error" } });
+
 export function answerOf({ id, job }) {
 	try {
 		const value = runCompileJob(fresh(job));
 		return { message: { id, value }, transfer: buffersOf(value) };
 	} catch (error) {
-		return { message: { id, error: { message: String(error?.message ?? error), code: error?.code ?? null, name: error?.name ?? "Error" } }, transfer: [] };
+		return { message: failed(id, error), transfer: [] };
 	}
+}
+
+/**
+ * The compile worker's message handler (compile-worker.js): jobServer(post, ready) -> handle(data) -> a promise of the
+ * answer posted. Answers go out one at a time in arrival order, the first after `ready` settles (the worker's preload of
+ * the collision body fits, body.js preloadBodies: then no compile reads a fit by synchronous XHR; a failed preload leaves
+ * that fallback). post(message, transfer) sends an answerOf answer; when it throws (an answer that does not clone), the
+ * job is answered with that error instead, and the queue goes on serving the jobs after it.
+ */
+export function jobServer(post, ready = Promise.resolve()) {
+	let queue = Promise.resolve(ready).catch(() => {});
+	return data => (queue = queue.then(() => { const { message, transfer } = answerOf(data); post(message, transfer); })
+		.catch(error => post(failed(data?.id, error), [])).catch(() => {}));
 }

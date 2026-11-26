@@ -61,7 +61,7 @@ let qaHandle = null;
 // The Studio mounts the Agent pane hidden behind the Inspector; switch to it so
 // every scenario screenshot shows the conversation and its receipts.
 async function showAgentPane() {
-  await evaluate(`(() => { const button = document.querySelector('button.inspector-agent-switch[aria-pressed]'); if (button && button.getAttribute('aria-pressed') !== 'true') button.click(); })()`);
+  await evaluate(`(() => { document.querySelector('button.studio-agent-bar')?.click(); })()`);
   await waitFor(`(() => { const pane = document.querySelector('aside[aria-label="Agent"]'); return !!pane && !pane.hidden && pane.offsetParent !== null; })()`, 15_000).catch(() => null);
 }
 async function readHandle() {
@@ -92,6 +92,15 @@ function state() {
     shots: scene?.shotDocument?.shots?.map(({ id, name }) => ({ id, name })) ?? [],
     characters: entities.filter((row) => row.kind === "character").map(({ id, motion }) => ({ id, takeId: motion?.takeId ?? null, frames: motion?.frames ?? 0 })),
   };
+}
+// A new project starts on an empty stage (#986), but S2 and S4-S8 address the
+// first cast member as char-a. Cast the Y Bot through the live CLI (the rigged
+// body S4 needs for motion) and prove the editor holds it before any scenario.
+async function ensureCharacter() {
+  const hasCharacter = (row) => row.characters.some((entry) => entry.id === "char-a");
+  if (!hasCharacter(state())) live(["run", "character.add", "--args", JSON.stringify({ character: { id: "char-a", model: "y-bot-tpose" } })]);
+  const settled = untilState(hasCharacter, 20_000);
+  if (!hasCharacter(settled)) throw new Error(`char-a is not on the stage after character.add: ${JSON.stringify(settled.characters)}`);
 }
 const finalReply = () => evaluate(`(() => [...document.querySelectorAll('.agent-row.assistant .agent-assistant-text')].map(node => node.innerText.trim()).filter(Boolean).at(-1) || '')()`);
 const results = [];
@@ -152,6 +161,7 @@ try {
   await pageLoad(baseUrl);
   await waitFor(`!!document.querySelector('aside[aria-label="Agent"]') && !!document.querySelector('aside[aria-label="Agent"] textarea[aria-label="Message the agent"]')`);
   await readHandle();
+  await ensureCharacter();
   await showAgentPane();
   await chooseModel();
 } catch (error) {

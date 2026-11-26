@@ -1,8 +1,8 @@
 import { appVersion } from "./app-version.js";
 import { FIRST_EDIT_KINDS, FIRST_EDIT_VERSION } from "./semantic-edit.js";
-import { ERROR_TYPE_VALUES, EXPORT_FAILURE_CODES, exportPropAllowed } from "./analytics-values.js";
+import { ERROR_TYPE_VALUES, EXPORT_FAILURE_CODES, NO_REPLAY, REPLAY_INIT, UI_LOCALE_VALUES, exportPropAllowed, recordsReplay, uiLocale } from "./analytics-values.js";
 import { bump as bumpFriction, observeLongTasks, snapshot as frictionSnapshot } from "./analytics-friction.js";
-import { STRICT_EVENT_KEYS, strictPropValidator } from "./analytics-strict.js";
+import { STRICT_EVENT_KEYS, strictPropValidator, turnOriginAllowed } from "./analytics-strict.js";
 export const MCP_TOOL_CATEGORIES = Object.freeze(["read", "camera", "scene_write", "prompt_authoring", "frame_capture", "motion_generate", "motion_apply", "project_io", "other"]);
 // The live MCP tools (mcp/tool-handlers.mjs liveWorkspaceTools) plus "other".
 // Any other name is sent as "other"; test/verify-analytics.mjs holds the two lists equal.
@@ -12,14 +12,10 @@ export const MCP_TOOL_NAMES = Object.freeze([
 	"sculpt_object", "compare_sculpt", "group_objects", "update_object", "remove_object", "apply_batch", "add_scene",
 	"switch_scene", "open_project", "capture_frame", "studio_commands", "studio_run", "other",
 ]);
+// The Studio agent's families follow the Workflow ones (bin/agent/turn-telemetry.mjs agentToolCategory).
 export const AGENT_TOOL_CATEGORIES = Object.freeze([
-	"workflow_read",
-	"workflow_write",
-	"workflow_run",
-	"frame_capture",
-	"image_generate",
-	"scene_write",
-	"other",
+	"workflow_read", "workflow_write", "workflow_run", "frame_capture", "image_generate", "scene_write",
+	"scene_read", "view", "motion", "planning", "scripting", "other",
 ]);
 
 export const EXECUTION_TELEMETRY_EVENTS = Object.freeze([
@@ -48,7 +44,7 @@ export const EXECUTION_TELEMETRY_PROPERTY_KEYS = Object.freeze({
 	"agent:turn_requested": ["surface", "turn_id"],
 	"agent:tool_executed": ["turn_id", "tool_category", "outcome", "duration_bucket"],
 	"agent:turn_succeeded": ["turn_id", "duration_bucket"],
-	"agent:turn_failed": ["turn_id", "duration_bucket", "failure_code"],
+	"agent:turn_failed": ["turn_id", "duration_bucket", "failure_code", "provider", "endpoint"],
 	"agent:turn_cancelled": ["turn_id", "duration_bucket", "failure_code"],
 	"agent:result_applied": ["turn_id"],
 	"mcp:tool_requested": ["tool_category", "tool_name", "request_id"],
@@ -65,11 +61,9 @@ export const EXECUTION_TELEMETRY_VALUES = Object.freeze({
 	outcome: new Set(["succeeded", "failed", "uncertain", "cancelled"]),
 });
 
-// Closed values for the storyboard and capsule-figure events. Counts only: no
-// caption, name, prompt or id ever rides along.
-const PREVIS_PROPERTY_VALUES = Object.freeze({
-	source: new Set(["agent", "manual"]),
-	outcome: new Set(["ok", "error"]),
+// Closed values for the capsule-figure events. Counts only: no name, prompt or
+// id ever rides along.
+const CAST_PROPERTY_VALUES = Object.freeze({
 	surface: new Set(["assets", "agent", "mcp"]),
 });
 
@@ -90,8 +84,8 @@ export const EDIT_GROUPS = Object.freeze({
 export const EDIT_BUCKET_KEYS = Object.freeze(Object.keys(EDIT_GROUPS).map((group) => `${group}_edit_bucket`));
 export const USE_CASE_VALUES = Object.freeze(["animation", "film", "game", "ad_mv", "personal", "other", "skip"]);
 export const TEAM_VALUES = Object.freeze(["team", "solo", "skip"]);
-// Mirror PREVIS_MODES and CAST_STYLES in project.js; kept local so analytics stays import-light.
-export const PREVIS_MODE_VALUES = new Set(["storyboard", "animation"]), CAST_STYLE_VALUES = new Set(["rig", "capsule", "hybrid"]);
+// Mirror CAST_STYLES in project.js; kept local so analytics stays import-light.
+export const CAST_STYLE_VALUES = new Set(["rig", "capsule", "hybrid"]);
 export const UPDATE_STATUS_VALUES = Object.freeze(["latest", "outdated", "unknown"]);
 const DEFAULT_ALLOWED_ORIGINS = Object.freeze([
 	"https://cozyclay.org",
@@ -103,7 +97,7 @@ const EVENT_PROPERTIES = Object.freeze({
 	"app:session_started": [],
 	"app:session_ended": ["duration_bucket", "action_count_bucket", "scenes_touched", ...EDIT_BUCKET_KEYS, "session_id"],
 	...STRICT_EVENT_KEYS,
-	"app:error": ["error_kind", "error_type", "error_source", "error_file", "error_line", "error_col"],
+	"app:error": ["error_kind", "error_type", "error_source", "error_file", "error_line", "error_col", "locale"],
 	"device:profile": ["gpu_vendor", "gpu_class", "webgl", "cpu_bucket", "memory_bucket", "frame_rate_bucket"],
 	"survey:use_case": ["use_case", "team"],
 	"feature:used": ["name"],
@@ -112,9 +106,7 @@ const EVENT_PROPERTIES = Object.freeze({
 	"hosted:ticket_created": [],
 	"hosted:result_opened": [],
 	"hosted:opened_in_studio": [],
-	"scene:created": ["scene_source", "previs_mode", "cast_style"],
-	"storyboard:panel_created": ["source"],
-	"storyboard:panel_stylized": ["outcome"],
+	"scene:created": ["scene_source", "cast_style"],
 	"cast:proxy_added": ["surface"],
 	"scene:loaded": ["scene_source"],
 	"project:saved": ["object_count_bucket", "shot_count_bucket"],
@@ -137,14 +129,14 @@ const EVENT_PROPERTIES = Object.freeze({
 	...EXECUTION_TELEMETRY_PROPERTY_KEYS,
 });
 const FEATURE_NAMES = new Set([
-	"pose_edit", "pose_save", "camera_fly", "orbit", "dolly_rail", "crane_graph", "timeline_scrub",
+	"pose_edit", "camera_fly", "orbit", "dolly_rail", "crane_graph", "timeline_scrub",
 	"export_frame", "export_video",
-	"export_depth_video", "export_keyframe_pack", "export_render_pass", "export_storyboard",
-	"auto_color",
+	"export_depth_video", "export_keyframe_pack", "export_render_pass", "export_storyboard", "export_ai_reference",
+	"auto_color", "sample_motion", "agent_demo",
 ]);
-// `site` and `playground` arrive through `npx cozyclay --via <source>` from the
-// landing page's copy commands; the others are the first-launch prompt answers.
-export const HEARD_FROM_SOURCES = Object.freeze(["x", "hn", "reddit", "github", "friend", "other", "site", "playground"]);
+// `site`, `playground` and `installer` arrive through `npx cozyclay --via <source>`
+// from copy commands and installers; the others are the first-launch prompt answers.
+export const HEARD_FROM_SOURCES = Object.freeze(["x", "hn", "reddit", "github", "friend", "other", "site", "playground", "installer"]);
 const HEARD_FROM_VALUES = new Set(HEARD_FROM_SOURCES);
 const DENIED_PROPERTY_KEYS = new Set(["prompt", "text", "url", "path", "file"]);
 // Sculpt mode (#739): one sculpt_run per finished run. Numbers only: no
@@ -161,7 +153,7 @@ const EXECUTION_FAILURE_CODES = Object.freeze({
 const ERROR_PROPERTY_VALUES = Object.freeze({
 	error_kind: new Set(["error", "unhandled_rejection"]),
 	error_type: ERROR_TYPE_VALUES,
-	error_source: new Set(["app", "extension", "external", "unknown"]),
+	error_source: new Set(["app", "extension", "external", "unknown"]), locale: UI_LOCALE_VALUES,
 });
 const ERROR_FILE_PATTERN = /^[A-Za-z0-9_.-]{1,80}\.(?:m?js|jsx|ts|tsx)$/;
 const DEVICE_PROPERTY_VALUES = Object.freeze({
@@ -287,10 +279,8 @@ export function sanitizeProps(event, props) {
 			} else if (key === "outcome") {
 				const outcomes = event === "mcp:tool_executed" ? ["succeeded", "failed", "uncertain", "cancelled"] : ["succeeded", "failed", "cancelled"];
 				if (!outcomes.includes(props[key])) continue;
-			} else if (key === "failure_code") {
-				const channel = event.startsWith("agent:") ? "agent" : "workflow";
-				if (!EXECUTION_FAILURE_CODES[channel].has(props[key])) continue;
-			}
+			} else if (key === "failure_code" && !EXECUTION_FAILURE_CODES[event.startsWith("agent:") ? "agent" : "workflow"].has(props[key])) continue;
+			else if ((key === "provider" || key === "endpoint") && !turnOriginAllowed(key, props[key])) continue;
 		}
 		if (event === "app:error") {
 			if (key === "error_file") {
@@ -313,8 +303,8 @@ export function sanitizeProps(event, props) {
 			else if (key === "had_target" && typeof value === "boolean") sanitized[key] = value;
 			continue;
 		}
-		if ((key === "previs_mode" && !PREVIS_MODE_VALUES.has(props[key])) || (key === "cast_style" && !CAST_STYLE_VALUES.has(props[key]))) continue;
-		if ((event.startsWith("storyboard:") || event.startsWith("cast:")) && !PREVIS_PROPERTY_VALUES[key]?.has(props[key])) continue;
+		if (key === "cast_style" && !CAST_STYLE_VALUES.has(props[key])) continue;
+		if (event.startsWith("cast:") && !CAST_PROPERTY_VALUES[key]?.has(props[key])) continue;
 		if (event === "survey:use_case") {
 			if (key === "use_case" && !USE_CASE_VALUES.includes(props[key])) continue;
 			if (key === "team" && !TEAM_VALUES.includes(props[key])) continue;
@@ -484,8 +474,7 @@ export function describeError({ error, filename, lineno, colno, kind = "error" }
 /**
  * Count one authored edit by its closed semantic kind (FIRST_EDIT_KINDS). Edits
  * of the same group closer than EDIT_GESTURE_GAP_MS count as one gesture. The
- * first real pose edit of a session is also the `pose_edit` feature signal;
- * saving a pose to the library is `pose_save`.
+ * first real pose edit of a session is also the `pose_edit` feature signal.
  */
 export function recordSemanticEdit(kind, now = Date.now()) {
 	const group = EDIT_GROUP_BY_KIND.get(kind);
@@ -791,7 +780,9 @@ export async function initAnalytics({ lite = false } = {}) {
 				// Browser DNT is set by extensions and OS defaults, not by a deliberate
 				// per-site choice; the preference toggle remains the explicit signal.
 				respect_dnt: false,
-				disable_session_recording: true,
+				// Replay: hosted studio only (#1321). External script loading stays off,
+				// so the recorder is bundled and loaded here before init.
+				...(recordsReplay(resolved, lite) ? (await import("posthog-js/dist/posthog-recorder"), REPLAY_INIT) : NO_REPLAY),
 				capture_dead_clicks: false,
 				capture_performance: false,
 				disable_capture_url_hashes: true,
@@ -835,7 +826,10 @@ export async function initAnalytics({ lite = false } = {}) {
 
 export function track(event, props = {}) {
 	// The allowlist is the gate: an event it does not name is never sent.
-	if (!initialized || !enabled || !posthog || !Object.hasOwn(EVENT_PROPERTIES, event)) return;
+	if (!Object.hasOwn(EVENT_PROPERTIES, event)) return;
+	// The first project is made at mount, before the SDK has loaded: the event waits for it (#1364).
+	if (!initialized) return void initPromise?.then(() => { if (initialized) track(event, props); });
+	if (!enabled || !posthog) return;
 	try {
 		if (getAnalyticsOptOut()) return;
 		const sanitized = sanitizeProps(event, props);
@@ -903,7 +897,7 @@ function installErrorListeners() {
 			const signature = [props.error_kind, props.error_type, props.error_source, props.error_file, props.error_line, props.error_col].join("|");
 			if (errorSignaturesSeen.has(signature) || errorSignaturesSeen.size >= ERROR_SIGNATURE_LIMIT) return;
 			errorSignaturesSeen.add(signature);
-			track("app:error", props);
+			track("app:error", { ...props, locale: uiLocale() });
 		} catch {
 			// Error telemetry must never throw from inside an error handler.
 		}

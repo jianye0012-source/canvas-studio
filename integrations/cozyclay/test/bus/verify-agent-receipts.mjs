@@ -28,7 +28,7 @@ try {
   // every key); the wire keeps it for MCP's update_object and the CLI, and names the
   // unknown key instead of ignoring it.
   const [crateA, crateB] = [first.affectedIds[0], second.affectedIds[0]];
-  const revision = f.binding.refresh().revision;
+  f.binding.refresh();
   assert.ok(!f.binding.context().actionIndex.some(row => row.id === 'object.update'), 'the agent index omits object.update');
   const unknown = f.run('object.update', { id: crateB, patch: { scale: 2, foo: 1, x: 7 } }, 'agent');
   assert.equal(unknown.ok, false, JSON.stringify(unknown));
@@ -56,7 +56,9 @@ try {
   assert.deepEqual(path('scale').vec, { x: 1, y: 0.01, z: 1 }, 'scale reads back after the clamp');
   assert.equal(path('parent').text, null);
   assert.equal(readback.childIds, undefined);
-  assert.deepEqual(readback.bounds, { min: { x: -6 - row.footprint.width / 2, y: 0, z: -6 - row.footprint.depth / 2 }, max: { x: -6 + row.footprint.width / 2, y: row.height * 0.01, z: -6 + row.footprint.depth / 2 } });
+  // The slab asked for y 0 is lifted 3 mm off the deck (#1075) and says so.
+  assert.deepEqual(readback.bounds, { min: { x: -6 - row.footprint.width / 2, y: 0.003, z: -6 - row.footprint.depth / 2 }, max: { x: -6 + row.footprint.width / 2, y: Number((0.003 + row.height * 0.01).toFixed(4)), z: -6 + row.footprint.depth / 2 } });
+  assert.equal(find(squash, 'FLOOR_LIFT')[0].id, crate);
   const many = arrange(Array.from({ length: 10 }, (_, i) => create(`Bulk ${i}`, { x: 20 + i * 3, y: 0, z: -20 })));
   assert.equal(many.delta.length, 8);
   const truncated = find(many, 'READBACK_TRUNCATED');
@@ -72,7 +74,9 @@ try {
   console.log('PASS readback carries rotation, scale, parent, children and bounds; truncation is stated');
 
   // 5. verify_result(receiptId) measures a receipt that has no placement evidence.
-  const moved = f.run('object.update', { id: crateB, patch: { x: 6.1 } }, 'ui');
+  // Crate B is a full crate again: since case 3 it was a 1 cm slab, which only touches Crate A's base (solid-contact.js:
+  // two shapes pressed together under 3 cm are touching, not inside each other).
+  const moved = f.run('object.update', { id: crateB, patch: { x: 6.1, scaleY: 1 } }, 'ui');
   assert.equal(moved.status, 'applied');
   assert.equal(moved.checks.overlapIds, undefined, 'an update receipt carries no overlap measurement');
   const verified = await f.binding.handlers.verify_result(f.request('verify_result', { receiptId: moved.receiptId, checks: ['placement'], visual: 'none' }));

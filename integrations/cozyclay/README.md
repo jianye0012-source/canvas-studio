@@ -3,6 +3,19 @@
 </p>
 
 <p align="center">
+  <b>English</b> ·
+  <a href="README.ko.md">한국어</a> ·
+  <a href="README.ja.md">日本語</a> ·
+  <a href="README.zh-CN.md">简体中文</a> ·
+  <a href="README.zh-TW.md">繁體中文</a> ·
+  <a href="README.es.md">Español</a> ·
+  <a href="README.fr.md">Français</a> ·
+  <a href="README.de.md">Deutsch</a> ·
+  <a href="README.pt-BR.md">Português (BR)</a> ·
+  <a href="README.ru.md">Русский</a>
+</p>
+
+<p align="center">
   <b>Make the scene first. Then make it a video.</b><br>
   <em>Open source previs in a browser tab: block the set, move the cast, cut the camera, hand the shot to an AI video model.</em>
 </p>
@@ -11,7 +24,7 @@
   <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue"></a>
   <a href="https://www.npmjs.com/package/cozyclay"><img alt="npm" src="https://img.shields.io/npm/v/cozyclay"></a>
   <img alt="Node 22.19+" src="https://img.shields.io/badge/node-22.19%2B-brightgreen">
-  <a href="https://github.com/NomaDamas/CozyClay/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/NomaDamas/CozyClay?style=flat"></a>
+  <a href="https://github.com/HaD0Yun/CozyClay/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/HaD0Yun/CozyClay?style=flat"></a>
   <a href="https://discord.gg/Hp9V5wwgjF"><img alt="Discord" src="https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white"></a>
 </p>
 
@@ -46,7 +59,7 @@ real framing. It follows the blocking instead of guessing.
 
 ```mermaid
 flowchart LR
-  S["Stage<br/>set + cast"] --> M["Motion<br/>compiled + QA"] --> C["Camera<br/>shots + cuts"] --> E["Export<br/>frame · clip · prompt"] --> V["AI video model"]
+  S["Stage<br/>set + cast"] --> M["Motion<br/>written + built"] --> C["Camera<br/>shots + cuts"] --> E["Export<br/>frame · clip · prompt"] --> V["AI video model"]
 ```
 
 ## Quick start
@@ -58,12 +71,13 @@ npx cozyclay
 That is the whole install. You need Node.js 22.19 or newer and a Chromium browser. You do not need
 a GPU, Python or a model download. The studio opens at `http://127.0.0.1:5180/app/`.
 
-**Updating.** `npx cozyclay` fetches the newest release each time you run it. After
-`npm install -g cozyclay`, the studio shows a small **Update** chip in the top bar when a newer
-release is out. **Update now** installs it, and **Restart now** starts the new version in the same
-terminal; the studio reloads once your project is saved. On Windows the chip gives you the command to
-copy instead: one-click stays off there by design. `cclay update` does the same from the terminal. `--no-update-check` or `COZYCLAY_NO_UPDATE_CHECK=1` turns the check off
-for one launch; `cclay update --off` turns it off for good, and `cclay update --on` brings it back.
+**Updating.**
+
+- `npx cozyclay` fetches the newest release on every run.
+- After `npm install -g cozyclay`, the studio shows an **Update** chip in the top bar when a release is out. **Update now** installs it. **Restart now** starts the new version in the same terminal.
+- On Windows the chip shows the command to copy instead. One-click update stays off there by design.
+- `cclay update` does the same from the terminal.
+- Turn the check off for one launch with `--no-update-check` or `COZYCLAY_NO_UPDATE_CHECK=1`. Turn it off for good with `cclay update --off`, and back on with `cclay update --on`.
 
 > **Asking an AI agent to set it up?** Give it this repository link. Its instructions are in
 > [`INSTALL_FOR_AGENTS.md`](INSTALL_FOR_AGENTS.md).
@@ -72,11 +86,11 @@ for one launch; `cclay update --off` turns it off for good, and `cclay update --
 
 | | |
 | --- | --- |
-| **Stage** | Build the set from primitives. Add rigged characters, or capsule stand-ins when nobody needs to move a limb. Fly the view like a 3D editor. |
-| **Move** | Describe the action. The agent writes a motion spec, and a deterministic compiler in the browser bakes every frame. QA checks collisions, foot slide, reach and hand contact before you see it. |
-| **Shoot** | Put shots on a timeline, draw dolly rails, look through the lens. Each shot knows the limits of the video model you target. |
-| **Export** | Keyframe pack (first and last frame, greybox clip, camera, prompt), mp4, depth and normal passes, contact sheet, OTIO cut list. |
-| **Storyboard** | Prefer stills? A Storyboard project is a row of panels with captions, an animatic and a contact sheet. |
+| **Stage** | Build the set from primitives and place point, spot and directional lights. Add rig characters, drawn as cube figures, or capsule stand-ins when nobody needs to move a limb. Fly the view like a 3D editor. |
+| **Move** | Describe the action in the Agent panel. A second model, the motion writer, writes a motion spec, and a deterministic engine makes every frame and measures foot slide, contacts, balance and bodies inside props. The writer reads those numbers and contact sheets of the result before the take goes in. A motion can move props too. It needs a model sign-in in the Agent panel. |
+| **Shoot** | Put shots on a timeline, draw dolly rails in the Top-View, look through the lens. Turn a rail camera by hand and pick who it follows. Each shot knows the limits of the video model you target. |
+| **Export** | Keyframe pack (first and last frame, greybox clip, camera, prompt), AI video reference zip (a mosaic-and-blur reference video and a prompt), mp4, depth and normal passes, contact sheet, OTIO cut list. |
+| **Look** | The toon look (flat two-tone shading with black lines) is on by default in the viewport and in every capture and export. Turn it off under **Show** in the viewport toolbar. |
 | **Undo anything** | Every edit, including each change the agent makes, is one undo step. |
 
 ## Direct it with AI
@@ -96,18 +110,20 @@ The same scene can be driven from three places, live, while you watch the viewpo
 ## From source
 
 ```bash
-git clone https://github.com/NomaDamas/CozyClay.git && cd CozyClay
+git clone https://github.com/HaD0Yun/CozyClay.git && cd CozyClay
 npm install
 npm run dev     # http://127.0.0.1:5180/app/
 npm test
 ```
+
+Contribution rules are in [`AGENTS.md`](AGENTS.md). Open pull requests against `main`.
 
 ## Docs
 
 | Read | For |
 | --- | --- |
 | [`INSTALL_FOR_AGENTS.md`](INSTALL_FOR_AGENTS.md) | Install, run and connect, written for AI agents |
-| [`docs/motion3-agent-guide.md`](docs/motion3-agent-guide.md) | Motion specs, compile and QA |
+| [`docs/motion3-agent-guide.md`](docs/motion3-agent-guide.md) | The old motion engine (MCP, `cclay live`, `COZYCLAY_MOTION_ENGINE=old`): motion specs, compile and QA |
 | [`docs/agent-cli.md`](docs/agent-cli.md) | `cclay live`, model providers, sessions |
 | [`mcp/README.md`](mcp/README.md) | MCP tools and the live protocol |
 | [`docs/studio-ui-ia.md`](docs/studio-ui-ia.md) | Every control and where it lives |
@@ -123,7 +139,7 @@ npm test
 | [Seedance 2.5 camera control](https://cozyclay.org/seedance-camera-control/) | Getting the same camera on every take with a reference clip |
 | [Camera control for AI video](https://cozyclay.org/ai-camera-control/) | Why camera prompts drift and what the models actually accept |
 
-Found a bug or want a feature? [Open an issue](https://github.com/NomaDamas/CozyClay/issues).
+Found a bug or want a feature? [Open an issue](https://github.com/HaD0Yun/CozyClay/issues).
 
 ## License
 

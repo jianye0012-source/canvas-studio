@@ -1,8 +1,8 @@
 // Events whose every property is checked against its own closed set, never the
 // generic "short string" rule. analytics.js asks strictPropValidator(event) once
 // per event; a property its validator refuses is dropped.
-import { STUDIO_ERROR_CODES } from "./studio-error-codes.js";
-import { ERROR_TYPE_VALUES, sessionEndedPropAllowed } from "./analytics-values.js";
+import { STUDIO_ERROR_CODES, STUDIO_REFUSAL_RULES } from "./studio-error-codes.js";
+import { ERROR_TYPE_VALUES, UI_LOCALE_VALUES, sessionEndedPropAllowed } from "./analytics-values.js";
 import { FRICTION_SUMMARY_KEYS, frictionPropAllowed } from "./analytics-friction.js";
 import { AREA_IDS, CONTROL_IDS } from "./analytics-controls.js";
 
@@ -13,13 +13,20 @@ const LONG_BUCKETS = new Set(["lt10s", "10-30s", "30-60s", "1-2m", "2-5m", "gte5
 const AGE_BUCKETS = new Set(["lt2s", "2-10s", "10-60s", "gte60s"]);
 const SHORT_MS_BUCKETS = new Set(["lt50", "50-150", "150-500", "500-2000", "gte2000"]);
 const REFUSAL_CODES = new Set([...STUDIO_ERROR_CODES, "other"]);
+// A studio:refused field path: "$", then .name or [] steps (command-bus-telemetry.js refusalField).
+export const REFUSAL_FIELD_PATTERN = /^\$(?:\.[A-Za-z_][A-Za-z0-9_]{0,47}|\[\])*$/;
 // The providers CozyClay configures itself (bin/agent/providers.mjs PROVIDERS); the
 // connect funnel reports any other id the login list offers as "other".
 export const CONNECT_PROVIDERS = Object.freeze(["openai-codex", "anthropic", "anthropic-subscription", "openai", "google",
 	"minimax", "minimax-cn", "openrouter", "cliproxy", "openai-compatible"]);
 
+// An openai-compatible server address's class (bin/agent/openai-compatible-provider.mjs endpointClass), never the address.
+const ENDPOINT_CLASSES = Object.freeze(["local", "lan", "hosted", "unknown"]);
+/** agent:turn_failed's provider (agent:prompt_sent's list, or "other") and endpoint (#1043). */
+export const turnOriginAllowed = (key, value) => (key === "provider" ? value === "other" || CONNECT_PROVIDERS.includes(value) : ENDPOINT_CLASSES.includes(value));
+
 /** landing:cta_clicked targets: the landing page's links out and copy buttons. */
-export const LANDING_CTA_TARGETS = Object.freeze(["app", "github", "discord", "npm", "copy_npx", "copy_clone", "copy_mcp", "copy_terminal", "agent_install_doc"]);
+export const LANDING_CTA_TARGETS = Object.freeze(["app", "github", "discord", "npm", "copy_npx", "copy_clone", "copy_mcp", "copy_terminal", "agent_install_doc", "install_open", "node_download", "installer_download", "copy_installer"]);
 
 /** A Studio refusal code as sent: one of STUDIO_ERROR_CODES, else "other". */
 export const refusalCodeOf = (code) => (STUDIO_ERROR_CODES.includes(code) ? code : "other");
@@ -56,9 +63,14 @@ const SCHEMAS = Object.freeze({
 		group: oneOf("object", "shot", "cast", "scene", "motion", "edit", "task", "agent", "other"),
 		// A registered Studio action id (command-bus-telemetry.js sends only those): code-defined, never args (#975).
 		command: (value) => typeof value === "string" && value.length <= 48 && /^[a-z][a-zA-Z0-9]*(?:\.[a-zA-Z0-9]+){1,3}$/.test(value),
+		// INVALID_ARGUMENT only (#1042): the schema path that failed, array indices folded to [] ("$.args.framing.intent.size",
+		// "$.args.ops[].position"): field names the action's schema declares, never a value or a key the caller made up.
+		field: (value) => typeof value === "string" && value.length <= 96 && REFUSAL_FIELD_PATTERN.test(value),
+		rule: inSet(new Set(STUDIO_REFUSAL_RULES)),
 	},
 	// error_type: the app:error label set (analytics.js describeError); never a message or stack.
-	"app:render_crash": { error_type: inSet(ERROR_TYPE_VALUES) },
+	// locale: the studio UI language (analytics-values.js uiLocale), not the browser's.
+	"app:render_crash": { error_type: inSet(ERROR_TYPE_VALUES), locale: inSet(UI_LOCALE_VALUES) },
 	"app:gl_lost": { kind: oneOf("unavailable", "context_lost") },
 	"studio:ready": { boot: oneOf("lt2s", "2-5s", "5-15s", "gte15s") },
 	// late_ticks (the late_tick_ratio set) is an estimate: timer ticks that caught up more than one frame,
@@ -68,15 +80,15 @@ const SCHEMAS = Object.freeze({
 		fps: oneOf("12", "24", "30", "60", "other"), speed: oneOf("0.5", "1", "2", "other"),
 		measured_fps: oneOf("lt20", "20-40", "40-55", "gte55", "unknown"),
 	},
-	// mode and step: first-success-guide.jsx's STEPS_BY_MODE keys and its 4 steps per mode.
-	"guide:opened": { mode: oneOf("animation", "storyboard") },
-	"guide:step": { mode: oneOf("animation", "storyboard"), step: oneOf("1", "2", "3", "4"), step_ms: long },
-	"guide:dismissed": { mode: oneOf("animation", "storyboard"), reached: oneOf("1", "2", "3", "4") },
-	"guide:completed": { mode: oneOf("animation", "storyboard") },
+	// mode and step: the first-run guide ("animation", first-success-guide.jsx) and the camera tutorial ("camera").
+	"guide:opened": { mode: oneOf("animation", "camera") },
+	"guide:step": { mode: oneOf("animation", "camera"), step: oneOf("1", "2", "3", "4", "5", "6", "7", "8"), step_ms: long },
+	"guide:dismissed": { mode: oneOf("animation", "camera"), reached: oneOf("1", "2", "3", "4", "5", "6", "7", "8") },
+	"guide:completed": { mode: oneOf("animation", "camera") },
 	"agent:panel_toggled": { open: bool, via: oneOf("key", "button") },
 	// The Export flyout opening (export-menu-telemetry.js); shots is analytics.js bucketCount.
 	"export:menu_opened": {
-		surface: oneOf("studio", "embed"), mode: oneOf("animation", "storyboard"), webcodecs: bool, shots: oneOf("0", "1-3", "4-10", "gte11"),
+		surface: oneOf("studio", "embed"), webcodecs: bool, shots: oneOf("0", "1-3", "4-10", "gte11"),
 	},
 	"object:deleted_soon": { age: inSet(AGE_BUCKETS) },
 	"object:delete_undone": { age: inSet(AGE_BUCKETS) },
@@ -113,6 +125,8 @@ const SCHEMAS = Object.freeze({
 	"agent:connect_finished": {
 		provider: oneOf(...CONNECT_PROVIDERS, "other"), method: oneOf("oauth", "api_key", "chatgpt"),
 		outcome: oneOf("ok", "failed", "cancelled", "abandoned"), step: oneOf("list", "prompt", "waiting", "done"), duration: long,
+		// An attempt that did not connect: why, when known (#1044; connect-telemetry.js CONNECT_FAILURE_REASONS).
+		reason: oneOf("timeout", "callback_error", "port_busy", "user_closed", "other"),
 	},
 	"agent:model_changed": { provider: oneOf(...CONNECT_PROVIDERS, "other"), after_failure: bool },
 	"agent:prompt_sent": {
@@ -120,6 +134,8 @@ const SCHEMAS = Object.freeze({
 		prompt_len: oneOf("1-20", "21-80", "81-240", "gte241"), compose_ms: long, similarity: oneOf("first", "same", "near", "different"),
 		gap: (value) => value === "first" || long(value), prev_outcome: oneOf("succeeded", "failed", "cancelled", "none"), turn_index: count,
 		attached: bool, task_mode: bool,
+		// openai-compatible only: the server address's class, never the address (#1043).
+		endpoint: oneOf(...ENDPOINT_CLASSES),
 	},
 	"ui:rage_click": { control: oneOf(...CONTROL_IDS, ...AREA_IDS, "other"), clicks: oneOf("3", "4-5", "gte6"), changed: bool },
 	"ui:dead_click": { control: oneOf(...CONTROL_IDS, ...AREA_IDS, "other"), reason: oneOf("aria_disabled", "refused", "no_effect") },

@@ -12,27 +12,44 @@ import { commandKeys, keyOfId, scopeConflict, isScopeKey, layerOf, expandScope, 
 
 const fail = (code, message) => { throw new StudioProtocolError(code, message); };
 const VERBS = ['begin', 'requestScope', 'mark', 'rollback', 'finish', 'cancel', 'undo'];
+// Document actions around a finished task's undo (#1058): moving between scenes of one project, or replacing what is loaded.
+const NAVIGATES = new Set(['scene.switch', 'scene.create', 'scene.duplicate']), REPLACES = new Set(['project.new', 'project.open', 'project.openStarter', 'project.restore', 'load_scenes']);
 const FINISHED_KEPT = 32;
+// The protocol's cap on a receipt's affectedIds (studio-agent-protocol.js receiptBase).
+const AFFECTED_MAX = 100;
 /** Task controls that write no document (they grant, mark or close a scope): admitted mid-gesture, so a begin or finish never waits on the user's drag. */
 export const GESTURE_FREE_TASK_CONTROLS = new Set(['task.begin', 'task.requestScope', 'task.mark', 'task.finish']);
 // A holder the board no longer runs (its run ended without task.finish: a crash, a lost frame) and that sent nothing for this
 // long is released when another task's begin needs its keys, instead of answering SCOPE_BUSY forever.
 const ORPHAN_IDLE_MS = 30_000;
+// The refusal names the one call that grows the scope, ready to send: a task's action list need not carry task.* controls.
+const scopeDenied = (taskId, keys) => `Outside this task's scope: ${listOf(keys)}. Ask for it with run_action ${JSON.stringify({ action: 'task.requestScope', args: { taskId, scope: [...keys] } })}, or leave it to the task that holds it.`;
+/** task.requestScope as an action row (inspect_studio scope "actions", a task's action list): it is a bus control, not a registered command. */
+export const TASK_SCOPE_ACTION = Object.freeze({ id: 'task.requestScope', label: 'Ask for more scope keys (inside a task)', kind: 'control',
+	description: 'Inside a task only: grows its scope by the keys named. args { taskId, scope: [keys] }; answers SCOPE_BUSY while another task holds one of them. A creation (character.add, object.add, a kit) needs no key.',
+	input: { type: 'object', properties: { taskId: { type: 'string' }, scope: { type: 'array', items: { type: 'string' }, maxItems: 64 } }, required: ['taskId', 'scope'], additionalProperties: false } });
 const listOf = keys => [...keys].slice(0, 6).join(', ') + (keys.length > 6 ? ` and ${keys.length - 6} more` : '');
 
 export function createBusTasks({ ports, emit }) {
 	const open = new Map(), finished = new Map(), entryTask = new Map();
 	// A character layer has its own token (its fields only), so another task's edit of her other layers never makes it
 	// stale; an editor without layer reads falls back to the whole character's.
-	const tokenOf = key => {
+	// `read`: false after the caller read the editor once for a whole loop (a target read re-reads the scene each time).
+	const tokenOf = (key, read = true) => {
 		const of = layerOf(key);
-		if (of?.layer) return ports.readLayer?.(key) ?? ports.readTarget?.(of.id) ?? 'absent';
+		if (of?.layer) return ports.readLayer?.(key) ?? ports.readTarget?.(of.id, read) ?? 'absent';
 		const [kind, id] = key.split(/:(.*)/s);
-		if (id !== undefined) return ports.readTarget?.(id) ?? 'absent';
+		if (id !== undefined) return ports.readTarget?.(id, read) ?? 'absent';
 		const state = ports.read();
 		return kind === 'scene' ? `r${state.revision}` : `${kind}:${state.domainRevisions?.[kind === 'timeline' ? 'shot' : kind] ?? 0}`;
 	};
 	const snapshot = key => ({ key, value: ports.snapshotTarget ? ports.snapshotTarget(key) : fail('CAPABILITY_MISSING', 'This editor cannot snapshot task targets.') });
+	const sceneNow = () => ports.read().host?.sceneId ?? null;
+	let leftEpoch = null;
+	const finalOf = task => new Map([...task.pre.keys()].map(key => [key, { token: tokenOf(key), value: JSON.stringify(snapshot(key).value) }]));
+	// A key moved when its token did and its content did too: a later task undone first puts the same content back
+	// under a new token, and that is not a change.
+	const movedSince = task => [...task.final].filter(([key, { token, value }]) => tokenOf(key) !== token && JSON.stringify(snapshot(key).value) !== value).map(([key]) => key);
 	// A scene key has no restorable value (documents have no undo): it is left as it is and said so.
 	function restore(task, values, action) {
 		task.skipped = values.filter(v => v.value === null).map(v => v.key);
@@ -49,7 +66,7 @@ export function createBusTasks({ ports, emit }) {
 	// A plain character:<id> is held as its four layers: the commands name layers, and each layer keeps its own token.
 	function grant(task, scope, live = null) {
 		const bad = scope.find(key => !isScopeKey(key));
-		if (bad !== undefined) fail('INVALID_ARGUMENT', `"${bad}" is not a scope key: object:<id>, character:<id> (or one layer: character:<id>:placement, :take, :ik, :props), shot:<id>, stage, timeline or scene.`);
+		if (bad !== undefined) fail('INVALID_ARGUMENT', `"${bad}" is not a scope key: object:<id>, character:<id> (or one layer: character:<id>:placement, :take, :ik, :props), shot:<id>, stage, timeline or scene. Making a new character or object needs no key: run character.add or object.add, and it joins the task.`);
 		const keys = expandScope(scope);
 		if (live) releaseOrphans(task.taskId, keys, live);
 		const conflict = scopeConflict(task.taskId, keys, open);
@@ -67,14 +84,15 @@ export function createBusTasks({ ports, emit }) {
 		}
 	}
 	function receipt(id, task, request, before, { historyEntryId = null, affectedIds = [], output, warnings = [] } = {}) {
-		const after = ports.read();
+		const after = ports.read(), ids = historyEntryId && !affectedIds.length ? task.restored : affectedIds;
 		if (task.skipped?.length) warnings = [...warnings, { code: 'SCOPE_NOT_RESTORED', message: `Left as they are (a document change has no undo): ${listOf(task.skipped)}.` }];
 		task.skipped = null;
 		return validateReceipt({ ok: true, status: 'completed', kind: 'transaction', commandId: request.commandId, receiptId: crypto.randomUUID(), host: before.host,
 			action: id, txId: task.taskId, authored: Boolean(historyEntryId), revision: { before: before.revision, after: after.revision },
-			affectedIds: historyEntryId && !affectedIds.length ? task.restored : affectedIds, delta: [],
+			// A receipt names at most AFFECTED_MAX ids; a task that touched more names the first and says how many in all.
+			affectedIds: ids.slice(0, AFFECTED_MAX), delta: [],
 			checks: { coverage: 'task-scope' }, warnings, undo: historyEntryId ? { historyEntryId, entries: 1, canUndoDirect: false } : null,
-			output: { scope: [...task.keys], ...output } });
+			output: { scope: [...task.keys], ...output, ...(ids.length > AFFECTED_MAX ? { affectedCount: ids.length } : {}) } });
 	}
 	const ownerOf = (request, taskId) => { if (request.origin !== 'agent' || request.taskId !== taskId) fail('CAPABILITY_MISSING', 'Only the owning task can control it.'); };
 	return {
@@ -95,9 +113,9 @@ export function createBusTasks({ ports, emit }) {
 		control(id, args, request, before, busy) {
 			if (id === 'task.undo') {
 				const task = finished.get(args.taskId) ?? fail('UNDO_EXPIRED', `Task ${args.taskId} is not a finished task this editor still holds.`);
-				// A key moved when its token did and its content did too: a later task undone first puts the same content back
-				// under a new token, and that is not a change.
-				const moved = [...task.final].filter(([key, { token, value }]) => tokenOf(key) !== token && JSON.stringify(snapshot(key).value) !== value).map(([key]) => key);
+				// Its pre-images are another scene's rows: putting them into the open scene would overwrite it.
+				if (task.sceneId && task.sceneId !== sceneNow()) fail('UNDO_CONFLICT', `Task ${args.taskId} edited another scene (${task.sceneId}); open that scene first, then undo it.`);
+				const moved = movedSince(task);
 				if (moved.length) fail('UNDO_CONFLICT', `Changed since the task finished: ${listOf(moved)}; undo those first or edit by hand.`);
 				const historyEntryId = restore(task, [...task.pre.values()], 'undone');
 				finished.delete(args.taskId);
@@ -136,10 +154,13 @@ export function createBusTasks({ ports, emit }) {
 			}
 			open.delete(task.taskId);
 			if (id === 'task.cancel') {
-				const historyEntryId = restore(task, [...task.pre.values()], 'cancelled');
+				const pre = [...task.pre.values()], historyEntryId = restore(task, pre, 'cancelled');
+				// restore says task.cancelled only when it put something back: a task cancelled before it edited anything says so here,
+				// so every cancel is heard (the panel's scope marks, the drafts the task compiled: agent-progress.js)
+				if (!pre.some(entry => entry.value !== null)) emit?.({ type: 'task.cancelled', taskId: task.taskId, keys: [] });
 				return receipt(id, task, request, before, { historyEntryId, affectedIds: task.affectedIds });
 			}
-			task.final = new Map([...task.pre.keys()].map(key => [key, { token: tokenOf(key), value: JSON.stringify(snapshot(key).value) }]));
+			task.final = finalOf(task); task.sceneId = sceneNow();
 			finished.set(task.taskId, task);
 			while (finished.size > FINISHED_KEPT) finished.delete(finished.keys().next().value);
 			emit?.({ type: 'task.finished', taskId: task.taskId });
@@ -161,7 +182,7 @@ export function createBusTasks({ ports, emit }) {
 				return null;
 			}
 			const outside = keys.filter(key => !task.keys.has(key));
-			if (outside.length) fail('SCOPE_DENIED', `Outside this task's scope: ${listOf(outside)}. Ask for it with task.requestScope, or leave it to the task that holds it.`);
+			if (outside.length) fail('SCOPE_DENIED', scopeDenied(task.taskId, outside));
 			const moved = keys.filter(key => task.tokens.has(key) && tokenOf(key) !== task.tokens.get(key));
 			if (moved.length) {
 				for (const key of moved) task.tokens.set(key, tokenOf(key));
@@ -189,7 +210,7 @@ export function createBusTasks({ ports, emit }) {
 				for (const made of expandScope([key])) { task.keys.add(made); grew = true; if (!point.keys.includes(made)) { task.pre.set(made, { key: made, value: undefined }); point.values.push({ key: made, value: undefined }); } }
 			}
 			if (grew) emit?.({ type: 'task.scope', taskId: task.taskId, scope: [...task.keys] });
-			for (const key of task.keys) task.tokens.set(key, tokenOf(key));
+			ports.read(); for (const key of task.keys) task.tokens.set(key, tokenOf(key, false));
 			if (recorded.authored) {
 				task.edits.push({ receiptId: recorded.receiptId, values: point.values, keys: point.keys, mark: point.mark });
 				task.affectedIds = [...new Set([...task.affectedIds, ...recorded.affectedIds])];
@@ -215,6 +236,19 @@ export function createBusTasks({ ports, emit }) {
 			const owner = open.get(entryTask.get(frontier));
 			if (!task && owner) fail('TARGET_BUSY', `The last edit belongs to running task ${owner.taskId}${owner.title ? ` (${owner.title})` : ''}; cancel or undo it from that task.`);
 			return null;
+		},
+		/**
+		 * Around a document action (#1058): opening a scene reloads its shot and motion slices through the scene file, so
+		 * their JSON comes back different with nothing edited, and task.undo saw a conflict (box QA C5, twice). A finished
+		 * task untouched when its scene is left takes the reloaded state as its final when that scene opens again; one
+		 * that was changed keeps its conflict.
+		 */
+		leavingScene() { const at = sceneNow(); leftEpoch = ports.read().host?.documentEpoch; for (const task of finished.values()) if (task.sceneId === at) task.cleanAtLeave = !movedSince(task).length; },
+		openedScene(id) {
+			// A document replaced (a project opened, scenes loaded) may keep a scene id with other content: its tasks' undo ends.
+			if (REPLACES.has(id) || ports.read().host?.documentEpoch !== leftEpoch) { finished.clear(); return; }
+			const at = sceneNow();
+			for (const task of finished.values()) if (task.sceneId === at) { if (NAVIGATES.has(id) && task.cleanAtLeave) task.final = finalOf(task); task.cleanAtLeave = false; }
 		},
 		dispose() { open.clear(); finished.clear(); entryTask.clear(); },
 	};

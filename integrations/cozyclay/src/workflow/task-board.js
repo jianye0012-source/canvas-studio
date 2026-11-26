@@ -2,7 +2,7 @@
 // toggle) or the server's COZYCLAY_STUDIO_TASKS flag: the chat then talks to the main agent (POST /agent/main), which
 // answers at once and dispatches tasks; this board shows them. Pure parts here (the reducer, labels, the switch's
 // storage); the network side is createTaskBoardClient; the view is TaskBoard.jsx.
-//   server events (GET /agent/main/<sessionId>/events): task.queued|waiting|started|resumed|paused|review|done|failed|cancelled
+//   server events (GET /agent/main/<sessionId>/events): task.queued|waiting|started|resumed|paused|review|done|incomplete|failed|cancelled
 //     carry the task's view { taskId, title, status, scope, reason?, turnId?, usage, summary? }; task.sceneChanged
 //     { taskId, keys, midCommand }; main.turn { turnId } (the main agent reporting on its own)
 //   editor events (the command bus): task.userEdit { taskId, keys } (the user changed something in its scope)
@@ -27,6 +27,7 @@ export const TASK_STATUS_COPY = {
 	paused: ko("Paused: Studio lost", "일시정지: Studio 연결 끊김"),
 	review: ko("Being checked", "확인 중"),
 	done: ko("Done", "완료"),
+	incomplete: ko("Incomplete: criteria unmet", "미완료: 기준 미달", "未完成：标准未达到"),
 	failed: ko("Failed", "실패"),
 	cancelled: ko("Cancelled", "취소됨"),
 };
@@ -86,7 +87,7 @@ export function taskLine(task) {
 	return TASK_STATUS_COPY[task.status] ?? task.status;
 }
 
-const SCOPE_NAMES = { timeline: ko("timeline", "타임라인"), stage: ko("stage", "무대"), scene: ko("scene", "장면"), object: ko("object", "오브젝트"), character: ko("character", "캐릭터"), shot: ko("shot", "샷") };
+const SCOPE_NAMES = { timeline: ko("timeline", "타임라인"), stage: ko("stage", "무대"), scene: ko("scene", "장면"), object: ko("object", "오브젝트"), character: ko("character", "인물"), shot: ko("shot", "샷") };
 /** A scope key (object:<id>, timeline, ...) as a word; the raw key stays in the tooltip. */
 export const scopeLabel = key => SCOPE_NAMES[String(key).split(":")[0]] ?? String(key);
 
@@ -96,7 +97,7 @@ export function boardGroups(board) {
 	for (const id of board.order) {
 		const task = board.tasks[id];
 		// review: the run ended but the coordinator still checks it, so it waits (and offers no cancel: not in ACTIVE_STATUSES).
-		const group = task.status === "failed" || task.status === "paused" ? "failed" : task.status === "running" || task.status === "starting" ? "running" : ACTIVE_STATUSES.has(task.status) || task.status === "review" ? "waiting" : "done";
+		const group = task.status === "failed" || task.status === "paused" || task.status === "incomplete" ? "failed" : task.status === "running" || task.status === "starting" ? "running" : ACTIVE_STATUSES.has(task.status) || task.status === "review" ? "waiting" : "done";
 		groups[group].push(task);
 	}
 	return groups;
@@ -119,6 +120,13 @@ function createTaskViewStore() {
 // One agent panel per page, so one view.
 export const taskView = createTaskViewStore();
 
+/** "claude-opus-5-5 · medium" for what a task runs on (the motion engine's own model is named as such), or "" before its run began. */
+export function modelLine(task) {
+	if (!task?.model) return "";
+	const key = String(task.model);
+	return [key.slice(key.indexOf("/") + 1), key.startsWith("v4") ? ko("motion engine", "모션 엔진") : task.effort].filter(Boolean).join(" · ");
+}
+
 /** "$0.12" for a task's cost, or "" when nothing is known yet. */
 export const costLabel = usage => (Number.isFinite(usage?.cost) && usage.cost > 0 ? `$${usage.cost.toFixed(2)}` : "");
 
@@ -134,6 +142,15 @@ export function reduceScopes(scopes, event) {
 	if (event?.type === "task.finished" || event?.type === "task.cancelled") { const { [event.taskId]: _gone, ...rest } = scopes; return rest; }
 	return scopes;
 }
+
+/** Whether the panel follows a session's board at all: only once the sidecar has one, after a main turn started (live),
+ * ended (pulse) or the restored session said so; asking before answered 403/404 every 2 s, ~25 times a session. */
+export const followsBoard = ({ sessionId, live = false, pulse = 0, restored = false }) => Boolean(sessionId) && (live || pulse > 0 || restored);
+/** The panel's turn as the board sees it: it counts only once the sidecar admitted a turn of this session (the response
+ * opened, so the session, its owner and a main session's board exist); before that the board answered 404, then 403. */
+export const boardTurn = chat => (chat.openSession === chat.sessionId ? { live: chat.streaming, pulse: chat.lastTurn?.endedAt ?? 0 } : {});
+/** After a failed read: try again unless the board does not exist (403/404) and no turn is under way to make it. */
+export const retriesBoard = (error, live) => !([403, 404].includes(error?.status) && !live);
 
 /**
  * The sidecar side of the board. All requests are same-origin with the Studio session's owner cookie.
@@ -167,6 +184,8 @@ export function createTaskBoardClient({ fetchImpl = globalThis.fetch?.bind(globa
 		board: sessionId => json(`/agent/main/${id(sessionId)}/board`),
 		events: (sessionId, after, onEvent, signal) => stream(`/agent/main/${id(sessionId)}/events?after=${after}`, onEvent, signal),
 		frames: (turnId, onEvent, signal) => stream(`/agent/turn/${id(turnId)}/events?after=0`, onEvent, signal),
+		/** After a reload: the Studio's new handle, so the board runs there and its paused tasks resume. */
+		reconnect: (sessionId, context) => json(`/agent/main/${id(sessionId)}/reconnect`, { method: "POST", body: JSON.stringify({ context }) }),
 		cancel: taskId => json(`/agent/task/${id(taskId)}/cancel`, { method: "POST", body: "{}" }),
 		steer: (taskId, text) => json(`/agent/task/${id(taskId)}/steer`, { method: "POST", body: JSON.stringify({ text }) }),
 	};

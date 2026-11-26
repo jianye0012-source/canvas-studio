@@ -10,12 +10,13 @@ import { insertPathMark, pathMarks, pathMetrics, pathProgressAt, MAX_PATH_LEAN }
 import { NumberField } from "../ui.jsx";
 import { flatTiming, timingIsFlat, envelopeDrag, insertCut, removeCut, CUT_MIN_GAP } from "../speed-envelope.js";
 import { checkShotAgainstPreset, presetById } from "../model-presets.js";
-import { TakeSegmentClips, TakeSegmentTools } from "./take-segments.jsx"; import { BeatBoard } from "./beat-board.jsx"; import { PhysicsToggle } from "../physics-toggle.jsx";
+import { WORLD } from "../world-scale.js";
+import { TakeSegmentClips, TakeSegmentTools } from "./take-segments.jsx"; import { NotePinButton, NotePins } from "./TimelineNotePins.jsx"; import { ikLanePress } from "./pose-key-door.js"; import { FixIslandBands, IkPartLabels, IkPartsToggle, useIkParts } from "./TimelineFixIslands.jsx"; import { FixTools } from "../shell/FixTools.jsx"; import { PhysicsToggle } from "../physics-toggle.jsx"; import { railShownPitchDeg } from "../camera-rail-head.js";
 import "./timeline.css";
 export { timelineTake } from "./take-segments.jsx";
 
 /**
- * ARDY Viser-style animation timeline — the live motion workspace.
+ * Viser-style animation timeline — the live motion workspace.
  *
  * Frame, playback, waypoints and the motion badge are owned by App: this
  * component is controlled and reports every interaction through callbacks,
@@ -79,10 +80,12 @@ const CAMERA_BLOCK_DEFAULTS = {
 	response: 0.7,
 	lead: 0.25,
 	railStartMode: "head",
-	maxDollySpeed: 4,
+	maxDollySpeed: WORLD.dollySpeed,
 	pitchOffsetDeg: 0,
 	orbitOffsetDeg: 0,
 };
+// A rail is ridden on the shot clock, so its dolly never goes faster than its length over its time (to 0.1 m/s up).
+const railSpeedLimit = (shot, railLength, fps) => { const clip = shot.camera?.railFollow, frames = clip?.mode === "range" ? clip.endFrame - clip.startFrame : shot.endFrame - shot.startFrame; return railLength != null && frames > 0 ? Math.max(0.2, Math.ceil((railLength / (frames / fps)) * 10) / 10) : WORLD.dollySpeed; };
 
 function cameraBlockMode(shot) {
 	const mode = shot?.camera?.mode;
@@ -137,7 +140,8 @@ function craneCurvePath(points, xFor, yFor) {
  * generous circles, not pixel dots, so a lens height is aimed at with the
  * wrist rather than with the fingertip.
  */
-function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, onSelect, onAddPoint, onChangePoints }) {
+function CraneHeightEditor(props) { return props.crane?.points?.length && props.railRange ? <CraneHeightGraph {...props} /> : null; }
+function CraneHeightGraph({ crane, railRange, durationFrames, selectedIndex, onSelect, onAddPoint, onChangePoints }) {
 	const svgRef = useRef(null);
 	const dragRef = useRef(null);
 	const [draftPoints, setDraftPoints] = useState(null);
@@ -145,7 +149,6 @@ function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, on
 	// would re-map the pointer under itself on every move — one flick of the
 	// wrist and the value runs away by tens of metres.
 	const [heldScale, setHeldScale] = useState(null);
-	if (!crane?.points?.length || !railRange) return null;
 	const points = draftPoints ?? crane.points;
 	const origin = railRange.start / Math.max(1, durationFrames - 1);
 	const span = Math.max(0.001, (railRange.end - railRange.start) / Math.max(1, durationFrames - 1));
@@ -351,7 +354,6 @@ function SpeedGraph({
 	frameCount,
 	averageSpeed = 1,
 	speedUnit = "m/s",
-	conserve = true,
 	onChange,
 	onGestureStart,
 	onGestureEnd,
@@ -737,7 +739,7 @@ function ObjectTravelTrack({ object, frame, frameCount, fps, pathDraw, onPathDra
 								: ko("No room for a dot here: the route is full, or the playhead is on a dot or an end", "여기엔 점을 추가할 수 없어요: 경로가 가득 찼거나, 재생 위치가 점이나 끝에 있어요")}
 							onClick={() => playheadMark && onMarkAdd?.(playheadMark.marks[playheadMark.index - 1].t)}
 						>
-							{ko("Add dot at playhead", "현재 위치에 점 추가")}
+							{ko("+ Dot", "+ 점")}
 						</button>
 						<span className="objmo-lean" data-testid="route-lean-fields" title={selectedMark ? undefined : ko("Ends are always level; select a dot between them to lean the prop there", "양 끝은 항상 수평이에요. 사이의 점을 선택하면 그 지점에서 기울일 수 있어요")}>
 							<NumberField
@@ -787,7 +789,6 @@ function ObjectTravelTrack({ object, frame, frameCount, fps, pathDraw, onPathDra
 							frame={frame}
 							frameCount={frameCount}
 							averageSpeed={metrics && span ? metrics.length / Math.max(1 / fps, (span.end - span.start) / fps) : 1}
-							conserve
 							onChange={(timing) => onPathChange?.({ ...path, timing: timingIsFlat(timing) ? null : timing })}
 							onGestureStart={onTimingGestureStart}
 							onGestureEnd={onTimingGestureEnd}
@@ -804,7 +805,7 @@ function CameraBlockEditor({
 	blocked,
 	previewing,
 	railDraw,
-	railLength,
+	railLength, fps = 24,
 	craneSelectedIndex = null,
 	// The Shot box draws the curve; this bar owns everything you DO to it.
 	curve = null,
@@ -825,7 +826,7 @@ function CameraBlockEditor({
 			? { points: [{ t: 0, height: follow.height }, { t: 1, height: follow.height }] }
 			: null);
 	const patchCamera = (patch) => onChange?.(patch);
-	const patchFollow = (patch) => onChange?.({ followCam: { ...follow, ...patch } });
+	const patchFollow = (patch) => onChange?.({ followCam: { ...follow, ...patch } }); const speedLimit = mode === "rail" ? railSpeedLimit(shot, railLength, fps) : WORLD.dollySpeed;
 	const numberValue = (event) => Number(event.currentTarget.value);
 	const metric = (value, places = 1) => Number(value).toFixed(places);
 	return (
@@ -899,9 +900,9 @@ function CameraBlockEditor({
 						<output className="tl-camera-metric">{metric(follow.distance, 2)}</output>
 						<small>m</small>
 					</label>
-					<label title={ko("Cap dolly travel speed", "돌리의 최고 이동 속도를 제한합니다")}>
+					<label title={speedLimit < WORLD.dollySpeed ? ko(`Dolly speed cap, up to ${speedLimit} m/s: the rail is ridden in the shot's time, so it never goes faster. Shorten the shot to go faster.`, `돌리 최고 속도, 최대 ${speedLimit} m/s: 레일은 샷 시간 안에 지나가므로 이보다 빨라지지 않아요. 더 빠르게 하려면 샷을 줄이세요.`, `推轨速度上限，最高 ${speedLimit} m/s：轨道在镜头时长内走完，因此不会更快。要更快请缩短镜头。`) : ko("Cap dolly travel speed", "돌리의 최고 이동 속도를 제한합니다")}>
 						<span>{ko("Speed", "속도")}</span>
-						<input type="number" min="0.2" max="40" step="0.1" value={follow.maxDollySpeed} onChange={(event) => patchFollow({ maxDollySpeed: numberValue(event) })} />
+						<input type="number" min="0.2" max={speedLimit} step="0.1" value={Math.min(follow.maxDollySpeed, speedLimit)} onChange={(event) => patchFollow({ maxDollySpeed: Math.min(speedLimit, numberValue(event)) })} />{speedLimit < WORLD.dollySpeed && <em className="tl-camera-limit" data-testid="camera-speed-limit">/ {speedLimit}</em>}
 						<small>m/s</small>
 					</label>
 					{!(mode === "rail" && crane) && (
@@ -913,7 +914,7 @@ function CameraBlockEditor({
 					)}
 					<label title={ko("Read automatically from the camera tilt", "현재 카메라 틸트에서 자동으로 읽습니다")}>
 						<span>{ko("Pitch", "피치")}</span>
-						<output className="tl-camera-metric">{signedValue(follow.pitchOffsetDeg)}</output>
+						<output className="tl-camera-metric">{signedValue(mode === "rail" ? railShownPitchDeg(shot.camera, follow.pitchOffsetDeg) : follow.pitchOffsetDeg)}</output>
 						<small>°</small>
 					</label>
 					{mode === "rail" && crane && (() => {
@@ -1028,7 +1029,6 @@ export default function Timeline({
 	motion = null, // { frames, label, segments, cut, speed, remove, trim, reset } (take-segments.jsx timelineTake) | null
 	ikFrames = [], // sorted full-body key frames
 	rangePins = [], // active character's inclusive pin ranges
-	previewRanges = [], // amber preview spans shown under the Body track
 	selectedPinId = null,
 	pendingPinRange = null,
 	footSnap = true, // feet stay planted while the body moves
@@ -1053,6 +1053,7 @@ export default function Timeline({
 	onClearMotion,
 	onIkKeyframeAdd,
 	onIkKeyframeRemove,
+	onIkKeyframeMove,
 	onPinSelect,
 	onFootSnapToggle,
 	onBodyContactToggle,
@@ -1120,7 +1121,7 @@ export default function Timeline({
 	// The window key/interval handlers register once; the latest callbacks
 	// are read through a ref so they never go stale mid-playback.
 	const handlers = useRef({});
-	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onIkKeyframeAdd, onIkKeyframeRemove, onPinSelect, onFootSnapToggle, onBodyContactToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onCameraRailDelete, onObjectPathDrawToggle, onObjectPathChange, onObjectPathClear, onObjectTimingGestureStart, onObjectTimingGestureEnd, onObjectMarkAdd, onObjectMarkLean, onObjectMarkScrubStart, onObjectMarkScrubEnd, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onEditGestureStart };
+	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onIkKeyframeAdd, onIkKeyframeRemove, onIkKeyframeMove, onPinSelect, onFootSnapToggle, onBodyContactToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onCameraRailDelete, onObjectPathDrawToggle, onObjectPathChange, onObjectPathClear, onObjectTimingGestureStart, onObjectTimingGestureEnd, onObjectMarkAdd, onObjectMarkLean, onObjectMarkScrubStart, onObjectMarkScrubEnd, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onEditGestureStart };
 
 	// Trackpad/wheel zoom over the FRAME ruler lane only. React registers
 	// onWheel as passive, so a synthetic onWheel could never preventDefault —
@@ -1267,15 +1268,16 @@ export default function Timeline({
 	// for everything — the old /count chip scale drifted off the gridlines.
 	const clipPct = (value) => Math.max(0, Math.min(1, framePct(value, displayFrameCount)));
 	const waypointFrames = waypoints.map((waypoint) => waypoint.frame);
-	// Fix Collisions and AutoPhysics key EVERY frame of a corrected span, so
+	// A baked correction keys EVERY frame of its span, so
 	// the raw list draws a wall of diamonds. Collapse consecutive frames into
 	// runs first; only runs shorter than KEY_RUN_MIN stay diamonds.
-	const ikRuns = useMemo(() => groupKeyRuns(ikFrames), [ikFrames]);
+	const ikParts = useIkParts(displayFrameCount), ikRuns = useMemo(() => groupKeyRuns(ikParts.hidden.size ? ikFrames.filter((f) => !ikParts.hidden.has(f)) : ikFrames), [ikFrames, ikParts.hidden]); // ikParts: keys by body part (TimelineFixIslands.jsx); a frame of rest keys only draws no summary dot
 	const pinBands = useMemo(() => rangePins.map((pin) => ({
 		pin,
 		geometry: rangePinBandGeometry(pin, frameCount, displayFrameCount),
 	})).filter((entry) => entry.geometry), [displayFrameCount, frameCount, rangePins]);
 		const camDragRef = useRef(null);
+	const ikDragRef = useRef(null);
 	const camSuppressClickRef = useRef(false);
 	const shotBoundaryRef = useRef(null);
 	const shotMoveRef = useRef(null);
@@ -1336,6 +1338,35 @@ export default function Timeline({
 			queueMicrotask(() => { camSuppressClickRef.current = false; });
 		}
 		camDragRef.current = null;
+	}
+
+	function beginIkKeyDrag(event, fromFrame) {
+		if (event.button !== 0) return;
+		event.stopPropagation();
+		event.currentTarget.setPointerCapture?.(event.pointerId);
+		const rect = event.currentTarget.closest('.tl-lane')?.getBoundingClientRect();
+		ikDragRef.current = { pointerId: event.pointerId, startClientX: event.clientX, fromFrame, currentFrame: fromFrame,
+			laneWidth: rect?.width ?? 1, displayFrameCount, moved: false };
+		handlers.current.onEditGestureStart?.('ik-key');
+	}
+	function moveIkKeyDrag(event) {
+		const active = ikDragRef.current;
+		if (!active || event.pointerId !== active.pointerId) return;
+		if (!active.moved && Math.abs(event.clientX - active.startClientX) < 1) return;
+		active.moved = true; event.preventDefault(); event.stopPropagation();
+		const framesPerPixel = Math.max(0, active.displayFrameCount - 1) / Math.max(1, active.laneWidth);
+		const next = Math.max(0, Math.min(frameCount - 1, Math.round(active.fromFrame + (event.clientX - active.startClientX) * framesPerPixel)));
+		if (next === active.currentFrame) return;
+		const from = active.currentFrame, moved = handlers.current.onIkKeyframeMove?.(from, next);
+		if (moved !== false) active.currentFrame = next;
+	}
+	function endIkKeyDrag(event) {
+		const active = ikDragRef.current;
+		if (!active || event.pointerId !== active.pointerId) return;
+		if (active.moved) { event.preventDefault(); event.stopPropagation(); }
+		else handlers.current.onScrub?.(active.fromFrame);
+		if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+		ikDragRef.current = null;
 	}
 
 	function onCameraKeyClick(e, key, shotIndex) {
@@ -1614,7 +1645,7 @@ export default function Timeline({
 							</button>
 							<span className="tl-readout" data-testid="sequencer-frame-readout" aria-live="polite">
 								<b>{String(Math.max(0, frame)).padStart(4, "0")}</b><span> / {String(Math.max(0, frameCount)).padStart(4, "0")} · {fps}fps</span>
-							</span>
+							</span><NotePinButton />
 						</div>
 						<div className="tl-sequencer-actions" role="group" aria-label={ko("Sequencer actions", "시퀀서 작업")}>
 							{motionTools || workflowMode === "pose" || ikMode ? null : (<>
@@ -1747,7 +1778,7 @@ export default function Timeline({
 							blocked={waypointMode}
 							previewing={playing}
 							railDraw={railDraw}
-							railLength={cameraRailLength}
+							railLength={cameraRailLength} fps={fps}
 							craneSelectedIndex={craneSelectedIndex}
 							curve={cameraCurveActions}
 							onChange={(patch) => handlers.current.onCameraBlockChange?.(patch)}
@@ -1760,7 +1791,7 @@ export default function Timeline({
 					)}
 
 					<div className="tl-body" ref={bodyRef}>
-						<div className={"tl-surface" + (!shots.length ? " empty-shots" : "") + (pathObject ? " prop-subject" : "")} style={{ "--tl-zoom": surfaceZoom }}>
+						<div className={"tl-surface" + (!shots.length ? " empty-shots" : "") + (pathObject ? " prop-subject" : "")} data-ik-parts={ikParts.rows || undefined} style={{ "--tl-zoom": surfaceZoom, "--tl-ik-parts": ikParts.rows }}>
 						<div className="tl-ruler">
 							<span className="tl-ruler-label">{ko("Frame", "프레임", "帧")}</span>
 							<div
@@ -1826,8 +1857,7 @@ export default function Timeline({
 									{name === IK_LANE ? (
 										<span className="tl-track-label-stack">
 											<span className="tl-track-subrow"><span className="tl-track-chip body" data-lane-label="Body">{ko("Body", "바디")}</span></span>
-											<span className="tl-track-subrow indent"><span className="tl-track-chip pins" data-lane-label="Pins">{ko("Pins", "핀")}</span></span>
-											<span className="tl-track-subrow indent"><span className="tl-track-chip ik" data-lane-label="IK keys">{ko("IK keys", "IK 키")}</span></span>
+											<span className="tl-track-subrow indent"><IkPartsToggle ikParts={ikParts} /><span className="tl-track-chip ik" data-lane-label="IK keys">{ko("IK keys", "IK 키")}</span>{ikMode && <FixTools />}</span><IkPartLabels ikParts={ikParts} />
 										</span>
 									) : name === SHOTS_LANE ? (
 										<span className="tl-track-label-stack">
@@ -1880,19 +1910,13 @@ export default function Timeline({
 												if (e.button !== 0 || e.target !== e.currentTarget) return;
 												handlers.current.onRootKeyframeAdd?.(rootFrameFromEvent(e));
 											}
-											: undefined
+											: name === IK_LANE ? (e) => ikLanePress(e, rootFrameFromEvent(e)) : undefined
 									}
 								>
 									{gridFrames.map((f) => (
 										<i key={f} className="tl-grid" style={{ "--tl-f": framePct(f, displayFrameCount) }} aria-hidden="true" />
 									))}
-									{name === IK_LANE && previewRanges.map((range, index) => {
-										const startFrame = Number.isFinite(Number(range?.startFrame)) ? Number(range.startFrame) : Number(range?.start ?? 0);
-										const endFrame = Number.isFinite(Number(range?.endFrame)) ? Number(range.endFrame) : Number(range?.end ?? startFrame);
-										const start = Math.max(0, Math.min(displayFrameCount - 1, Math.round(startFrame)));
-										const end = Math.max(start, Math.min(displayFrameCount - 1, Math.round(endFrame)));
-										return <span key={`preview:${index}`} className="tl-preview-range" style={{ "--tl-f-start": framePct(start, displayFrameCount), "--tl-f-end": framePct(end, displayFrameCount) }} aria-label={ko(`Preview range ${start}–${end}`, `미리보기 범위 ${start}–${end}`, `预览范围 ${start}–${end}`)} />;
-									})}
+									{name === IK_LANE && <NotePins displayFrameCount={displayFrameCount} />}{name === IK_LANE && <FixIslandBands displayFrameCount={displayFrameCount} ikParts={ikParts} onJump={(f) => handlers.current.onScrub?.(f)} />}
 									{name === SHOTS_LANE && shots.length === 0 && (
 										<div className="tl-shot-empty">
 											<span>{ko("No shots yet — use + Add shot in the lane header to create one.", "아직 샷이 없습니다 — 레인 헤더의 + 샷 추가로 만들어 보세요.")}</span>
@@ -1909,7 +1933,7 @@ export default function Timeline({
 										const stateLabel = mode === "keys" && keyCount === 0 ? "FREE" : "LOCKED";
 										const modeLabel = mode === "rail" ? "RAIL" : mode === "follow" ? "FOLLOW" : `KEYS ${keyCount}`;
 										const detailLabel = mode === "rail"
-											? `${follow.railStartMode === "head" ? "HEAD" : "NEAREST"} · ${Number(follow.maxDollySpeed).toFixed(1)} m/s · PITCH ${signedDegrees(follow.pitchOffsetDeg)}`
+											? `${follow.railStartMode === "head" ? "HEAD" : "NEAREST"} · ${Math.min(Number(follow.maxDollySpeed), railSpeedLimit(shot, railLengthByShot.get(shot.id), fps)).toFixed(1)} m/s · PITCH ${signedDegrees(railShownPitchDeg(shot.camera, follow.pitchOffsetDeg))}${shot.camera?.head?.follow === false ? " · FIXED" : ""}`
 											: mode === "follow"
 												? `${Number(follow.distance).toFixed(1)} m · PITCH ${signedDegrees(follow.pitchOffsetDeg)}`
 												: null;
@@ -1934,7 +1958,6 @@ export default function Timeline({
 											<div
 												key={shot.id}
 												className={"tl-shot-block" + (index === cameraBlockIdx ? " selected" : "") + (index === activeShotIdx ? " active" : "") + (movingShotId === shot.id ? " moving" : "") + (!railOff && railRange && railLengthByShot.has(shot.id) ? " has-dolly" : "")}
-												data-shot-kind={shot.kind === "still" ? "still" : undefined}
 												style={{ "--tl-f-start": geometry.startPct, "--tl-f-end": geometry.endPct }}
 												title={ko(`${shot.name} · frames ${shot.startFrame}–${lastFrame} · drag to reorder, trim cuts at either edge, click the empty lower strip to add a camera key`, `${shot.name} · ${shot.startFrame}–${lastFrame}프레임 · 드래그해 순서 이동, 양끝으로 컷 조절, 아래 빈 줄을 클릭해 카메라 키 추가`, `${shot.name} · 第 ${shot.startFrame}–${lastFrame} 帧 · 拖动调整顺序，拖动两端修剪剪辑，点击下方空条添加摄影机关键帧`)}
 												onPointerDown={(e) => beginShotMove(e, shot, index)}
@@ -1982,7 +2005,6 @@ export default function Timeline({
 													<span className="tl-shot-label">
 														<b>{shot.name}</b>
 														<small>{shot.startFrame}–{lastFrame} · {durationS.toFixed(1)}{ko("s", "초")}</small>
-														{shot.kind === "still" && shot.caption && <small className="tl-shot-caption" title={shot.caption}>{shot.caption}</small>}
 													</span>
 												)}
 												{modelWarnings.length > 0 && (
@@ -2039,7 +2061,6 @@ export default function Timeline({
 														frame={Math.min(Math.max(0, localProgress), Math.max(0, durationFrames - 1))}
 														frameCount={durationFrames}
 														averageSpeed={railLengthByShot.get(shot.id) / Math.max(1 / fps, (railRange.end - railRange.start) / fps)}
-														conserve
 														onChange={(timing) => {
 															selectUnifiedShotBlock(index);
 															dollyDraftRef.current = { shotId: shot.id, timing };
@@ -2107,7 +2128,7 @@ export default function Timeline({
 							aria-label={ko(`Pending pin range ${geometry.startFrame}–${geometry.endFrame}`, `대기 중인 고정 범위 ${geometry.startFrame}–${geometry.endFrame}`, `待定固定范围 ${geometry.startFrame}–${geometry.endFrame}`)}
 						/>;
 					})()}
-					{name === IK_LANE && motion?.segments && <TakeSegmentClips motion={motion} frame={frame} frameCount={frameCount} displayFrameCount={displayFrameCount} clipPct={clipPct} tools={motionTools} />}{name === IK_LANE && <BeatBoard motion={motion} frame={frame} displayFrameCount={displayFrameCount} clipPct={clipPct} onJump={(f) => handlers.current.onScrub?.(f)} />}
+					{name === IK_LANE && motion?.segments && <TakeSegmentClips motion={motion} frame={frame} frameCount={frameCount} displayFrameCount={displayFrameCount} clipPct={clipPct} tools={motionTools} />}
 
 									{name === IK_LANE &&
 										ikRuns.flatMap((run) => (run.length < KEY_RUN_MIN
@@ -2118,11 +2139,10 @@ export default function Timeline({
 													className={"tl-marker ik" + (f === frame ? " current" : "")}
 													style={{ "--tl-f": framePct(f, displayFrameCount) }}
 													title={ko(`Full-body IK key at frame ${f} — click to jump, right-click to remove`, `${f}프레임의 전신 IK 키 — 클릭해 이동, 오른쪽 클릭으로 삭제`, `第 ${f} 帧的全身 IK 键 — 点击跳转，右键删除`)}
-													onPointerDown={(e) => {
-														if (e.button !== 0) return;
-														e.stopPropagation();
-														handlers.current.onScrub?.(f);
-													}}
+													onPointerDown={(e) => beginIkKeyDrag(e, f)}
+													onPointerMove={moveIkKeyDrag}
+													onPointerUp={endIkKeyDrag}
+													onPointerCancel={endIkKeyDrag}
 													onContextMenu={(e) => {
 														e.preventDefault();
 														e.stopPropagation();

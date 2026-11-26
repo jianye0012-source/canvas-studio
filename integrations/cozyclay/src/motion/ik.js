@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { normalizeBoneName, POSE_BONES, DEFAULT_POSE } from "../poses.js";
 import { resolveFingers } from "./fingers.js";
-import { findBone } from "./find-bone.js";
+import { findBone } from "./find-bone.js"; import { fixHeld, fixWeight } from "./fix-weight.js"; import { fixKeySample, isRestKey } from "./fix-keys.js";
 export { findBone };
 
 /**
@@ -69,8 +69,8 @@ function pointSegmentDistance(point, start, end) {
 
 /*
  * `rig.userData.poseBind` (primed by primeBindPose at clone time) is the only
- * record of the UNTOUCHED skeleton once a clip is playing: ARDY playback writes
- * per-bone translations AND rotations every frame, so "where is this bone"
+ * record of the UNTOUCHED skeleton once a clip is playing: motion3 playback writes
+ * bone rotations AND the hips position every frame, so "where is this bone"
  * answered off the live matrices is a question about frame 137, not about the
  * rig. Anything that must be pose-INVARIANT — measured capsule radii, the
  * bind-relative collision calibration in fix-collisions.js — reads its
@@ -687,18 +687,17 @@ export function clampIkTargetToFloor(trackId, targetWorld, floorY = 0, contactHe
 	return targetWorld.clone().setY(Math.max(targetWorld.y, floorY + height));
 }
 
-/** Translate hips to an absolute drag target and keep the measured pelvis
- * extent on the safe side of the floor. The correction is applied in world Y
- * after the normal parent-space translation, so it also works on yawed rigs. */
-export function solveHipsTranslateToFloor(joint, worldDelta, startLocalPos, floorY = 0, contactHeights = null) {
+/** Translate hips to an absolute drag target and keep the torso's supports on the safe side of the floor: the pelvis by
+ * its measured extent below it, the shoulders and hip joints by their measured radius (contactRadii: a body lying on its
+ * side rests on a shoulder). Applied in world Y after the parent-space translation, so it also works on yawed rigs. */
+export function solveHipsTranslateToFloor(joint, worldDelta, startLocalPos, floorY = 0, contactHeights = null, contactRadii = null) {
 	solveHipsTranslate(joint, worldDelta, startLocalPos);
-	const height = contactHeights?.Hips;
-	if (!Number.isFinite(height)) return;
-	const root = joint.bone;
-	const y = root.getWorldPosition(new THREE.Vector3()).y;
-	if (y >= floorY + height) return;
+	if (!Number.isFinite(contactHeights?.Hips)) return;
+	const root = joint.bone, at = (name) => { let hit = null; root.traverse((node) => { if (!hit && node.isBone && node.name.endsWith(name)) hit = node; }); return hit; };
+	const lift = Math.max(0, ...[["Hips", contactHeights.Hips], ...["LeftArm", "RightArm", "LeftUpLeg", "RightUpLeg"].map((name) => [name, contactRadii?.[name]])].map(([name, r]) => { const bone = at(name); return bone && Number.isFinite(r) ? floorY + r - bone.getWorldPosition(new THREE.Vector3()).y : 0; }));
+	if (lift <= 0) return;
 	const parent = root.parent;
-	const localLift = new THREE.Vector3(0, floorY + height - y, 0)
+	const localLift = new THREE.Vector3(0, lift, 0)
 		.applyQuaternion(parent.getWorldQuaternion(new THREE.Quaternion()).invert())
 		.divideScalar(parent.getWorldScale(new THREE.Vector3()).x || 1);
 	root.position.add(localLift);
@@ -813,46 +812,6 @@ export function ikSeedTargets(chains, ikState) {
 	}
 }
 
-/** Snapshot the current local rotations of every chain and FK bone — plus
- * the hips' LOCAL POSITION (the body root's height/lean) — the pre-IK state
- * restored when IK mode closes. */
-export function ikSnapshot(rig, fkJoints) {
-	const out = new Map();
-	for (const [id, chain] of rig) {
-		out.set(id, { quats: chain.bones.map((b) => b.quaternion.clone()), pos: null });
-	}
-	if (fkJoints) {
-		for (const [id, joint] of fkJoints) {
-			out.set(id, {
-				quats: [joint.bone.quaternion.clone()],
-				pos: joint.bindPos ? joint.bone.position.clone() : null,
-			});
-		}
-	}
-	return out;
-}
-
-/** Restore a snapshot taken by ikSnapshot. */
-export function ikRestore(rig, snapshot, fkJoints) {
-	if (!snapshot) return;
-	for (const [id, saved] of snapshot) {
-		const chain = rig.get(id);
-		if (chain) {
-			chain.bones.forEach((b, i) => {
-				if (saved.quats[i]) b.quaternion.copy(saved.quats[i]);
-			});
-			chain.bones[0].updateMatrixWorld(true);
-			continue;
-		}
-		const joint = fkJoints?.get(id);
-		if (joint) {
-			if (saved.quats[0]) joint.bone.quaternion.copy(saved.quats[0]);
-			if (saved.pos && joint.bindPos) joint.bone.position.copy(saved.pos);
-			joint.bone.updateMatrixWorld(true);
-		}
-	}
-}
-
 /**
  * Bake the CURRENT local rotations into the key at `frame`: solved chain bones
  * (b0, b1, b2) for chains, the single bone for FK joints — and the hips' LOCAL
@@ -951,17 +910,17 @@ export function ikRemoveKeyframe(ikState, frame) {
 /** The two leg chains that get planted. */
 const LEG_IDS = ["leftFoot", "rightFoot"];
 
-/** Capture the current ankle world positions as the plant points. Called
- * once when a body (hips) drag starts, BEFORE the hips move — the feet
- * then stay exactly here for the whole drag (Cascadeur's always-active
- * ankle controllers / UE's foot-pin, over the existing two-bone solver). */
-export function ikPlantFeet(chains, ikState) {
+/** Capture the ankle world positions as plant points, once, when a body (hips) drag starts and BEFORE the hips move: the
+ * feet stay there for the drag (Cascadeur's ankle controllers / UE's foot-pin, over the two-bone solver). Only a foot under
+ * the body plants: on the floor (ankle at most maxY up, a step included) or half a leg below its hip (a box, a table). A
+ * foot level with the hips, as on a body turned to lie down, follows the hips instead of folding the leg. */
+export function ikPlantFeet(chains, ikState, maxY = 0.35) {
 	const pos = new THREE.Vector3();
 	for (const id of LEG_IDS) {
 		const chain = chains.get(id);
 		if (!chain) continue;
-		chain.bones[2].getWorldPosition(pos);
-		ikState.plants.set(id, pos.clone());
+		const [hip, knee] = [0, 1].map((i) => chain.bones[i].getWorldPosition(new THREE.Vector3())), leg = hip.distanceTo(knee) + knee.distanceTo(chain.bones[2].getWorldPosition(pos));
+		if (pos.y <= maxY || hip.y - pos.y >= leg / 2) ikState.plants.set(id, pos.clone()); else ikState.plants.delete(id);
 	}
 }
 
@@ -1069,10 +1028,11 @@ export function ikEvaluate(rig, ikState, frame, fkJoints, blendWindow = 0) {
 	// "placement" is the whole character's spot (placement-keys.js), no bone
 	for (const id of [...ikState.tracked].filter(track => track !== "placement")) {
 		const chain = rig.get(id);
-		const sampled = sampleChain(ikState.keys, id, frame, chain);
-		if (!sampled) continue;
+		const kf = fixKeySample(ikState.keys, id, frame, ikState), sampled = kf ? (kf.delta ? withDeltas(kf.delta) : kf.sampled) : sampleChain(ikState.keys, id, frame, chain); // fix keys (fix-keys.js) play as keyframes
+		// a lone fix rest key (fix-keys.js) on a track that also holds other keys is the take itself: nothing to apply
+		if (!sampled || isRestKey(sampled)) continue;
 		const joint = fkJoints?.get(id);
-		const w = blendWindow > 0 ? correctionWeight(ikState.keys, id, frame, blendWindow) : 1;
+		const w = kf ? kf.w : blendWindow > 0 ? (fixWeight(ikState.keys, id, frame, ikState) ?? correctionWeight(ikState.keys, id, frame, blendWindow)) : 1;
 		if (w <= 0) continue;
 		if (chain) {
 			if (sampled.chainP) chain.bones.forEach((bone, i) => { if (sampled.chainP[i]) bone.position.lerp(sampled.chainP[i], w * (sampled.chainPWeight ?? 1)); });
@@ -1087,7 +1047,7 @@ export function ikEvaluate(rig, ikState, frame, fkJoints, blendWindow = 0) {
 			// OWN rotation instead — applied = clipCurrent ∘ slerp(identity,
 			// baseQ⁻¹ ∘ q, w) — makes the smear proportional to the correction,
 			// which is the only thing the key ever claimed.
-			const deltas = blendWindow > 0 ? sampled.deltaQ : null;
+			const deltas = blendWindow > 0 && (kf ? Boolean(kf.delta) : !fixHeld(ikState.keys, id, frame)) /* a held fix (fix-weight.js) keeps the keyed pose itself across its band, not the take plus a delta */ ? sampled.deltaQ : null;
 			if (deltas) {
 				// Ease the translations with the rotations: switching to bind only
 				// at w = 1 tears the otherwise continuous correction at island edges.
@@ -1100,13 +1060,14 @@ export function ikEvaluate(rig, ikState, frame, fkJoints, blendWindow = 0) {
 				}
 			} else {
 				if (!sampled.keepTranslations) restoreChainPositions(chain, w);
-				if (w >= 1) {
+				// a key without rotations (a rest key, a translation-only key) applies none, as the joint branch below
+				if (sampled.q && w >= 1) {
 					chain.bones[0].quaternion.copy(sampled.q[0]);
 					chain.bones[1].quaternion.copy(sampled.q[1]);
 					// The effector's authored rotation rides along when the key has it
 					// (pre-rotation keys hold only b0/b1 — apply whatever is stored).
 					if (sampled.q[2]) chain.bones[2].quaternion.copy(sampled.q[2]);
-				} else {
+				} else if (sampled.q) {
 					// current quats are the base layer's (motion) — ease toward the key
 					chain.bones[0].quaternion.slerp(sampled.q[0], w);
 					chain.bones[1].quaternion.slerp(sampled.q[1], w);
@@ -1119,7 +1080,7 @@ export function ikEvaluate(rig, ikState, frame, fkJoints, blendWindow = 0) {
 			// A translation-only key (see ikBakeKeyframe) stores no rotation at
 			// all, and must leave the clip's own orientation strictly alone.
 			if (sampled.q?.[0]) {
-				if (blendWindow > 0 && sampled.deltaQ?.[0]) {
+				if (blendWindow > 0 && sampled.deltaQ?.[0] && !fixHeld(ikState.keys, id, frame)) {
 					easedDelta.copy(sampled.deltaQ[0]).slerp(identityQuat, 1 - w);
 					joint.bone.quaternion.multiply(easedDelta);
 				} else if (w >= 1) joint.bone.quaternion.copy(sampled.q[0]);
@@ -1282,8 +1243,9 @@ function sampleChain(keys, trackId, frame, chain) {
 	const a = keys.get(prevFrame).get(trackId);
 	const b = keys.get(nextFrame).get(trackId);
 	const t = (frame - prevFrame) / (nextFrame - prevFrame);
-	const deltasA = keyDeltas(a);
-	const deltasB = keyDeltas(b);
+	// A fix rest key stands for the take itself: next to a based key it is a zero correction, not an absolute pose.
+	const zero = (key, other) => (isRestKey(key) ? keyDeltas(other)?.map(() => new THREE.Quaternion()) ?? null : null);
+	const deltasA = keyDeltas(a) ?? zero(a, b), deltasB = keyDeltas(b) ?? zero(b, a);
 	// Missing chainP means raw clip for a new key, bind for a legacy key.
 	// A mixed pair must ease between those policies, not switch at an endpoint.
 	const positionsA = a.chainP ?? (a.keepTranslations ? null : chain?.bindPositions);

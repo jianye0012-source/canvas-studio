@@ -32,6 +32,7 @@ import { resolveAnchor, measureProps, armReach } from "./anchors.js";
 import { expandGenerators } from "./walk.js";
 import { steadyHead } from "./head-steady.js";
 import { leadHead } from "./head-lead.js";
+import { autoLayer, smooth } from "./auto.js";
 import { fixOptions, applyFixes } from "../fix/index.js";
 import { fitWeight } from "../fix/self.js";
 import { holdHook } from "../object-keys.js";
@@ -40,7 +41,6 @@ import { objectPoseAt, handOf, restingAt, frameAt, spanOf } from "../object-pose
 import { heldFor, carryFingers } from "./finger-close.js";
 import { sagOf } from "../load.js";
 
-const smooth = x => x * x * (3 - 2 * x);
 // how far past the straight arm a grasp fit's wrist target may end before it counts as wound up (solveFrame), m
 const REACH_SLACK = 0.02;
 
@@ -95,6 +95,7 @@ function hooksFor(ctx, c, f, inFit = false, lead = true, fitSide = null) {
 		push: inFit ? undefined : k => ctx.push?.[k]?.get(f),
 		swivel: k => ctx.swivel?.[k]?.get(f), // in a fit's passes too: a turn that stops at the wrist's limit moves the fit's point (wrist-clamp.js)
 		skinPush: inFit ? undefined : k => ctx.skinPush?.[k]?.get(f),
+		fkArm: inFit ? undefined : k => ctx.fkArm?.[k]?.get(f),
 		handTarget(k, s, diag) {
 			diag.frame = f;
 			const fkHand = s.P[sk.index[k === "l" ? "LeftHand" : "RightHand"]];
@@ -187,7 +188,8 @@ export function solveFrame(ctx, c0, f, lead = true) {
 
 /**
  * opts.window = [a, b] solves only frames a..b (out.f0 = a, out.frames[i] is frame a + i);
- * opts.keys replaces the generator expansion; opts.fixes = false skips the auto-fix pass.
+ * opts.keys replaces the generator expansion; opts.fixes = false skips the auto-fix pass; opts.selfRepair = false runs
+ * fix.self without its repair pass (fix/self-repair.js), the take that pass starts from.
  */
 export function compileMotion(spec, { sk, scene }, opts = {}) {
 	if (spec?.schema !== "cozyclay.motion-spec.v1") throw new Error("MOTION_SPEC_INVALID: schema must be cozyclay.motion-spec.v1");
@@ -195,7 +197,7 @@ export function compileMotion(spec, { sk, scene }, opts = {}) {
 	if (!(frameCount >= 1 && frameCount <= 20000)) throw new Error("MOTION_SPEC_INVALID: frames must be 1..20000");
 	const fix = fixOptions(spec.fix);
 	const [a, b] = opts.window ? [Math.max(0, opts.window[0]), Math.min(frameCount - 1, opts.window[1])] : [0, frameCount - 1];
-	const ctx = { sk, spec, scene, grasp: fix.grasp, softReach: fix.reach, push: { l: new Map(), r: new Map() }, swivel: { l: new Map(), r: new Map() }, skinPush: { l: new Map(), r: new Map() }, keepOut: fix.self ? wristBody(sk) : null };
+	const ctx = { sk, spec, scene, grasp: fix.grasp, softReach: fix.reach, push: { l: new Map(), r: new Map() }, swivel: { l: new Map(), r: new Map() }, skinPush: { l: new Map(), r: new Map() }, fkArm: { l: new Map(), r: new Map() }, keepOut: fix.self ? wristBody(sk) : null };
 	const out = { ctx, fps: spec.fps ?? 30, frameCount, f0: a, frames: [] };
 	// object anchors read the pose refs read (object-pose.js), on the frame being solved
 	ctx.objectPose = (id, f, now) => objectPoseAt(out, id, f, now);
@@ -217,11 +219,13 @@ export function compileMotion(spec, { sk, scene }, opts = {}) {
 			ctx.graspPlans = new Map();
 			steadyHead(out.baked, keys, frameCount);
 			leadHead(out.baked, keys, frameCount, flow.headLead);
-			// a held pose breathes and shifts its weight (idle.js): offsets solveFrame adds, contacts and out.baked stay as keyed
-			ctx.idle = idleLayer(out.baked, { spec, sk, frameCount });
 			ctx.busy = busyHands(out.baked, spec, frameCount, out.fps);
 			const tracks = objectTracks(spec, scene, out.baked, () => out.timeMap);
 			ctx.objectsAt = tracks.all;
+			// the walk's rules outside the walk and the gaze to spec.look (auto.js, #1080 #1081): before the idle layer reads the holds
+			out.auto = autoLayer(out, ctx);
+			// a held pose breathes and shifts its weight (idle.js): offsets solveFrame adds, contacts and out.baked stay as keyed
+			ctx.idle = idleLayer(out.baked, { spec, sk, frameCount });
 			out.objectsAt = a ? f => tracks.obstacles(f + a) : tracks.obstacles;
 		},
 		solve(frames) { for (const f of frames) if (f >= a && f <= b) out.frames[f - a] = solveFrame(ctx, channelsAt(out.baked, f), f); },
@@ -230,7 +234,7 @@ export function compileMotion(spec, { sk, scene }, opts = {}) {
 	ctx.hold = holdHook(ctx, out, f => solveFrame(ctx, channelsAt(out.baked, f), f, false), f => solveFrame(ctx, channelsAt(out.baked, f), f));
 	engine.rebake(opts.keys ?? expandGenerators(spec, sk));
 	engine.solve(engine.all());
-	out.fixed = opts.fixes === false ? {} : applyFixes(out, fix, engine, { whole: !opts.window });
+	out.fixed = opts.fixes === false ? {} : applyFixes(out, fix, engine, { whole: !opts.window, repair: opts.selfRepair !== false });
 	// a retime maps the key frames only once it is done: solve the keyed frames again on the final map
 	if (ctx.hold && out.timeMap) engine.solve(engine.all());
 	return out;

@@ -150,7 +150,8 @@ const reloadApp = async () => {
 const openFileExport = async () => {
 	await click("[data-testid=menu-file]");
 	await waitFor("!!document.querySelector('#export-menu-trigger')");
-	await click("#export-menu-trigger");
+	// Alt held: the menu also lists its other formats (the keyframe pack, one shot's video, the cut list).
+	await evaluate("document.querySelector('#export-menu-trigger').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, altKey: true })), true");
 	await waitFor("!!document.querySelector('.export-menu')");
 };
 const workspaceFiles = () => evaluate(`(async () => {
@@ -241,4 +242,4 @@ expect("the fallback download reaches the browser download manager", readdirSync
 expect("the page raised no runtime exceptions", runtimeErrors.length === 0, runtimeErrors.join(" | "));
 ws.close();
 console.log(failures ? `${failures} FAILURE(S)` : "all export workspace browser checks PASS");
-process.exit(failures ? 1 : 0);
+if (failures) process.exitCode = 1;

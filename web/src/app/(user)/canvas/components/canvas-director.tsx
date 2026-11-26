@@ -1,7 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Button, Modal } from "antd";
+import { PersonStanding } from "lucide-react";
 import { useEffectiveConfig } from "@/stores/use-config-store";
+import { PoseGalleryBrowser } from "@/components/pose-gallery/pose-gallery-browser";
 
 import type { CanvasDirectorCapture, CanvasDirectorPanorama, CanvasDirectorVideo } from "../types";
 import { createDirectorOutputDedupe, type DirectorOutputResult } from "../[id]/canvas-director-output";
@@ -155,9 +158,30 @@ export function CanvasDirector({
         postToDesk("storyai:director-panoramas", { panoramas });
     }, [panoramas, postToDesk, readyEpoch]);
 
+    const [poseGalleryOpen, setPoseGalleryOpen] = useState(false);
+
     return (
         <div className="fixed inset-0 z-[2000]">
             <iframe key={nodeId} ref={iframeRef} title="3D导演台" src="/cozy/app/?canvas=1" className="block h-full w-full border-0" />
+            <Button
+                type="default"
+                className="!absolute !right-4 !top-4 !z-[2001]"
+                icon={<PersonStanding className="size-4" />}
+                onClick={() => setPoseGalleryOpen(true)}
+            >
+                发送参考图到导演台
+            </Button>
+            <Modal title="选一张参考图发送到导演台" open={poseGalleryOpen} onCancel={() => setPoseGalleryOpen(false)} footer={null} width={900} destroyOnHidden>
+                <PoseGalleryBrowser
+                    pageSize={8}
+                    columns="grid-cols-4"
+                    actionLabel="发送"
+                    onPick={({ item, view, url }) => {
+                        postToDesk("storyai:director-reference-image", { url, name: `${item.name}${item.views.length > 1 ? `・${view.angle}` : ""}` });
+                        setPoseGalleryOpen(false);
+                    }}
+                />
+            </Modal>
         </div>
     );
 }

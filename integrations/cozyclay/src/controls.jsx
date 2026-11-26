@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
-import { noteCameraGesture } from "./thrash-friction.js";
+import { noteCameraGesture } from "./thrash-friction.js"; import { announceNav } from "./nav-signal.js"; import { stepFlySpeed } from "./fly-speed.js";
 
 const MOVE_SPEED = 2.6; // metres per second
 const CRANE_SPEED = 1.3; // Q/E up/down runs at half walk speed — fine
@@ -52,13 +52,13 @@ export function aimAt(position, target) {
  * clientX remains the fallback when lock is denied.
  *
  * `getPivot()` is optional and returns a world point to orbit; without one,
- * Alt-drag orbits a point straight ahead of the lens.
+ * Alt-drag orbits a point straight ahead of the lens. `speed`/`onSpeedChange` let the caller own the fly speed; `onSpeedChange` gets an updater, like a state setter.
  */
-export function FlyControls({ enabled, cameraLocked = false, camRef, look, getPivot, onFlyStateChange, onCameraChange }) {
+export function FlyControls({ enabled, cameraLocked = false, camRef, look, getPivot, onFlyStateChange, onCameraChange, speed, onSpeedChange }) {
 	const { gl, invalidate } = useThree();
 	const keys = useRef(new Set());
 	const gesture = useRef(null); // { kind: "fly" | "pan" | "orbit", pointerId, x, y, ... }
-	const speedScale = useRef(1);
+	const speedScale = useRef(1); useEffect(() => { if (Number.isFinite(speed)) speedScale.current = speed; }, [speed]);
 	const invalidateRaf = useRef(0);
 	const flyStateRef = useRef(onFlyStateChange);
 	flyStateRef.current = onFlyStateChange;
@@ -129,7 +129,7 @@ export function FlyControls({ enabled, cameraLocked = false, camRef, look, getPi
 			if (gesture.current?.kind !== "fly") return;
 			const key = KEY_BY_CODE[e.code];
 			if (key) {
-				keys.current.add(key);
+				if (!keys.current.has(key) && key !== "shift") announceNav("walk", key); keys.current.add(key);
 				e.preventDefault();
 			}
 		};
@@ -206,13 +206,13 @@ export function FlyControls({ enabled, cameraLocked = false, camRef, look, getPi
 			const pivot = kind === "orbit" && cam ? resolvePivot(cam) : null;
 			gesture.current = { kind, pointerId: e.pointerId, button: e.button, x: e.clientX, y: e.clientY, pivot, changed: false };
 			if (typeof window !== "undefined") window.__cozyclayCameraGesture = true;
-			element.setPointerCapture(e.pointerId);
+			try { element.setPointerCapture(e.pointerId); } catch { /* pointer already gone: window pointerup still ends it */ }
 			element.focus();
 			element.style.cursor = kind === "fly" ? "crosshair" : kind === "pan" ? "grabbing" : "move";
 			lockAttempts = 0;
 			if (e.pointerType !== "touch" && e.pointerType !== "pen") requestNavLock();
 			if (kind === "fly") flyStateRef.current?.(true);
-			scheduleInvalidate();
+			announceNav(kind); scheduleInvalidate();
 		};
 
 		/** the point Alt-drag turns around: the caller's selection, or a point
@@ -296,11 +296,12 @@ export function FlyControls({ enabled, cameraLocked = false, camRef, look, getPi
 			e.preventDefault();
 			if (gesture.current?.kind === "fly") {
 				// Unity: the wheel sets the flythrough speed, it does not dolly.
-				speedScale.current = THREE.MathUtils.clamp(speedScale.current * (e.deltaY > 0 ? 0.9 : 1.1), 0.15, 6);
+				// The caller steps its own value: a copy of `speed` that this canvas has not rendered yet would lose notches.
+				speedScale.current = stepFlySpeed(speedScale.current, e.deltaY); onSpeedChange?.((current) => stepFlySpeed(current, e.deltaY));
 				return;
 			}
 			cam.position.addScaledVector(forwardFrom(look.current.yaw, look.current.pitch), -e.deltaY * DOLLY_STEP);
-			cameraChangeRef.current?.();
+			announceNav("dolly"); cameraChangeRef.current?.();
 		};
 
 		// A right-drag is navigation, so the browser menu must not interrupt it.
@@ -323,14 +324,14 @@ export function FlyControls({ enabled, cameraLocked = false, camRef, look, getPi
 		// Alt-tabbing away mid-fly must not leave keys stuck down.
 		window.addEventListener("blur", endGesture);
 		return () => {
+			const ownedLock = gesture.current || lockPending; keys.current.clear();
 			if (invalidateRaf.current) {
 				cancelAnimationFrame(invalidateRaf.current);
 				invalidateRaf.current = 0;
 			}
-			keys.current.clear();
 			gesture.current = null;
-			if (typeof window !== "undefined") window.__cozyclayCameraGesture = false;
-			releaseNavLock();
+			if (typeof window !== "undefined" && ownedLock) window.__cozyclayCameraGesture = false;
+			if (ownedLock) releaseNavLock();
 			element.style.cursor = "";
 			flyStateRef.current?.(false);
 			window.removeEventListener("keydown", onKeyDown);
@@ -349,7 +350,7 @@ export function FlyControls({ enabled, cameraLocked = false, camRef, look, getPi
 			document.removeEventListener("pointerlockerror", onPointerLockError);
 			window.removeEventListener("blur", endGesture);
 		};
-	}, [enabled, gl, camRef, look]);
+	}, [enabled, gl, camRef, look, onSpeedChange]);
 
 	useFrame((_, delta) => {
 		const cam = camRef.current;

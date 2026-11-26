@@ -6,19 +6,25 @@
  * command needs, forward JSON, and print exactly one JSON object. Progress
  * goes to stderr, so `cclay live … | jq` never sees anything but the result.
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 
+import { captureVerb } from "./capture.mjs";
 import { connectController, discoverEndpoint, LiveCliError, resolveLivePort } from "./client.mjs";
-import { admissionEnvelope, describeEditors, numberedPath, pngFromCaptureFrame, pngFromDataUrl, selectWorkspace } from "./studio.mjs";
+import { commandArguments, jsonFlag, operationArguments, saveToFile, UsageError } from "./files.mjs";
+import { admissionEnvelope, describeEditors, inspectArguments, numberedPath, pngFromDataUrl, selectWorkspace } from "./studio.mjs";
 
 const USAGE = `cclay live - drive a running CozyClay studio from a terminal
 
   cclay live status [--wait]             the hub, its editors, and the selected one
   cclay live describe                    read the live scene document
+  cclay live save --out file.cclayproject [--force]
+                                         writes locally; omits workspace layout, custom poses,
+                                         workflow and embedded assets absent from describe
   cclay live inspect --scope selection|scene|entities|shot|motion|catalogue
-                                         [--ids a,b] [--query text]
+                                         [--ids a,b] [--query text] [--limit n] [--cursor c]
   cclay live capture --out frame.png [--framing]
+  cclay live capture --frames 0-242 --out-dir frames/ [--step N] [--force]
   cclay live arrange-objects --op '<json>' | -f ops.json
   cclay live arrange-characters --op '<json>' | -f ops.json
   cclay live patch --target <kind>[:<id>] --set '<json>'
@@ -34,10 +40,14 @@ const USAGE = `cclay live - drive a running CozyClay studio from a terminal
                                          [--visual frame|contact_sheet|plan|trace [--frames even|beats] --out check.png]
   cclay live undo --receipt <id>
   cclay live commands [--ids a,b]        the commands the editor registers; ids add schemas
-  cclay live run <id> [--args '<json>']  any command the editor registers, admitted like
+  cclay live run <id> [--args '<json>' | --args-file args.json]
+                                         any command the editor registers, admitted like
                                          the agent's run_action; waits its declared timeout
-  cclay live cmd <name> --args '<json>'   any live-protocol command
-  cclay live tool <name> --args '<json>'  any registry tool, e.g. describe_shot
+  cclay live cmd <name> [--args '<json>' | --args-file args.json]
+                                         any live-protocol command
+  cclay live tool <name> [--args '<json>' | --args-file args.json]
+                                         any registry tool, e.g. describe_shot
+  Use --args - to read a JSON object from stdin; omit both flags for {}.
 
 Global flags: --workspace <handle|project>  --timeout <ms>  --pretty  --live-port <port>
 
@@ -48,15 +58,14 @@ Units are metres, degrees and +Y up; ids are the ids the editor uses.
 Exit codes: 0 ok - 1 editor or receipt error - 2 usage - 3 no hub -
 4 workspace - 5 timeout or uncertain apply - 6 stale scene or busy target.`;
 
-class UsageError extends Error {}
-
-const BOOLEAN_FLAGS = new Set(["--pretty", "--wait", "--framing", "--play", "--pause", "--strict"]);
+const BOOLEAN_FLAGS = new Set(["--force", "--pretty", "--wait", "--framing", "--play", "--pause", "--strict"]);
 const GLOBAL_FLAGS = ["--workspace", "--timeout", "--pretty", "--live-port"];
 const VERBS = new Map([
 	["status", { flags: ["--wait"] }],
 	["describe", { flags: [] }],
-	["inspect", { flags: ["--scope", "--ids", "--query"] }],
-	["capture", { flags: ["--out", "--framing"] }],
+	["save", { flags: ["--out", "--force"] }],
+	["inspect", { flags: ["--scope", "--ids", "--query", "--limit", "--cursor"] }],
+	["capture", { flags: ["--out", "--framing", "--frames", "--out-dir", "--step", "--force"] }],
 	["arrange-objects", { flags: ["--op", "-f", "--file"], command: "arrange_objects" }],
 	["arrange-characters", { flags: ["--op", "-f", "--file"], command: "arrange_characters" }],
 	["patch", { flags: ["--target", "--set"], command: "patch_elements" }],
@@ -65,9 +74,9 @@ const VERBS = new Map([
 	["verify", { flags: ["--receipt", "--targets", "--checks", "--range", "--strict", "--visual", "--frames", "--out"] }],
 	["undo", { flags: ["--receipt"] }],
 	["commands", { flags: ["--ids"] }],
-	["run", { flags: ["--args"], argument: "command id" }],
-	["cmd", { flags: ["--args"], argument: "command name" }],
-	["tool", { flags: ["--args"], argument: "tool name" }],
+	["run", { flags: ["--args", "--args-file"], argument: "command id" }],
+	["cmd", { flags: ["--args", "--args-file"], argument: "command name" }],
+	["tool", { flags: ["--args", "--args-file"], argument: "tool name" }],
 ]);
 
 /** One action and one sentence per stable code: a terminal that fails should
@@ -85,7 +94,7 @@ const RECOVERY = {
 	USAGE: { action: "none", hint: "run `cclay live --help`" },
 };
 const EXIT_CODES = new Map([
-	["USAGE", 2],
+	["USAGE", 2], ["DIR_NOT_EMPTY", 2],
 	["NO_SERVER", 3],
 	["NO_EDITOR", 4], ["AMBIGUOUS_WORKSPACE", 4], ["STALE_HANDLE", 4],
 	["TIMEOUT", 5], ["UNCERTAIN_APPLY", 5],
@@ -195,17 +204,6 @@ const frameRangeFlag = (flags, key) => {
 	if (!Number.isSafeInteger(startFrame) || !Number.isSafeInteger(endFrameExclusive) || endFrameExclusive <= startFrame) throw new UsageError(`${key} must have a nonempty start:end range`);
 	return { startFrame, endFrameExclusive };
 };
-const jsonFlag = (flags, key) => {
-	let parsed;
-	try {
-		parsed = JSON.parse(String(flags.get(key)));
-	} catch (error) {
-		throw new UsageError(`${key} is not valid JSON: ${error.message}`);
-	}
-	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new UsageError(`${key} must be a JSON object`);
-	return parsed;
-};
-
 function timeoutFlag(flags) {
 	if (!flags.has("--timeout")) return undefined;
 	const value = integerFlag(flags, "--timeout");
@@ -218,34 +216,6 @@ function livePortFlag(flags) {
 	const port = Number(flags.get("--live-port"));
 	if (!Number.isInteger(port) || port < 1 || port > 65535) throw new UsageError("--live-port must be an integer in 1..65535");
 	return resolveLivePort(port);
-}
-
-/** `--op` for one operation or a list of them, `-f` for a file holding either;
- * `{ "ops": [...] }` additionally carries collisionPolicy. */
-function operationArguments(flags, verb) {
-	const file = flags.get("-f") ?? flags.get("--file");
-	const hasFile = file !== undefined;
-	const hasInline = flags.has("--op");
-	if (hasFile === hasInline) throw new UsageError(`${verb} needs exactly one of --op '<json>' or -f ops.json`);
-	let raw;
-	if (hasFile) {
-		try {
-			raw = readFileSync(String(file), "utf8");
-		} catch (error) {
-			throw new UsageError(`could not read ${file}: ${error.message}`);
-		}
-	} else {
-		raw = String(flags.get("--op"));
-	}
-	let parsed;
-	try {
-		parsed = JSON.parse(raw);
-	} catch (error) {
-		throw new UsageError(`${hasFile ? String(file) : "--op"} is not valid JSON: ${error.message}`);
-	}
-	if (Array.isArray(parsed)) return { ops: parsed };
-	if (parsed !== null && typeof parsed === "object") return Array.isArray(parsed.ops) ? parsed : { ops: [parsed] };
-	throw new UsageError(`${verb} expects one operation object, an array of them, or { "ops": [ … ] }`);
 }
 
 /** `--target kind[:id]` names one entity, `--set '<json>'` carries declared
@@ -305,7 +275,7 @@ function operateArguments(flags) {
 	return args;
 }
 
-async function runVerb({ client, verb, spec, name, flags }) {
+async function runVerb({ client, verb, spec, name, flags, args }) {
 	const timeoutMs = timeoutFlag(flags);
 	const forwarded = timeoutMs === undefined ? {} : { timeoutMs };
 	let handle = null;
@@ -393,26 +363,13 @@ async function runVerb({ client, verb, spec, name, flags }) {
 
 	if (verb === "inspect") {
 		const args = { scope: required(flags, "--scope", verb) };
-		if (flags.has("--ids")) args.ids = commaList(flags.get("--ids"));
-		if (flags.has("--query")) args.query = String(flags.get("--query"));
-		return command("inspect_studio", args);
+		return command("inspect_studio", { ...args, ...inspectArguments(flags, integerFlag) });
 	}
 
-	if (verb === "capture") {
-		const out = resolvePath(required(flags, "--out", verb));
-		if (flags.get("--framing") === true) {
-			const value = await command("capture_framing_png", {});
-			const bytes = pngFromDataUrl(value?.dataUrl);
-			writeFileSync(out, bytes);
-			return { path: out, width: value.width, height: value.height, bytes: bytes.byteLength };
-		}
-		const value = await command("capture_frame", {});
-		const bytes = pngFromCaptureFrame(value);
-		writeFileSync(out, bytes);
-		return { path: out, width: value.width, height: value.height, bytes: bytes.byteLength, assertions: value.assertions };
-	}
+	if (verb === "save") return saveToFile(command, resolvePath(required(flags, "--out", verb)), flags.get("--force") === true);
+	if (verb === "capture") return captureVerb(flags, { command, progress, usage: (message) => new UsageError(message) });
 
-	if (verb === "arrange-objects" || verb === "arrange-characters") return admitted(spec.command, operationArguments(flags, verb));
+	if (verb === "arrange-objects" || verb === "arrange-characters") return admitted(spec.command, operationArguments(flags, verb, UsageError));
 
 	if (verb === "patch") return admitted(spec.command, patchArguments(flags, verb));
 
@@ -456,7 +413,6 @@ async function runVerb({ client, verb, spec, name, flags }) {
 	}
 
 	if (verb === "run") {
-		const args = flags.has("--args") ? jsonFlag(flags, "--args") : {};
 		// The editor declares the command: one read gives the context to admit
 		// at and the deadline it needs, which --timeout overrides.
 		const inspected = await command("inspect_studio", { scope: "actions", ids: [name] });
@@ -464,10 +420,9 @@ async function runVerb({ client, verb, spec, name, flags }) {
 		return admitted("run_action", { action: name, args }, { context: inspected, options: deadline === undefined ? {} : { timeoutMs: deadline } });
 	}
 
-	if (verb === "cmd") return raw(() => command(name, flags.has("--args") ? jsonFlag(flags, "--args") : {}));
+	if (verb === "cmd") return raw(() => command(name, args));
 
 	if (verb === "tool") {
-		const args = flags.has("--args") ? jsonFlag(flags, "--args") : {};
 		return raw(async () => unwrap(await client.request({ type: "tool", name, args, workspaceHandle: await workspace() })));
 	}
 
@@ -482,6 +437,7 @@ export async function runLiveCli(argv) {
 	let invocation;
 	try {
 		invocation = parseInvocation(argv);
+		if (invocation.spec.argument) invocation.args = commandArguments(invocation.flags);
 	} catch (error) {
 		await write(process.stderr, `${USAGE}\n`);
 		await emit(usageFailure(error.message), false);

@@ -30,14 +30,6 @@ export default {
 				{ id: "open-studio", studio: true },
 				{ id: "start-card", hold: 2000, card: { title: { ko: "시작 화면", en: "Start screen" }, subtitle: { ko: "프로젝트를 만드는 곳", en: "Where a project begins" } } },
 				{
-					id: "spot-animation",
-					narration: { ko: "먼저 프로젝트 모드를 고릅니다.", en: "First, pick the project mode." },
-					spotlight: "[data-testid=start-previs-mode] [data-previs-mode=animation]",
-					hold: 2600,
-					label: { ko: "애니메이션", en: "Animation" },
-					note: { ko: "움직임을 블로킹하고 샷을 찍는 모드", en: "Block continuous motion and shoot shots" },
-				},
-				{
 					id: "spot-create",
 					spotlight: "[data-testid=start-create]",
 					hold: 2600,
@@ -66,7 +58,7 @@ export default {
 					spotlight: ".vp-mode-keys",
 					hold: 2600,
 					label: { ko: "작업 모드", en: "Workflow modes" },
-					note: { ko: "배치, 포즈, 카메라, 모션, 조각을 오갑니다", en: "Switch between Stage, Pose, Camera, Motion and Sculpt" },
+					note: { ko: "배치, 포즈, 카메라, 모션, 조형을 오갑니다", en: "Switch between Stage, Pose, Camera, Motion and Sculpt" },
 				},
 				{
 					id: "spot-body",

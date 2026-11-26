@@ -792,8 +792,8 @@ expect(
 // the legacy pair leaves every object the cases above created to reload
 // into the drop-to-surface section. Sweep all cozyclay keys but the editor
 // preferences: the locale, and the project session — without it the studio
-// reopens on the first-run project chooser, whose dialog sits over the
-// viewport and takes every canvas press the lifecycle section dispatches.
+// makes a first open (a new project of its own, src/guest-start.js) instead
+// of the returning author's studio the lifecycle section was written for.
 await evaluate("Object.keys(localStorage).filter(k => k.startsWith('cozyclay.') && k !== 'cozyclay.locale' && k !== 'cozyclay.project-session.v1').forEach(k => localStorage.removeItem(k))");
 await reloadPage();
 
@@ -1095,8 +1095,8 @@ const capsuleForPlan = await transform(); // the Capsule, now away from the Cube
 const pastBeforePlan = await evaluate("window.__sceneHistory().past");
 await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'))");
 await waitFor("window.__gizmoHandles().length > 0");
-// The plan board only lives in the Top-View inset now (planIsMain is
-// hard false — the double-click big-pane swap is gone for good), so the
+// The plan board only lives in the Top-View inset now (the double-click
+// big-pane swap is gone for good), so the
 // puck is driven in the inset itself: PLAN_EXTENT (12.4 m) maps to half
 // its shorter side, same as the bird's-eye case above.
 const planRect = await evaluate("(() => { const b = document.querySelector('.vp-inset').getBoundingClientRect(); return { left: b.left, top: b.top, width: b.width, height: b.height, scale: Math.min(b.width, b.height) / 2 / 12.4 }; })()");

@@ -5,15 +5,15 @@ import { aimAt } from "./controls.jsx";
 import { SUBJECT_HEIGHT_M } from "./shot.js";
 import { shotAtFrame } from "./cuts.js";
 import { sampleAt } from "./sample-at.js";
-import { playbackProbe, probeVisibility } from "./motion/playback-probe.js";
+import { probeVisibility } from "./motion/playback-probe.js";
 import { RENDER_ACTIVITY_EVENT } from "./use-render-activity.js";
-import { reportGlLost } from "./crash-telemetry.js";
+import { reportGlLost } from "./crash-telemetry.js"; import { bodyScale } from "./lowvis/studio/figure.js";
 import { PRESETS, editorFrameForSubject } from "./stage-startup-defaults.js";
 
 /** Selection marker for the picked cast member: a Unity-style XYZ tripod
  * plus a ground ring at the feet. X/Z arrows also drag the character on the
  * floor (Y is display-only — characters stand on the deck). */
-export function ShotRig({ preset, nonce, fovDeg, charA, charB, showB, probe: playbackProbeInput = {}, camRef, look, onMetrics, appliedPresetRef, lastPosRef }) {
+export function ShotRig({ preset, nonce, fovDeg, subject, subjectsAt, frameRef, camRef, look, onMetrics, appliedPresetRef, lastPosRef }) {
 	useEffect(() => {
 		const cam = camRef.current;
 		if (!cam) return;
@@ -38,8 +38,7 @@ export function ShotRig({ preset, nonce, fovDeg, charA, charB, showB, probe: pla
 		const p = PRESETS[preset];
 		const az = (p.azimuth * Math.PI) / 180;
 		const el = (p.elevation * Math.PI) / 180;
-		const aim =
-			p.aimMid && showB ? { x: (charA.x + charB.x) / 2, z: (charA.z + charB.z) / 2 } : { x: charA.x, z: charA.z };
+		const aim = { x: subject.x, z: subject.z };
 		const horizontal = p.distance * Math.cos(el);
 		cam.position.set(
 			aim.x + horizontal * Math.sin(az),
@@ -48,7 +47,7 @@ export function ShotRig({ preset, nonce, fovDeg, charA, charB, showB, probe: pla
 		);
 		const angles = aimAt(cam.position, { x: aim.x, y: p.targetY, z: aim.z });
 		look.current.yaw = angles.yaw;
-		look.current.pitch = angles.pitch;
+		look.current.pitch = angles.pitch; look.current.roll = 0;
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [preset, nonce]);
 
@@ -69,9 +68,8 @@ export function ShotRig({ preset, nonce, fovDeg, charA, charB, showB, probe: pla
 		if (!cam) return;
 		// During motion playback the probe follows the played root, so the
 		// "subject out of frame" caption stays honest.
-		const frame = playbackProbeInput.frameRef?.current ?? 0;
-		const current = playbackProbe(playbackProbeInput, frame, charA);
-		const visible = probeVisibility(probe.current, cam, current, SUBJECT_HEIGHT_M);
+		const frame = frameRef.current;
+		const visible = subjectsAt(frame).every(current => probeVisibility(probe.current, cam, current, SUBJECT_HEIGHT_M * bodyScale(current)));
 		const previous = lastMetrics.current;
 		if (
 			Math.abs(previous.x - cam.position.x) +
@@ -170,7 +168,7 @@ export function MoveRig({ playing, following, followFrame, frameRef, fps, keys, 
 			if (!f) return null;
 			cam.position.set(f.pos.x, f.pos.y, f.pos.z);
 			look.current.yaw = f.yaw;
-			look.current.pitch = f.pitch;
+			look.current.pitch = f.pitch; look.current.roll = THREE.MathUtils.degToRad(f.rollDeg ?? 0);
 			if (Math.abs(cam.fov - f.fovDeg) > 1e-3) {
 				cam.fov = f.fovDeg;
 				cam.updateProjectionMatrix();
@@ -224,7 +222,7 @@ export function FollowCamRig({ enabled, frame, frameRef, scene, shot, camRef, lo
 		applied.current = playhead;
 		cam.position.set(sample.pos.x, sample.pos.y, sample.pos.z);
 		look.current.yaw = sample.yaw;
-		look.current.pitch = sample.pitch;
+		look.current.pitch = sample.pitch; look.current.roll = THREE.MathUtils.degToRad(sample.rollDeg ?? 0);
 		// A rail with a lens of its own carries it; otherwise this is the scene lens.
 		if (Math.abs(cam.fov - sample.fovDeg) > 1e-3) { cam.fov = sample.fovDeg; cam.updateProjectionMatrix(); }
 		invalidate();
@@ -233,7 +231,7 @@ export function FollowCamRig({ enabled, frame, frameRef, scene, shot, camRef, lo
 }
 
 /**
- * Applies the shot camera's yaw/pitch from its look ref every frame. Before
+ * Applies the shot camera's yaw/pitch (and roll about the lens axis) from its look ref every frame. Before
  * the camera split, FlyControls owned the shot camera and performed this
  * apply as a side effect of flying; with the fly controls bound to the
  * editor camera, the recording camera still needs its aim (ShotRig, follow,
@@ -245,8 +243,8 @@ export function ShotLookApplier({ camRef, look }) {
 		const cam = camRef.current;
 		if (!cam) return;
 		if (cam.rotation.order !== "YXZ") cam.rotation.order = "YXZ";
-		if (cam.rotation.x !== look.current.pitch || cam.rotation.y !== look.current.yaw || cam.rotation.z !== 0) {
-			cam.rotation.set(look.current.pitch, look.current.yaw, 0);
+		const roll = look.current.roll ?? 0; if (cam.rotation.x !== look.current.pitch || cam.rotation.y !== look.current.yaw || cam.rotation.z !== roll) {
+			cam.rotation.set(look.current.pitch, look.current.yaw, roll);
 		}
 	});
 	return null;
@@ -317,7 +315,7 @@ export function CameraGlide({ glide, camRef, lookRef, onDone }) {
 	return null;
 }
 
-export function EditorCamSeed({ camRef, lookRef, shotCamRef, subject }) {
+export function EditorCamSeed({ camRef, lookRef, subject }) {
 	const seeded = useRef(false);
 	const invalidate = useThree((state) => state.invalidate);
 	useEffect(() => {
@@ -328,7 +326,7 @@ export function EditorCamSeed({ camRef, lookRef, shotCamRef, subject }) {
 		// The selected character owns the first read. The shot camera remains a
 		// useful reference in the inset; mixing its position into this seed pushed
 		// the editor eye several metres back and made the mannequin look tiny.
-		const frame = editorFrameForSubject(subject);
+		const frame = editorFrameForSubject(subject && { ...subject, scale: bodyScale(subject) }); // as large as it stands (figure.js)
 		const { target, position } = frame;
 		cam.position.set(position.x, position.y, position.z);
 		const angles = aimAt(cam.position, target);

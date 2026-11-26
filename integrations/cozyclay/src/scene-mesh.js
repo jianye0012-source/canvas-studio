@@ -14,9 +14,11 @@ import {
 	meshIdForBytes,
 	normalizeAsset,
 } from "./scene-assets.js";
-import { isFbxBinaryMagic, parseFbxBounds, readFbxVersion } from "./scene-fbx.js";
+import { bytesAsUint8, dataViewOf, isFbxBinaryMagic, isGlbMagic, readFbxVersion } from "./mesh-sniff.js";
+import { parseFbxBounds } from "./scene-fbx.js";
 
-export { isFbxBinaryMagic, parseFbxBounds, readFbxVersion } from "./scene-fbx.js";
+export { isFbxBinaryMagic, isGlbMagic, readFbxVersion } from "./mesh-sniff.js";
+export { parseFbxBounds } from "./scene-fbx.js";
 
 export const MESH_HEIGHT_MIN = 0.05;
 export const MESH_HEIGHT_MAX = 10;
@@ -28,19 +30,6 @@ const GLB_MAGIC = 0x46546c67;
 const GLB_JSON_CHUNK = 0x4e4f534a;
 const GLB_HEADER_BYTES = 12;
 const GLB_CHUNK_HEADER_BYTES = 8;
-
-function dataViewOf(bytes) {
-	if (bytes instanceof ArrayBuffer) return new DataView(bytes);
-	if (ArrayBuffer.isView(bytes)) return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-	return null;
-}
-
-/** MIME lies (empty, octet-stream, a renamed screenshot). The first four
- * bytes are the only honest gate that this is a GLB. */
-export function isGlbMagic(bytes) {
-	const view = dataViewOf(bytes);
-	return Boolean(view && view.byteLength >= 4 && view.getUint32(0, true) === GLB_MAGIC);
-}
 
 function glbJson(bytes) {
 	const view = dataViewOf(bytes);
@@ -111,8 +100,7 @@ export function parseGlbBounds(bytes) {
 	return bounds;
 }
 
-const COMPRESSED_GLB_EXTENSIONS = new Set(["KHR_texture_basisu"]);
-const COMPRESSED_GLB_MESSAGE = "模型使用暂不支持的 KTX2 压缩纹理，请导出使用 PNG / JPEG 纹理的 GLB";
+const COMPRESSED_GLB_EXTENSIONS = new Set(["KHR_draco_mesh_compression", "EXT_meshopt_compression"]);
 
 function glbExtensionNames(json) {
 	const names = new Set();
@@ -131,19 +119,13 @@ function glbExtensionNames(json) {
 	return names;
 }
 
-/** Geometry decoders ship locally; KTX2 textures still require a transcoder. */
+/** Refuse compression that our three.js loader cannot decode. */
 export function compressedGlbReason(bytes) {
 	const json = glbJson(bytes);
 	if (!json) return null;
 	for (const name of glbExtensionNames(json)) {
-		if (COMPRESSED_GLB_EXTENSIONS.has(name)) return COMPRESSED_GLB_MESSAGE;
+		if (!COMPRESSED_GLB_EXTENSIONS.has(name) && /compression|basisu/i.test(name)) return `That model uses unsupported compression — export it uncompressed (${name})`;
 	}
-	return null;
-}
-
-function bytesAsUint8(bytes) {
-	if (bytes instanceof ArrayBuffer) return new Uint8Array(bytes);
-	if (ArrayBuffer.isView(bytes)) return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 	return null;
 }
 

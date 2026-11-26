@@ -5,6 +5,7 @@
 // names the move from the geometry, so the prompt claims "push-in" only when
 // the camera actually pushes in.
 
+import { aimAngles } from "./camera-follow.js";
 import { FRAMING_PIVOT_Y, SUBJECT_HEIGHT_M, deriveShot, focalMmToFov, fovToFocalMm, usedSensorHeightMm } from "./shot.js";
 
 export const CAMERA_PRESETS = Object.freeze({
@@ -35,8 +36,8 @@ export function cameraPresetFraming(id, subject = {}, filmback = {}) {
  * yaw/pitch follow the YXZ free-look convention in controls.jsx.
  * @param {{pos:{x:number,y:number,z:number}, yaw:number, pitch:number, fovDeg:number}} state
  */
-export function captureFraming({ pos, yaw, pitch, fovDeg }) {
-	return { pos: { x: pos.x, y: pos.y, z: pos.z }, yaw, pitch, fovDeg };
+export function captureFraming({ pos, yaw, pitch, fovDeg, rollDeg = 0 }) {
+	return { pos: { x: pos.x, y: pos.y, z: pos.z }, yaw, pitch, fovDeg, ...(rollDeg ? { rollDeg } : {}) };
 }
 
 // yaw/pitch -> unit forward vector. Mirrors forwardFrom() in controls.jsx,
@@ -47,16 +48,6 @@ function forward(yaw, pitch) {
 }
 
 // position + target -> the yaw/pitch that looks at the target. Mirrors aimAt().
-function aimAngles(position, target) {
-	const dx = target.x - position.x;
-	const dy = target.y - position.y;
-	const dz = target.z - position.z;
-	return {
-		yaw: Math.atan2(-dx, -dz),
-		pitch: Math.atan2(dy, Math.max(Math.hypot(dx, dz), 1e-6)),
-	};
-}
-
 const TWO_PI = Math.PI * 2;
 
 /** signed shortest angular distance a -> b, in (-PI, PI] */
@@ -67,13 +58,15 @@ export function shortestArc(a, b) {
 	return delta;
 }
 
-const clamp01 = (t) => Math.max(0, Math.min(1, t));
-const lerp = (a, b, t) => a + (b - a) * t;
+const clamp01 = (t) => Math.max(0, Math.min(1, t)), lerp = (a, b, t) => a + (b - a) * t;
 
 /** the classic film ease: slow out of A, slow into B */
 export function easeInOut(t) {
 	return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
 }
+
+// Let each key choose the pace of its outgoing segment.
+export const EASES = Object.freeze(Object.assign(Object.create(null), { easeInOut, linear: (t) => t, easeIn: (t) => t * t * t, easeOut: (t) => 1 - (1 - t) ** 3 }));
 
 /**
  * Decompose a framing into subject-centred move coordinates: horizontal
@@ -139,13 +132,14 @@ export function interpolateFraming(a, b, anchor, t, ease = easeInOut, filmback =
 		y: lerp(A.aim.y, B.aim.y, k),
 		z: lerp(A.aim.z, B.aim.z, k),
 	};
-	const { yaw, pitch } = aimAngles(pos, aim);
-	const focalMm = lerp(A.focalMm, B.focalMm, k);
+	// Keep a pole key's authored orientation while easing toward the other key.
+	const { yaw, pitch } = Math.abs(Math.cos(a.pitch)) < 1e-10 || Math.abs(Math.cos(b.pitch)) < 1e-10 ? { yaw: a.yaw + shortestArc(a.yaw, b.yaw) * k, pitch: lerp(a.pitch, b.pitch, k) } : aimAngles(pos, aim);
+	const focalMm = lerp(A.focalMm, B.focalMm, k), rollDeg = lerp(a.rollDeg ?? 0, b.rollDeg ?? 0, k);
 	return {
 		pos,
 		yaw,
 		pitch,
-		fovDeg: (focalMmToFov(focalMm, filmback.sensorId, filmback.aspectRatio) * 180) / Math.PI,
+		fovDeg: (focalMmToFov(focalMm, filmback.sensorId, filmback.aspectRatio) * 180) / Math.PI, ...(rollDeg ? { rollDeg } : {}),
 	};
 }
 
@@ -303,7 +297,7 @@ export function cameraMoveAt(keys, anchor, frame, filmback = {}) {
 		const a = keys[i];
 		const b = keys[i + 1];
 		if (frame <= b.frame) {
-			return interpolateFraming(a.framing, b.framing, anchor, (frame - a.frame) / (b.frame - a.frame), easeInOut, filmback);
+			return interpolateFraming(a.framing, b.framing, anchor, (frame - a.frame) / (b.frame - a.frame), EASES[a.ease] ?? easeInOut, filmback);
 		}
 	}
 	return last.framing;

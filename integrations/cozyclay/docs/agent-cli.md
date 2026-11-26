@@ -34,7 +34,9 @@ One process owns the hub; everything else just connects to it:
 
 2. **Open a browser tab** at the Studio URL (`http://127.0.0.1:5209/app/`).
    A headless Chromium with remote debugging is fine — the editor is the page,
-   not the window.
+   not the window. From a source checkout,
+   `node tools/headless-studio.mjs --project shot.cclayproject --live-port 5629`
+   does steps 1 and 2 in one owned process (dev server plus headless Chrome).
 
 3. **Gate on an editor** with `status --wait` (below).
 
@@ -62,6 +64,22 @@ restarts, and it is what `--workspace` takes. Note the exit code —
 `status --wait` exits 0 only once a selectable editor exists.
 
 ## The loop
+
+`run`, `cmd`, and `tool` accept an optional JSON object through exactly one
+input flag: `--args '<json>'`, `--args-file <path>`, or `--args -` to read
+stdin. Omitting both flags sends `{}`. Giving `--args` and `--args-file`
+together, unreadable input, malformed JSON, and non-object JSON exit with
+usage code 2.
+
+Use a file or stdin for large payloads such as GLB data URLs: base64 expands
+the model and can exceed the operating system's command-line argument limit.
+
+```sh
+cclay live run asset.import --args-file import.json
+cclay live run asset.import --args - < import.json
+cclay live cmd place_object --args-file object.json
+cclay live tool describe_shot --args - < shot.json
+```
 
 Every session is the same shape:
 
@@ -99,7 +117,7 @@ ids and the layout:
 cclay live inspect --scope entities
 ```
 ```json
-{"context":{"schema":"studio-context-v1","host":{…},"revision":{"scene":3,"physics":3,"view":1},"units":{"distance":"m","angle":"deg","up":"+Y","yawZero":"+Z","yawPositiveToward":"+X","fps":24,"rangeEnd":"exclusive"},"scene":{"name":"SCENE 01","aspect":"16:9","floorY":0,"frameCount":432,"objectCount":0,"characterCount":1},"selection":{"kind":"character","id":"char-a","hierarchyId":"characterA"},"activeCharacterId":"char-a","view":{…},"shot":null,"camera":{…},"entities":[{"id":"char-a","kind":"character","token":"target-2","name":"a young woman in a tan coat",…}],"entityPage":{…},"shots":[],…,"recentReceipts":[…],"jobs":[],"capabilities":{…}},"entities":[{"id":"char-a","kind":"character","name":"a young woman in a tan coat","token":"target-2"}],"total":1,"nextCursor":null}
+{"revision":{"scene":3,"physics":3,"view":1},"host":{"workspaceId":"8306b693-…","documentEpoch":"9110399f-…","sceneId":"scene-mu3uy6d6-1","sceneEpoch":"69c39cf9-…"},"entities":[{"id":"char-a","kind":"character","token":"target-2","name":"a young woman in a tan coat"}],"total":1,"nextCursor":null}
 ```
 
 Place a box next to her — `relativeTo` positions it in the subject's own
@@ -118,10 +136,11 @@ gap measured (`actualGapM`) match, nothing overlaps, and one undo entry exists.
 `verify` re-runs that evidence and adds a picture of the current state:
 
 ```sh
-cclay live verify --receipt receipt-mu3uybgp-2 --checks placement --visual frame --out /tmp/329-doc/shots/f-a-place-check.png
+mkdir -p /tmp/cozyclay-demo/shots   # the examples below write here; --out does not create folders
+cclay live verify --receipt receipt-mu3uybgp-2 --checks placement --visual frame --out /tmp/cozyclay-demo/shots/f-a-place-check.png
 ```
 ```json
-{"receiptId":"receipt-mu3uybgp-2","revision":4,"checks":{"coverage":"same-frame-world-AABB-proxies","relationSatisfied":true,"overlapIds":[],"actualGapM":1.4000000000000001,"requestedGapM":1.4,"maximumFootprintOverlapM":0,"basis":"subject","support":"floor","baseY":0},"verification":null,"semanticStatus":"unavailable","visualRefs":[{"imageId":"ffdcee4e-bf4b-432c-82be-8b7b92c419b3"}],"unsupportedChecks":[],"visual":[{"imageId":"ffdcee4e-bf4b-432c-82be-8b7b92c419b3","path":"/tmp/329-doc/shots/f-a-place-check.png","width":1920,"height":1080,"bytes":684177}]}
+{"receiptId":"receipt-mu3uybgp-2","revision":4,"checks":{"coverage":"same-frame-world-AABB-proxies","relationSatisfied":true,"overlapIds":[],"actualGapM":1.4000000000000001,"requestedGapM":1.4,"maximumFootprintOverlapM":0,"basis":"subject","support":"floor","baseY":0},"verification":null,"semanticStatus":"unavailable","visualRefs":[{"imageId":"ffdcee4e-bf4b-432c-82be-8b7b92c419b3"}],"unsupportedChecks":[],"visual":[{"imageId":"ffdcee4e-bf4b-432c-82be-8b7b92c419b3","path":"/tmp/cozyclay-demo/shots/f-a-place-check.png","width":1920,"height":1080,"bytes":684177}]}
 ```
 
 Now frame the shot — camera vocabulary, not coordinates. This scene has no
@@ -132,17 +151,17 @@ writes the framing as its one camera key, at the shot's start — a held shot:
 cclay live frame-shot --subject char-a --size "wide shot" --view front --level hip
 ```
 ```json
-{"ok":true,"commandId":"c836cddc-9861-4ec0-87e3-fec764666ed7","receiptId":"receipt-mu3uybub-4","host":{…},"status":"applied","authored":true,"revision":{"before":4,"after":5},"affectedIds":["shot-mu3uybub-3","camera-key-…"],"delta":[{"id":"shot-mu3uybub-3","after":{"range":{"startFrame":0,"endFrameExclusive":432},"camera":{"position":{"x":-0.011522021105043662,"y":1.0621432515131122,"z":5.077024270710456},"lookAt":{…},"focalMm":24.44391231902759,"sensorId":"fullFrame","slate":"wide shot"},"subjectIds":["char-a"],"shotId":"shot-mu3uybub-3"}}],"checks":{"coverage":"same-frame-subject-bounds-projection","clipped":false,"behindCamera":false,"screenFraction":0.44729099405708983,"derivedSize":"wide shot"},"undo":{"historyEntryId":"be5d9c6f-0bb7-4e5c-be4d-3b1fe7dc887c","entries":1,"canUndoDirect":true},"warnings":[{"code":"OCCLUSION_UNMEASURED"}],"detailCursor":"c836cddc-9861-4ec0-87e3-fec764666ed7"}
+{"ok":true,"commandId":"c836cddc-9861-4ec0-87e3-fec764666ed7","receiptId":"receipt-mu3uybub-4","host":{…},"status":"applied","authored":true,"revision":{"before":4,"after":5},"affectedIds":["shot-mu3uybub-3","camera-key-…"],"delta":[{"id":"shot-mu3uybub-3","after":{"range":{"startFrame":0,"endFrameExclusive":432},"camera":{"position":{"x":-0.011522021105043662,"y":1.0621432515131122,"z":5.077024270710456},"lookAt":{…},"focalMm":24.44391231902759,"sensorId":"fullFrame","slate":"wide shot"},"subjectIds":["char-a"],"shotId":"shot-mu3uybub-3"}}],"checks":{"coverage":"same-frame-subject-bounds-projection","clipped":false,"behindCamera":false,"screenFraction":0.44729099405708983,"derivedSize":"wide shot"},"undo":{"historyEntryId":"be5d9c6f-0bb7-4e5c-be4d-3b1fe7dc887c","entries":1,"canUndoDirect":true},"warnings":[],"detailCursor":"c836cddc-9861-4ec0-87e3-fec764666ed7"}
 ```
 
 `derivedSize` is what the lens actually produced, measured by projection:
 "wide shot" requested, "wide shot" derived, `clipped: false`. Then look at it:
 
 ```sh
-cclay live capture --framing --out /tmp/329-doc/shots/f-a-wide-hip.png
+cclay live capture --framing --out /tmp/cozyclay-demo/shots/f-a-wide-hip.png
 ```
 ```json
-{"path":"/tmp/329-doc/shots/f-a-wide-hip.png","width":1920,"height":1080,"bytes":344608}
+{"path":"/tmp/cozyclay-demo/shots/f-a-wide-hip.png","width":1920,"height":1080,"bytes":344608}
 ```
 
 To check the blocking from above instead, ask `verify` for the plan:
@@ -192,23 +211,23 @@ full admission envelope — which you build from one `inspect`:
 cclay live inspect --scope shot
 ```
 ```json
-{"context":{"schema":"studio-context-v1","host":{"surface":"studio","workspaceId":"8306b693-…","documentEpoch":"9110399f-…","sceneId":"scene-mu3uy6d6-1","sceneEpoch":"69c39cf9-…","workspaceHandle":"8306b693-…"},"revision":{"scene":5,"physics":4,"view":3},"units":{…},"scene":{"name":"SCENE 01","aspect":"16:9","floorY":0,"frameCount":432,"objectCount":1,"characterCount":1},"selection":{"kind":"character","id":"char-a","hierarchyId":"characterA"},"activeCharacterId":"char-a","view":{…},"shot":{"id":"shot-mu3uybub-3","name":"Shot 1","range":{"startFrame":0,"endFrameExclusive":432},"mode":"keys"},"camera":{…},"entities":[{"id":"char-a","kind":"character","token":"target-2",…},{"id":"cube","kind":"object","token":"target-5",…}],"entityPage":{"returned":2,"total":2,"truncated":false,"nextCursor":null},"shots":[{"id":"shot-mu3uybub-3","name":"Shot 1","range":{"startFrame":0,"endFrameExclusive":432},"keyCount":1}],"shotsTruncated":false,"assets":[],"recentReceipts":[{"id":"receipt-mu3uybub-4","summary":"applied","canUndoDirect":true},{"id":"receipt-mu3uybgp-2","summary":"applied","canUndoDirect":false},…],"jobs":[],"capabilities":{…}},"entities":[{"id":"char-a","kind":"character","name":"a young woman in a tan coat","token":"target-2"},{"id":"cube","kind":"object","name":"Side box","token":"target-5"}],"total":2,"nextCursor":null}
+{"revision":{"scene":5,"physics":4,"view":3},"host":{"workspaceId":"8306b693-…","documentEpoch":"9110399f-…","sceneId":"scene-mu3uy6d6-1","sceneEpoch":"69c39cf9-…"},"scope":"document","document":{"shots":[{"id":"shot-mu3uybub-3","name":"Shot 1",…}]},"schema":{"shots":{…}}}
 ```
 
-Build the envelope from that context — the four host identity fields and the
+Build the envelope from that response — the four host identity fields and the
 scene revision you saw. Mint your own `commandId`; the editor journals it,
 which is what makes the command reconcilable later:
 
 ```sh
-cclay live inspect --scope shot > /tmp/329-doc/f-b-inspect.json
+cclay live inspect --scope shot > /tmp/cozyclay-demo/f-b-inspect.json
 node -e '
-const c = require("/tmp/329-doc/f-b-inspect.json").context;
+const c = require("/tmp/cozyclay-demo/f-b-inspect.json");
 const host = (({workspaceId, documentEpoch, sceneId, sceneEpoch}) => ({workspaceId, documentEpoch, sceneId, sceneEpoch}))(c.host);
 const envelope = {
   name: "frame_shot",
   args: {
     subjectIds: ["char-a"],
-    shotId: c.shot.id,
+    shotId: c.document.shots[0].id,
     keyAtFrame: 96,
     framing: { intent: { size: "medium shot", view: "front", level: "eye", side: "left" } },
   },
@@ -216,17 +235,17 @@ const envelope = {
   host,
   expectedRevision: c.revision.scene,
 };
-require("node:fs").writeFileSync("/tmp/329-doc/f-b-envelope.json", JSON.stringify(envelope));
+require("node:fs").writeFileSync("/tmp/cozyclay-demo/f-b-envelope.json", JSON.stringify(envelope));
 '
 ```
 
 Send it as one raw command:
 
 ```sh
-cclay live cmd frame_shot --args "$(cat /tmp/329-doc/f-b-envelope.json)"
+cclay live cmd frame_shot --args "$(cat /tmp/cozyclay-demo/f-b-envelope.json)"
 ```
 ```json
-{"ok":true,"commandId":"e94748b1-5df7-4859-a1f3-baf9cb20067a","receiptId":"receipt-mu3uyc8d-6","host":{…},"status":"applied","authored":true,"revision":{"before":5,"after":6},"affectedIds":["shot-mu3uybub-3","camera-key-mu3uyc8d-5"],"delta":[{"id":"shot-mu3uybub-3","after":{"range":{"startFrame":0,"endFrameExclusive":432},"camera":{"position":{"x":-0.011522021105043662,"y":1.5894328518973564,"z":2.109947017309772},"lookAt":{…},"focalMm":24.44391231902759,"sensorId":"fullFrame","slate":"medium shot"},"subjectIds":["char-a"],"shotId":"shot-mu3uybub-3"}},{"id":"camera-key-mu3uyc8d-5","after":{…,"keyId":"camera-key-mu3uyc8d-5","frame":0,…}}],"checks":{"coverage":"same-frame-subject-bounds-projection","clipped":true,"behindCamera":false,"screenFraction":1.1027891282716213,"derivedSize":"medium shot"},"undo":{"historyEntryId":"47bcf6d7-2a8e-44bb-b40e-25a3180e7d57","entries":1,"canUndoDirect":true},"warnings":[{"code":"OCCLUSION_UNMEASURED"}],"detailCursor":"e94748b1-5df7-4859-a1f3-baf9cb20067a"}
+{"ok":true,"commandId":"e94748b1-5df7-4859-a1f3-baf9cb20067a","receiptId":"receipt-mu3uyc8d-6","host":{…},"status":"applied","authored":true,"revision":{"before":5,"after":6},"affectedIds":["shot-mu3uybub-3","camera-key-mu3uyc8d-5"],"delta":[{"id":"shot-mu3uybub-3","after":{"range":{"startFrame":0,"endFrameExclusive":432},"camera":{"position":{"x":-0.011522021105043662,"y":1.5894328518973564,"z":2.109947017309772},"lookAt":{…},"focalMm":24.44391231902759,"sensorId":"fullFrame","slate":"medium shot"},"subjectIds":["char-a"],"shotId":"shot-mu3uybub-3"}},{"id":"camera-key-mu3uyc8d-5","after":{…,"keyId":"camera-key-mu3uyc8d-5","frame":0,…}}],"checks":{"coverage":"same-frame-subject-bounds-projection","clipped":true,"behindCamera":false,"screenFraction":1.1027891282716213,"derivedSize":"medium shot"},"undo":{"historyEntryId":"47bcf6d7-2a8e-44bb-b40e-25a3180e7d57","entries":1,"canUndoDirect":true},"warnings":[],"detailCursor":"e94748b1-5df7-4859-a1f3-baf9cb20067a"}
 ```
 
 The affected ids are the shot and the new camera key
@@ -239,10 +258,10 @@ shot on a 24 mm lens does crop). Put the playhead on the key and look at it:
 
 ```sh
 cclay live operate --frame 96
-cclay live capture --framing --out /tmp/329-doc/shots/f-b-eye-keyed.png
+cclay live capture --framing --out /tmp/cozyclay-demo/shots/f-b-eye-keyed.png
 ```
 ```json
-{"path":"/tmp/329-doc/shots/f-b-eye-keyed.png","width":1920,"height":1080,"bytes":588902}
+{"path":"/tmp/cozyclay-demo/shots/f-b-eye-keyed.png","width":1920,"height":1080,"bytes":588902}
 ```
 
 The PNG reads as the medium shot at eye level the receipt described. If the
@@ -289,7 +308,7 @@ undoable like any other.
 an error code.** The CLI only learns the socket is gone, and says so:
 
 ```sh
-cclay live cmd arrange_objects --args "$(cat /tmp/329-doc/f-c-envelope.json)" &
+cclay live cmd arrange_objects --args "$(cat /tmp/cozyclay-demo/f-c-envelope.json)" &
 CLI_PID=$!
 sleep 0.15 && kill -9 "$(lsof -tiTCP:5629 -sTCP:LISTEN)"   # kill the hub mid-command
 wait $CLI_PID; echo "exit=$?"
@@ -319,7 +338,7 @@ ask the editor's journal what happened to that commandId:
 
 ```sh
 cclay live cmd reconcile_studio_command --args "$(node -e '
-const e = require("/tmp/329-doc/f-c-envelope.json");
+const e = require("/tmp/cozyclay-demo/f-c-envelope.json");
 console.log(JSON.stringify({ commandId: e.commandId, host: e.host }));
 ')"
 ```
@@ -335,10 +354,11 @@ case above reconciles `applied` because there the page never reloaded).
 `not_applied` both mean the same next step — a fresh `inspect`, then choose:
 
 ```sh
-cclay live inspect --scope selection
+cclay live inspect --scope scene --ids cube > /tmp/cozyclay-demo/f-c-inspect2.json
+cat /tmp/cozyclay-demo/f-c-inspect2.json
 ```
 ```json
-{"context":{"schema":"studio-context-v1","host":{…},"revision":{"scene":3,"physics":3,"view":1},"units":{…},"scene":{"name":"SCENE 01","aspect":"16:9","floorY":0,"frameCount":432,"objectCount":1,"characterCount":1},"selection":{…},"activeCharacterId":"char-a","view":{…},"shot":null,"camera":{…},"entities":[{…},{"id":"cube","kind":"object","token":"target-1","name":"Stand-in box",…}],"entityPage":{…},"shots":[],…,"recentReceipts":[…],"jobs":[],"capabilities":{…}},"entities":[{"id":"char-a","kind":"character","name":"a young woman in a tan coat","token":"target-3"},{"id":"cube","kind":"object","name":"Stand-in box","token":"target-1"}],"total":2,"nextCursor":null}
+{"revision":{"scene":3,"physics":3,"view":1},"host":{"workspaceId":"8306b693-…","documentEpoch":"9110399f-…","sceneId":"scene-mu3uy6d6-1","sceneEpoch":"69c39cf9-…"},"scope":"document","document":{"objects":[{"id":"cube","name":"Stand-in box",…}]},"schema":{"objects":{…}}}
 ```
 
 The reload reopened the same project and the box is still there, renamed
@@ -350,7 +370,7 @@ answered `noop` — also fine, just nothing to undo):
 
 ```sh
 node -e '
-const c = require("/tmp/329-doc/f-c-inspect2.json").context;
+const c = require("/tmp/cozyclay-demo/f-c-inspect2.json");
 const host = (({workspaceId, documentEpoch, sceneId, sceneEpoch}) => ({workspaceId, documentEpoch, sceneId, sceneEpoch}))(c.host);
 const envelope = {
   name: "arrange_objects",
@@ -359,9 +379,9 @@ const envelope = {
   host,
   expectedRevision: c.revision.scene,
 };
-require("node:fs").writeFileSync("/tmp/329-doc/f-c-envelope2.json", JSON.stringify(envelope));
+require("node:fs").writeFileSync("/tmp/cozyclay-demo/f-c-envelope2.json", JSON.stringify(envelope));
 '
-cclay live cmd arrange_objects --args "$(cat /tmp/329-doc/f-c-envelope2.json)"
+cclay live cmd arrange_objects --args "$(cat /tmp/cozyclay-demo/f-c-envelope2.json)"
 ```
 ```json
 {"ok":true,"commandId":"53f3bb46-b939-4d57-811d-04701ba0bebf","receiptId":"receipt-mu3vc2ed-2","host":{…},"status":"applied","authored":true,"revision":{"before":3,"after":4},"affectedIds":["cube"],"delta":[{"id":"cube","after":{"position":{"x":2.0380938133472153,"y":0,"z":0},"yawDeg":0,"rotationDeg":{"x":0,"y":0,"z":0},"scale":{"x":1,"y":1,"z":1},"name":"Stand-in box","color":"#3d5a80","renderer":"cube","parentId":null}}],"checks":{"coverage":"same-frame-world-AABB-proxies","overlapIds":[],"maximumFootprintOverlapM":0},"undo":{"historyEntryId":"7ada6c36-2b26-460d-874f-c70ef47a698c","entries":1,"canUndoDirect":true},"warnings":[],"detailCursor":"53f3bb46-b939-4d57-811d-04701ba0bebf"}
@@ -377,9 +397,11 @@ state, never on a guess about what the dead hub saw.
 | verb | what it does | receipt? |
 | --- | --- | --- |
 | `status [--wait]` | the hub, its editors, and the selected one; `--wait` blocks until a selectable editor connects | no |
+| `save --out file.cclayproject [--force]` | save the open scene document locally; `--force` permits replacing an existing file | no |
 | `describe` | the full live scene document (scenes, objects, characters, camera, timeline) | no |
-| `inspect --scope selection\|scene\|entities\|shot\|motion\|catalogue` `[--ids a,b]` `[--query text]` | the scene context: identity, revisions, entity tokens, shots, receipts — the source for admission envelopes | no |
+| `inspect --scope selection\|scene\|entities\|shot\|motion\|catalogue` `[--ids a,b]` `[--query text]` `[--limit n]` `[--cursor c]` | the scene context: identity, revisions, entity tokens, shots, receipts — the source for admission envelopes | no |
 | `capture --out frame.png [--framing]` | the editor's 640×360 viewport PNG, or with `--framing` the full-resolution shot-camera PNG | no |
+| `capture --frames A-B --out-dir DIR [--step N] [--force]` | every Nth timeline frame from A to B (inclusive; `--frames N` for one) as the full-resolution shot-camera PNG the video export renders, written as `DIR/000000.png` (six-digit frame number) in one session; prints `{ok, dir, frames, first, last, bytes, width, height}` | no |
 | `arrange-objects --op '<json>'` \| `-f ops.json` | create / update / remove / group / ungroup set pieces, up to 100 ops, with relative placement and collision policy | yes |
 | `arrange-characters --op '<json>'` \| `-f ops.json` | create / update / remove cast, up to 8 ops | yes |
 | `patch --target <kind>[:<id>] --set '<json>'` | set declared authored fields by path on one `character` / `object` / `shot` / `stage` target; `inspect --scope catalogue` lists the patchable paths | yes |
@@ -389,6 +411,39 @@ state, never on a guess about what the dead hub saw.
 | `undo --receipt <id>` | restore the document through the editor's native history, one entry | yes |
 | `cmd <name> --args '<json>'` | any live-protocol command, raw (no admission, no auto-receipt) | per command |
 | `tool <name> --args '<json>'` | any registry tool the hub serves, e.g. `describe_shot` | no |
+
+`capture --frames` is the terminal route to a shot video: the confirmed
+`export.shotVideo` still needs its click in the Studio, but the frames are a
+read. The editor poses the cast and parks the shot camera at each frame the
+way the export does, then puts both back, so the playhead never moves and no
+`operate --frame` round trip is needed. The CLI process writes the files; the
+Studio writes nothing. Encode them yourself, at the timeline's fps:
+
+```sh
+cclay live capture --frames 0-242 --out-dir /tmp/shot-frames
+ffmpeg -framerate 24 -start_number 0 -i /tmp/shot-frames/%06d.png -pix_fmt yuv420p shot.mp4
+```
+
+Files keep their timeline frame number, so a range that starts later or skips
+frames with `--step` reads as a glob instead:
+`-pattern_type glob -i '/tmp/shot-frames/*.png'`.
+A glob encode reads every PNG in the folder, so a run refuses an `--out-dir`
+that already holds PNG files (`DIR_NOT_EMPTY`, exit 2) before it captures
+anything. `--force` deletes an earlier run's frame files (`000042.png`) first;
+any other PNG still refuses, and non-PNG files are left alone. One run takes
+at most 10000 frames.
+
+An editor tab from before this verb answers the playhead instead of the frame
+it was asked for; the CLI stops at the first such frame with `EDITOR_ERROR`
+(reload the tab). A failure names `details.frame` and how many files were
+already `written`.
+
+The stage fields include `floor` (boolean, default `true`), `keyLight`,
+`lighting`, `environment`, `environmentImage`, `style`, `hasEnvSheet`,
+`camera`, `cameraPresetId`, and `sensorId`. Set `floor` to `false` for a
+void without the lit deck in shots and exports; the optional editor reference
+grid stays on the gizmo layer. A hidden-floor contact-shadow catcher is a
+follow-up.
 
 `patch` carries one target kind per command — its commit domain — because one
 receipt is one revision step and one undo entry; a `character` patch and a
@@ -421,23 +476,28 @@ cclay live patch --target stage --set '{"keyLight.intensity":2.4,"keyLight.warmt
 That one receipt is one Cmd+Z in the editor: `undo --receipt receipt-mu9p1c2-7`
 and the key light goes back exactly where it was.
 
-A registry tool that does not apply to the project or to its target answers a
-structured refusal instead of acting: `NOT_IN_MODE` for an animation-only tool
-in a Storyboard project, `TARGET_NOT_READY` for motion or a take on a capsule
-figure (`model: "proxy-figure"`). Branch on `code`; `reason` is the sentence to
-show. Here a capsule figure is cast, selected, and asked to move:
+A registry tool that does not apply to its target answers a structured refusal
+instead of acting: `TARGET_NOT_READY` for motion or a take on a capsule figure
+(`model: "proxy-figure"`). Branch on `code`; `reason` is the sentence to
+show. Here a capsule figure is cast and asked to move:
 
 ```sh
 cclay live tool add_character --args '{"subject":"a stand-in","model":"proxy-figure","posture":"sit","x":1.2,"z":0.5}'
-cclay live operate --select character:character-mv17e47z-3
-cclay live tool generate_motion --args '{"phases":["A person walks forward."]}'
-```
-```json
-{"content":[{"type":"text","text":"{\"ok\":false,\"code\":\"TARGET_NOT_READY\",\"reason\":\"Capsule figures have no rig - Motion generation works on rigged characters only.\"}"}],"isError":true}
+cclay live run motion.compile --args '{"characterId":"character-mv17e47z-3","spec":{"schema":"cozyclay.motion-spec.v1","fps":24,"frames":48,"use":[{"skill":"standIdle","f0":0,"args":{"at":[0,0],"heading":0,"until":47}}]},"install":false}'
 ```
 
-Nothing reached the editor. Select a rigged character and the same call goes to
-the editor's own motion readiness checks.
+The editor's motion readiness check refuses the compile with
+`TARGET_NOT_READY` and the reason `a stand-in is a proxy-figure body, which
+motion compile cannot drive; use an X Bot or Y Bot character.` Nothing is
+compiled or installed. Name a rigged character and the same call compiles.
+
+Entity inspection pages default to 12 rows (maximum 32): use `--limit 32` and pass the returned `nextCursor` as `--cursor` until it is null; `total` is the matching entity count. Shot and selection scopes return `scope: "document"`, `document` and `schema`, while entities returns `entities`, `total` and `nextCursor`; all carry top-level `host` and `revision`.
+
+```sh
+cclay live arrange-objects --op '{"op":"create","source":{"kind":"cube"},"position":{"world":{"x":1,"y":0,"z":2}}}'
+```
+
+Other placement forms are `{relativeTo, basis, side, gapM, support}`, `{between, fraction, support}` and `{onObject, offsetXZ?}`.
 
 The op JSON for `arrange-*` is one operation, an array of them, or
 `{"ops":[…], "collisionPolicy":"report"|"avoid"}`. Placement is `world`
@@ -446,6 +506,22 @@ coordinates or `relativeTo` an entity with `basis` (`world` / `subject` /
 an object. Sizes: extreme close-up … extreme wide shot. Views: front, front
 three-quarter, profile, rear three-quarter, back. Levels: ground, low, hip,
 eye, high, overhead. Sides: left, right.
+
+### Saving a project
+
+```sh
+cclay live save --out scene.cclayproject
+cclay live save --out scene.cclayproject --force
+```
+
+The CLI reads `describe` through the existing hub and writes the project itself;
+no Studio file picker or confirmation token is needed. The result is one JSON
+object: `{ok:true, path:"/absolute/scene.cclayproject", bytes:1234}`.
+Existing files are refused with `FILE_EXISTS` unless `--force` is supplied.
+All scenes and the current authoring camera are included. The current describe
+response does not expose workspace layout, custom poses, workflow or embedded
+asset records, so these are omitted; the scene name supplies the saved project
+name. If a hub supplies those project fields, they are included.
 
 ### Global flags
 
@@ -471,6 +547,8 @@ so piping through `jq` is always safe.
 | 5 | `TIMEOUT` or `UNCERTAIN_APPLY` | do not retry; reconcile or re-inspect |
 | 6 | `STALE_SCENE`, `STALE_TARGET`, `TARGET_BUSY` | `inspect` again and re-issue |
 
+`TAB_HIDDEN` (exit 1) means capture was refused because the Studio page is hidden: its animation-frame callbacks may not have applied the requested frame or camera. Bring the Studio tab to the front or use headless Chrome (whose pages report visible), then capture again. This applies to both preview and `--framing` captures.
+
 ### The two-editor rule
 
 With exactly one editor connected, commands route to it automatically. With
@@ -483,7 +561,9 @@ ambiguity; it just reports `selected: null`.
 
 ### Timeouts
 
-- Default editor command bound: 5 s (30 s for motion installs). `--timeout`
+- Default editor command bound: 5 s; 30 s for the Studio commands
+  (`run_action` among them) when no timeout is passed. `cclay live run` passes
+  the action's declared timeout (240 s for `motion.compile`). `--timeout`
   overrides it per command, capped at 300 s.
 - The CLI additionally abandons a request that gets no *hub* answer at all
   (default ceiling 330 s).
@@ -496,10 +576,14 @@ Metres (`x` right, `z` toward the default camera, `y` up), degrees of yaw,
 frames at 24 fps, frame ranges end-exclusive. Ids are the ids the scene
 document uses — take them from `inspect`, never from memory.
 
+A `shot.set` camera key's `framing` mixes units: `yaw` and `pitch` are
+**radians** (yaw 0 looks down -Z, positive turns left; pitch 0 is level,
+positive looks up), while `fovDeg` is degrees.
+
 ## Models and providers
 
 The other prompt surface, the Agent panel (Studio and Workflow), runs on the
-pi agent harness and can talk to nine providers. A model id on the wire is
+pi agent harness and can talk to ten providers. A model id on the wire is
 `provider/model`, so `openai-codex/gpt-6-astra` and `anthropic/claude-fable-5`
 name two different models without ambiguity. A bare id with no slash still
 works and means `openai-codex/<id>`, which is why older saved model choices
@@ -516,6 +600,7 @@ keep resolving.
 | `minimax-cn` | MiniMax (China) | API key, `MINIMAX_CN_API_KEY` (Anthropic-compatible, `https://api.minimaxi.com/anthropic`) |
 | `openrouter` | OpenRouter | API key, `OPENROUTER_API_KEY` |
 | `cliproxy` | CLIProxyAPI | API key, `CLIPROXY_API_KEY` (base URL `CLIPROXY_BASE_URL`, default `http://127.0.0.1:8317`) |
+| `openai-compatible` | OpenAI-compatible server | the server address (default `http://127.0.0.1:11434`) and an optional API key, entered under Connect a model (LM Studio, Ollama, any server with `/v1/models`) |
 
 ChatGPT sign-in did not change: the panel still runs the Codex OAuth flow,
 the token still lives in `~/.config/cozyclay/codex-auth.json`, and it is still
@@ -547,8 +632,10 @@ mode 0600 and is a flat map of provider id to key:
 
 The environment variable wins when both are set, so a key exported in the
 shell that started the Studio temporarily overrides the saved one without
-touching the file. `COZYCLAY_CONFIG_DIR` moves the whole config home,
-`providers.json` and `codex-auth.json` together, which is what the tests use.
+touching the file. `COZYCLAY_CONFIG_DIR` moves `providers.json` and the
+agent sessions, which is what the provider tests use. The ChatGPT token in
+`codex-auth.json` does not follow it: it moves with `XDG_CONFIG_HOME`, or to
+the file `COZYCLAY_CODEX_AUTH_FILE` names.
 
 Three routes manage the file. They sit behind the same origin guard as the
 rest of `/agent/*`: a browser request must carry an `Origin` of the Studio's
@@ -578,18 +665,26 @@ and the reasoning-effort levels that model actually supports. A provider you
 have no key for is still listed, its models with it and `signedIn: false`, so
 the panel can show what a key would buy you.
 
+The lists come from pi's model catalogue. With a ChatGPT sign-in, the
+ChatGPT list is the account's own lineup instead: the models the backend's
+model list names for that account, in its order (`gpt-6-astra` first when it
+is among them), without the ones it marks `visibility: "hide"`. A ChatGPT
+plan runs only those; the backend refuses a catalogue model outside them.
+When the model list cannot be read, or names no model to list, the catalogue
+is listed.
+
 The model is picked per turn, so one session can start on ChatGPT and
 continue on Anthropic without losing its history.
 
 ### Prompt caching
 
 On an `anthropic-messages` model the request already carries Anthropic cache
-breakpoints from pi-ai 0.85.1 itself (default retention "short", i.e.
-`{"type":"ephemeral"}`): every system block
-(`node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js:801-826`),
-the last tool definition (`:1133`, unless the model's
-`compat.supportsCacheControlOnTools` is false) and the last block of the last
-user message (`:1066-1085`). The runner's `before_payload` hook only fills a
+breakpoints from pi-ai itself (default retention "short", i.e.
+`{"type":"ephemeral"}`), in
+`node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js`: every
+system block (`buildParams`), the last tool definition (`convertTools`, unless
+the model's `compat.supportsCacheControlOnTools` is false) and the last block
+of the last user message (`convertMessages`). The runner's `before_payload` hook only fills a
 missing mark on the last system block and the last tool, never past
 Anthropic's four breakpoints. The Studio's `<actions>` block sits at the end
 of the system prompt, so the system prompt and the tool schemas form a stable
@@ -693,6 +788,8 @@ the pre-selected actions the index declares (`character.setPose`,
 `inspect_studio { scope: "actions", ids }` and bounded to 6 KB (whole schemas
 only; the ids that did not fit are listed under `omitted`).
 
+`shot.setKeyEase { shotId, keyId, ease }` sets the outgoing camera-key segment to `easeInOut` (default), `linear`, `easeIn`, or `easeOut`; use `null` to restore the default.
+
 Every fix is validated before the note is stored: its action must be in the
 action index, its `args` must be an object, and when the action's schema was
 read every key in its `required` list must be present. A fix that fails is
@@ -743,7 +840,7 @@ read the old file yourself: nothing in the Studio will convert it.
 
 Motion is not a dedicated verb, but the editor's registered motion actions
 run through `live run`, admitted like the agent's `run_action` and waiting
-the action's declared timeout (120 s for `motion.compile`). `cclay live
+the action's declared timeout (240 s for `motion.compile`). `cclay live
 commands --ids motion.compile` prints the input schema; the spec language is
 in [motion3-agent-guide.md](motion3-agent-guide.md) and
 [motion-api-v3.1.md](motion-api-v3.1.md). Compile without installing first,
@@ -761,8 +858,13 @@ The other motion actions (`motion.qa`, `motion.sample`, `motion.describe`,
   motion owner mounted; otherwise `motion.compile`, `motion.qa`,
   `motion.sample` and `motion.keyObject` are refused as unavailable with
   "The motion owner is not mounted."
-- an X Bot or Y Bot character at scale 1; any other body (a capsule figure
-  included) or scale answers `TARGET_NOT_READY` with the reason.
+- a rigged character (X Bot, Y Bot, or an imported character whose rig
+  adapted); a capsule figure or an imported body with an incomplete skeleton
+  answers `TARGET_NOT_READY` with the reason. The actions that compile
+  (`motion.compile`, `motion.qa`, `motion.report` by character,
+  `motion.keyObject`) also need the character at scale 1 and answer
+  `TARGET_NOT_READY` at any other; `motion.sample` reads the take's bones at
+  the character's place, turn and scale, whatever they are.
 - `motion.qa`, `motion.sample` and `motion.keyObject` need a compiled take on
   the character; compile first.
 
@@ -770,3 +872,9 @@ What is not on the CLI is the old generation surface: there is no
 `generate_motion` tool or prompt-to-motion install verb on the live hub. For
 prompt-driven motion, use a session in the Agent panel (**View ▾ → Panels →
 Agent panel**), which calls the same `motion.compile` on the same scene.
+
+## The review of a turn
+
+When a Studio turn edits the scene and the model stops, the editor measures what changed and renders the shot frame and the top view. The model gets the failing numbers, the pictures and the relation list as its next message, and it repairs or says why not. This repeats after a repair, at most 3 times a turn. The agent panel shows it as a "Verify the result" row with what failed, and its progress card shows the pictures. The main agent and tasks both run it. A task's summary keeps what the model wrote before the review. `COZYCLAY_AGENT_REVIEW=off` turns it off.
+
+`inspect_studio { scope: "relations" }` answers the relation rows (`Lamp#cube-2 ON Table#cube-5`, `Hero#char-a OCCLUDED_BY Pillar#cube-3 30%`, `Hero#char-a IN_FRAME 1.00 height 0.42`, `LEFT_OF`, `RIGHT_OF`, `NEAR`), character world bounds, and the shot camera's in-frame and out-of-frame lists. The turn's context carries them too, while they fit.

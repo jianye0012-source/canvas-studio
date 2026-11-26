@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 // Which src/styles.css rules does the Studio still use? Drives /app/ through
 // every v2 surface (modes 1-4 with a character and then a prop selected, the
-// File/Edit/Window/Help menus with Export, the Generate Motion caret, the
-// viewport pills, Preferences on every page, Content and Log, and the start
-// screen) at 1600x1000 and 1280x800 while CDP CSS.startRuleUsageTracking
+// File/Edit/Window/Help menus with Export, the viewport pills, Preferences
+// on every page, Content and Log, and the start screen) at 1600x1000 and 1280x800 while CDP CSS.startRuleUsageTracking
 // records every style rule that matched. Rules that never matched AND whose
 // class/id names appear in no src/**/*.{js,jsx} file are pruning candidates.
 //
-//   QA_URL=http://127.0.0.1:5733/app/?motion=/demo/walk-then-stop.npz CDP_PORT=9733 \
+//   QA_URL=http://127.0.0.1:5733/app/ CDP_PORT=9733 \
 //     OUT=/tmp/css-usage.json node tools/qa-browser.mjs -- node tools/qa/css-rule-usage.mjs
 //
 // Writes OUT (default /tmp/css-rule-usage.json): { states, rules, used,
@@ -211,13 +210,7 @@ async function walkStudio(label) {
 		}
 		await collect(`${label} ${menu} menu`);
 		await escape();
-		if (await evaluate("!!document.querySelector('.menubar-menu')")) await click(".topbar-swatch");
 	}
-	await click("[data-testid=topbar-generate-menu]");
-	await waitFor("!!document.querySelector('[data-generate-action]')");
-	await collect(`${label} Generate Motion caret`);
-	await escape();
-	if (await evaluate("!!document.querySelector('[data-generate-action]')")) await click("[data-testid=topbar-generate-menu]");
 	// Preferences through Edit › Preferences…, then every section.
 	await click("[data-testid=menu-edit]");
 	await waitFor("!!document.querySelector('[data-testid=menu-preferences]')");
@@ -250,6 +243,11 @@ await walkStudio("1600");
 await load({ width: 1280, height: 800 });
 await walkStudio("1280");
 await load({ session: false, width: 1440, height: 900 });
+// No load starts on the start screen: this one (the scene the loads above stored, and no session) opens the editor
+// on that scene as it is, with no project made. The start screen is File > New's.
+await waitFor("!document.querySelector('.v2-start-screen') && !!document.querySelector('.timeline') && !!document.querySelector('[data-testid=menu-file]')", 60000);
+await click("[data-testid=menu-file]");
+await click("[data-testid=menubar-new]");
 await waitFor("!!document.querySelector('.v2-start-screen')", 60000);
 await collect("start screen");
 

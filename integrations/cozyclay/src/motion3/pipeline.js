@@ -15,7 +15,10 @@
 // prepareSpec (correct.js) first corrects slips with one reading and fits walkTo strides, both kept in the
 // stored spec; liftRequest takes what the agent obviously meant: spec.probes are request probes, and a
 // bare goals[].moved id is object:<id>; relaxSpec (lenient.js) fixes mechanical slips in the expanded
-// spec before validation and the answer lists each fix in notes.
+// spec before validation, the validator corrects the slips it would refuse that have one reading
+// (compiler/validate-mend.js: backward knee poles, keys just past the last frame, sided anchor names), and
+// the answer lists each fix in notes.
+import { expandPoses } from "./poses.js";
 import { compileMotion } from "./compiler/compile.js";
 import { validateSpec } from "./compiler/validate.js";
 import { runMotionQa } from "./qa/index.js";
@@ -40,6 +43,7 @@ import { relaxSpec } from "./lenient.js";
 import { observeAsked } from "./qa/asked.js";
 import { prepareSpec } from "./correct.js";
 import { compareQa, noWorse } from "./qa/verdict.js";
+import { autoSpec } from "./auto-spec.js";
 
 const ms = t => Math.round(performance.now() - t);
 
@@ -89,6 +93,9 @@ export function liftRequest(spec, probes) {
  */
 export function compileSpec(sent, { sk, scene }, opts = {}) {
 	const notes = [], refusals = [];
+	sent = expandPoses(sent, sk); // keys that name a pose (poses.js)
+	// tempo hints, @names, frames left out, root [x, z] and look keys (auto-spec.js, #1078)
+	sent = autoSpec(sent, sk);
 	try {
 		return compilePrepared(opts.lenient ? sent : prepareSpec(sent, { sk, scene }, notes, refusals), { sk, scene }, opts, notes, refusals);
 	} catch (error) {
@@ -102,7 +109,8 @@ export function compileSpec(sent, { sk, scene }, opts = {}) {
 
 function compilePrepared(prepared, { sk, scene }, opts, notes, refusals) {
 	const { spec, probes: asked } = liftRequest(prepared, opts.probes);
-	const t0 = performance.now(), ctx = { sk, scene, lenient: opts.lenient === true, problems: refusals };
+	// notes: the validator corrects slips with one reading on the expanded copy and says so here (compiler/validate-mend.js)
+	const t0 = performance.now(), ctx = { sk, scene, lenient: opts.lenient === true, problems: refusals, notes };
 	const checks = opts.checks && nameChecks({ checks: opts.checks }).checks;
 	let plans = [];
 	const expand = s => {

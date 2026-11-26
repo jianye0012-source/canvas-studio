@@ -3,17 +3,19 @@ import { STUDIO_ELEMENTS, isSettableElement } from "./studio-elements.js";
 import { STUDIO_ERROR_CODES, refusalCode } from "./studio-error-codes.js";
 import { EFFECT_VALUE_SCHEMA } from "./effects/effect-record.js";
 import { TEXT_VALUE_SCHEMA } from "./text/text-record.js";
+import { normalizeFramingArgs } from "./studio-framing-words.js";
 import { wrongType, unknownField, missingField, arrayRefusal, duplicateItem, stringRefusal, enumRefusal, numberRefusal, unionRefusal } from "./studio-schema-errors.js";
-// Mirrors PREVIS_MODES and CAST_STYLES (project.js) and POSTURES (scenes.js). Neither is imported:
-// both pull in three.js, which the agent sidecar must not load. The protocol tests pin the lists to their owners.
-const PREVIS_MODES = ["storyboard", "animation"], CAST_STYLES = ["rig", "capsule", "hybrid"], POSTURES = ["stand", "sit", "lie"];
+// Mirrors CAST_STYLES (project.js) and POSTURES (scenes.js). Neither is imported: both pull in three.js,
+// which the agent sidecar must not load. The protocol tests pin the lists to their owners.
+// LEGACY_PREVIS_MODES: an older editor still sends scene.previsMode (and a shot's kind and caption, and
+// capabilities.storyboard); they stay optional so its context validates, and nothing reads them.
+const LEGACY_PREVIS_MODES = ["storyboard", "animation"], CAST_STYLES = ["rig", "capsule", "hybrid"], POSTURES = ["stand", "sit", "lie"];
 
 // Sized for the compact index of up to 400 entities (~100 bytes each) beside
 // 24 detailed rows; a small scene stays far below it.
 export const STUDIO_CONTEXT_MAX_BYTES = 64 * 1024;
 export const STUDIO_CONTEXT_LIMITS = Object.freeze({ entities: 24, entityIndex: 400, shots: 8, assets: 48, recentReceipts: 3, jobs: 8 });
 export const STUDIO_TOOL_FAMILIES = Object.freeze(["inspect_studio", "run_action", "verify_result"]);
-export const STUDIO_TOOL_ALIASES = Object.freeze(["operate_studio", "arrange_objects", "arrange_characters", "patch_elements", "frame_shot", "undo_edit"]);
 export const STUDIO_TOOL_LABELS = Object.freeze({
 	inspect_studio: "Read the scene",
 	operate_studio: "Selection and view",
@@ -36,7 +38,7 @@ export const STUDIO_VARIANTS = freezeStudioData({
 	framingViews: ["front", "front three-quarter", "profile", "rear three-quarter", "back"], framingLevels: ["ground", "low", "hip", "eye", "high", "overhead"],
 	framingSides: ["left", "right"], positionSides: ["left", "right", "front", "behind"], positionBases: ["world", "subject", "shot_camera"], collisionPolicies: ["report", "avoid"],
 	objectOps: ["create", "update", "remove", "group", "ungroup"], characterOps: ["create", "update", "remove"],
-	inspectionScopes: ["selection", "scene", "entities", "shot", "motion", "catalogue", "actions", "document"], receiptStatuses: ["applied", "partial", "noop", "transient", "installed", "undone"],
+	inspectionScopes: ["selection", "scene", "entities", "shot", "motion", "catalogue", "actions", "document", "relations"], receiptStatuses: ["applied", "partial", "noop", "transient", "installed", "undone"],
 	opStatuses: ["applied", "partial", "noop"],
 	jobStates: ["queued", "generating", "preparing", "verifying", "repairing", "committing", "reconciling", "installed", "review_required", "failed", "cancelled", "stale_target", "stale_environment"],
 });
@@ -79,7 +81,7 @@ const identityFields = { workspaceId: id, documentEpoch: id, sceneId: id, sceneE
 const identity = object(identityFields);
 const host = object({ surface: literal("studio"), ...identityFields, workspaceHandle: nullable(id) });
 const revision = object({ scene: integer(), physics: integer(), view: integer() });
-const selection = nullable(object({ kind: choices(STUDIO_VARIANTS.selectionKinds), id }, { hierarchyId: id }));
+const selection = nullable(object({ kind: choices(STUDIO_VARIANTS.selectionKinds), id }, { hierarchyId: { ...id, maxLength: id.maxLength * 3 + 32, pattern: "^[A-Za-z0-9](?:[A-Za-z0-9._:-]|%[0-9A-Fa-f]{2})*$" } }));
 const view = object({ mode: choices(STUDIO_VARIANTS.modes), frame: integer(), playing: bool, lookThrough: bool, grid: bool, autoColor: bool });
 const position = union(
 	object({ world: vec3 }),
@@ -88,11 +90,10 @@ const position = union(
 	object({ onObject: ref }, { offsetXZ: object({ x: number(), z: number() }) }),
 );
 const facing = union(object({ yawDeg: number() }), object({ towardId: ref }), object({ sameAsId: ref }), object({ awayFromId: ref }));
-const framing = union(
-	object({ intent: object({ size: choices(STUDIO_VARIANTS.framingSizes), view: choices(STUDIO_VARIANTS.framingViews), level: choices(STUDIO_VARIANTS.framingLevels), side: choices(STUDIO_VARIANTS.framingSides) }, { focalMm: positive }) }),
-	object({ exact: object({ position: vec3, lookAt: vec3, focalMm: positive }) }),
-);
-const localSpace = { ...choices(["parent"]), description: "\"parent\" reads position.world, rotationDeg and facing.yawDeg in the parent's local frame (its pivot and rotation, not its scale); omit for world space." };
+// size is the one word a framing needs; view, level and side default to a frontal eye-level shot (#1042).
+const framing = union(object({ intent: object({ size: choices(STUDIO_VARIANTS.framingSizes) }, { view: { ...choices(STUDIO_VARIANTS.framingViews), default: "front" }, level: { ...choices(STUDIO_VARIANTS.framingLevels), default: "eye" }, side: { ...choices(STUDIO_VARIANTS.framingSides), default: "left", description: "Which way the view turns from the subject's facing: left (toward the subject's left, +X at yaw 0) or right" }, focalMm: { ...positive, description: "Lens focal length in mm; the lens must give a field of view between 14 and 90 degrees" } }) }),
+	object({ exact: object({ position: vec3, lookAt: vec3, focalMm: positive }) }));
+const localSpace = { ...choices(["parent"]), description: "\"parent\" reads position.world, rotationDeg and facing.yawDeg in the frame that carries the object: its parent's pivot and rotation (not its scale; a parent on a route or a take carries it along), or for an object attached to a character that bone's frame; omit for world space." };
 const objectOp = union(
 	object({ op: literal("create"), source: object({ kind: id }), position }, { name, facing, scale: positiveVec3,
 		rotationDeg: { ...vec3, description: "Euler XYZ degrees (x pitch, y yaw, z roll), as in update. Exclusive with facing. A pitched/rolled part rests its lowest corner on its support." },
@@ -118,19 +119,20 @@ const characterOp = union(
  * records what an element IS, not how JSON carries it. */
 const dataImage = { ...text(2 * 1024 * 1024), pattern: "^data:image/[A-Za-z0-9.+-]+[;,]" };
 
-const cameraKey = object({ frame: integer(), framing: object({ pos: vec3, yaw: number(), pitch: number(), fovDeg: number(1, 179) }) }, { id });
+// Expose outgoing segment pacing to agents.
+const cameraKey = object({ frame: integer(), framing: object({ pos: vec3, yaw: { ...number(), description: "RADIANS, not degrees. 0 looks down -Z; positive turns the camera left (toward -X)." }, pitch: { ...number(), description: "RADIANS, not degrees. 0 is level; positive looks up." }, fovDeg: { ...number(1, 179), description: "Vertical field of view in DEGREES." } }, { rollDeg: { ...number(-180, 180), description: "DEGREES about the lens axis (a dutch angle); 0 or absent is level, positive turns the camera's top toward screen left. Eases between keys like the rest of the framing." } }) }, { id, ease: { ...choices(["easeInOut", "linear", "easeIn", "easeOut"]), description: "Easing for the segment starting at this key; defaults to easeInOut." } });
 // A mark is an arc fraction, or { t, bank, pitch } when the object should lean
 // there (degrees, +-90). The route normaliser (src/object-path.js) owns the
 // rules; this only carries the shape through untouched.
 const routeMark = union(number(0, 1), object({ t: number(0, 1) }, { bank: number(-90, 90), pitch: number(-90, 90) }));
-const objectRoute = nullable(object({ points: array(vec3, 64, 2) }, { speed: number(0, 50), faceTravel: bool, loop: bool, extend: bool, marks: array(routeMark, 6) }));
+const routeTiming = nullable(object({ cuts: array(object({ t: number(0, 1), d: number(0, 1) }), 64) }, { envelopes: array(array(number(0, 100), 64, 2), 65) })), objectRoute = nullable(object({ points: array(vec3, 64, 2) }, { speed: number(0, 50), faceTravel: bool, loop: bool, extend: bool, marks: array(routeMark, 6), timing: routeTiming }));
 // A practical light and a glow (src/object-look.js owns the defaults and the repair); grasp sockets (src/object-grasp.js).
-const objectLight = object({}, { type: choices(["point", "spot"]), color: { ...text(32), pattern: "^#[0-9a-fA-F]{6}$" }, intensity: number(0, 1000), range: number(0, 100), angle: number(1, 89), softness: number(0, 1), shadow: bool, flicker: number(0, 1), aim: nullable(vec3) });
+const objectLight = object({}, { type: choices(["point", "spot", "directional"]), color: { ...text(32), pattern: "^#[0-9a-fA-F]{6}$" }, intensity: number(0, 1000), range: number(0, 100), angle: number(1, 89), softness: number(0, 1), shadow: bool, flicker: number(0, 1), aim: nullable(union(vec3, object({ id: { ...id, maxLength: 80 } }))) });
 const objectGlow = nullable(object({}, { color: { ...text(32), pattern: "^#[0-9a-fA-F]{6}$" }, intensity: number(0, 20), halo: number(0, 4) })), objectGrasp = nullable(openObject);
-const PATCH_VALUE_SCHEMAS = {
+const castIds = { type: "array", items: id, uniqueItems: true }, PATCH_VALUE_SCHEMAS = {
 	"character.pose": nullable(id), "character.identityImage": nullable(dataImage), "object.light": objectLight, "object.glow": objectGlow, "object.grasp": objectGrasp, "object.effect": EFFECT_VALUE_SCHEMA, "object.text": TEXT_VALUE_SCHEMA,
 	"object.parent": nullable(id), "object.path": objectRoute, "stage.environmentImage": nullable(dataImage),
-	"shot.cameraKeys": array(cameraKey, 64), "shot.targetModel": nullable(id) };
+	"shot.cameraKeys": array(cameraKey, 64), "shot.targetModel": nullable(id), "shot.subjectIds": castIds };
 /** One declared element as a JSON value schema, or null when the declaration
  * carries no carriable shape (a structured element without a declared value
  * schema above). Null elements are omitted from the patch schema, and
@@ -188,14 +190,15 @@ const patchOp = union(
 	object({ target: object({ kind: literal("shot") }, { id }), set: STUDIO_PATCH_SET_SCHEMAS.shot }),
 	object({ target: object({ kind: literal("stage") }), set: STUDIO_PATCH_SET_SCHEMAS.stage }),
 );
+const SUBJECT_IDS_NOTE = "Character ids, not object ids: frame all named visible members together and measure their combined bounds";
 const toolSchemas = {
 	inspect_studio: object({ scope: choices(STUDIO_VARIANTS.inspectionScopes) }, { ids: ids(32), select: ids(32), query: name, cursor: text(512), limit: { ...integer(1, 32), default: 12 } }),
 	operate_studio: object({}, { selection, shotId: id, frame: integer(), playing: bool, mode: choices(STUDIO_VARIANTS.modes), view: object({}, { lookThrough: bool, grid: bool, autoColor: bool }) }),
 	arrange_objects: object({ ops: { ...array(objectOp, 100, 1), description: "Applied in order, as one undo step. Each op sees the parts created by earlier ops, so build an assembly in one call: create the main part, then place the rest with position.onObject / relativeTo(+side,gapM) / between naming earlier parts (e.g. relativeTo \"Hood\"). Reference parts created in this call by name, never by id." } }, { collisionPolicy: { ...choices(STUDIO_VARIANTS.collisionPolicies), default: "report" } }),
 	arrange_characters: object({ ops: array(characterOp, 8, 1) }),
 	patch_elements: object({ ops: array(patchOp, 32, 1) }),
-	frame_shot: object({ subjectIds: ids(1), framing }, { shotId: id, caption: { type: "string", maxLength: 500 }, keyAtFrame: integer() }),
-	verify_result: object({ checks: { ...array(choices(["placement", "framing", "motion", "lighting"]), 4, 1, true), description: "lighting measures the shot frame rendered at the playhead: checks.lighting { meanLuma 0..1, clippedPct (a channel at full scale), crushedPct (pure black), subjects: [{ id, meanLuma, contrast (5th to 95th percentile luma spread, 0..1) }] inside each target character's projected box, look: { preset, envLight, ao } the stage look's environment light and occlusion strength }. motion also answers exportFraming (one per character with a take): what the camera the export renders shows of the take over sampledFrames: camera (shot where a shot covers the frame, studio = the Studio camera as it stands when none does; shotIds), character { screenFraction [min, max] of the frame height, inFrame [lowest share of its joints' screen box inside the frame, frame], behindCamera, cut { head, hand_l, hand_r, foot_l, foot_r } }, and every object the take names { id, name, inFrame, out, cut }; out, cut and behindCamera are spans [first, last] of sampled frames; { character: { id }, reason } when it cannot be measured" } }, { receiptId: id, targets: ids(), range: union(literal("whole_clip"), range), visual: { ...choices(["none", "frame", "contact_sheet", "plan", "trace"]), default: "none" }, frames: { ...union(choices(["even", "beats"]), array(integer(), 8, 1, true)), default: "even", description: "contact_sheet frames: even spacing, beats (grab/release, beat starts, the worst QA frames, then even fill, answered in visualRefs[0].picks), or up to 8 timeline frames of your choice" }, views: { ...array(choices(["front", "side", "three-quarter", "top"]), 2, 1, true), description: "contact_sheet from cameras of its own around the character instead of the shot camera (which stays as it is): a row per view, each held still over the frames and framed on focus, so small actions fill the tile; side and three-quarter look from the focus's side; a sheet always holds two views at least 60 degrees apart: if the asked ones look along nearly one line, side, front or top is added and named in visualRefs[0].addedView" }, focus: { ...union(text(120), array(text(120), 3, 1, true)), description: "with views: what to frame, as refs (object:<id>, joint:<Bone>, prop:<prop>.<point>, landmark:mouth); default the whole character" }, trail: { ...union(text(120), array(text(120), 3, 1, true)), description: "with views: refs whose path over the range is drawn as one dot per frame (spacing shows speed; later frames faint, the tile's own frame ringed), colours in visualRefs[0].trails" }, ghosts: { ...bool, description: "with views: each tile also shows the first target's poses around its frame as translucent ghosts (onion skin), earlier ones blue, later ones orange, carried props included, so spacing and arcs read in one tile; how many and how far apart is view.setGhosts (while it is off: 3 each side, every 4 frames), answered in visualRefs[0].ghosts" } }),
+	frame_shot: object({ subjectIds: { ...castIds, minItems: 1, description: SUBJECT_IDS_NOTE }, framing }, { shotId: id, caption: { type: "string", maxLength: 500 }, keyAtFrame: integer(), over: { ...choices(["shot"]), description: "Fit one held camera to every pose of the shot, turned off the asked view only as far as walls need" } }),
+	verify_result: object({ checks: { ...array(choices(["placement", "framing", "motion", "lighting"]), 4, 1, true), description: "lighting measures the shot frame rendered at the playhead: checks.lighting { meanLuma 0..1, clippedPct (a channel at full scale), crushedPct (pure black), subjects: [{ id, meanLuma, contrast (5th to 95th percentile luma spread, 0..1) inside each target character's projected box, litToShade (mean luma of the brightest quarter of the body's pixels over the darkest quarter's, the pixels on thin lines along the middle half of each bone the camera sees; null under 40 pixels), lights: up to 8 rows, highest reach first, one per drawn light (key = stage.keyLight, others light records by id): { id, type, reach (0..1 of the body's points, its posed bones, the light gets to: nearer than endsAtM, inside its cone and, for a light with a shadow, inside its shadow map with no shadow-casting object or other character between, a cut-out picture or flat text counting as its whole card; the body's own shading is not counted), side (from the body's centre toward the light, seen from the shot camera: front within 60 degrees of the direction to the camera, back past 120, else side; then left or right on screen, above or below, each past 15 degrees), distanceM (point, spot), endsAtM (point, spot: where its light ends in the frame as drawn, its range; left out when it never ends), shadow { share of the points nearer than endsAtM and inside the cone that are hidden from it, by: ids, \"set\" for a body that is neither a record nor a character } when any is, why (off, range = past endsAtM, cone or shadow: what keeps most points unlit) when reach is 0 }, moreLights (rows left out) }], lightsNotDrawn: [light ids the frame does not draw: hidden, past the 16 drawn lights, or not on stage yet], aimNotFound: [light ids whose aim id is no rig character or record on stage; they point down their -Y], look: { preset, envLight, ao } the stage look's environment light and occlusion strength }; sky, ambient, environment and the stage's fixed fill lights reach every subject and are not rows; lights and litToShade are left out while no stage view is mounted, and when they could not be read lightsError says why. motion's verification also answers frameJumps when the character's hips or an object steps far from its steps before and after (a stop of one frame inside a move, a hop) by over 5 cm (times the character's scale for its hips): a row each at its largest (stepsM: the steps into frame - 1, frame and frame + 1; frames: how many have one), up to 3 objects (frameJumpsLeftOut: the rest), an object over the frames it is shown on, the parts of a group that has a row left out. motion also answers exportFraming (one per character with a take): what the camera the export renders shows of the take over sampledFrames: camera (shot where a shot covers the frame, studio = the Studio camera as it stands when none does; shotIds), character { screenFraction [min, max] of the frame height, inFrame [lowest share of its joints' screen box inside the frame, frame], behindCamera, cut { head, hand_l, hand_r, foot_l, foot_r } }, and every object the take names { id, name, inFrame, out, cut }; out, cut and behindCamera are spans [first, last] of sampled frames; { character: { id }, reason } when it cannot be measured" } }, { receiptId: id, targets: ids(), range: union(literal("whole_clip"), range), visual: { ...choices(["none", "frame", "contact_sheet", "plan", "trace", "closeup"]), default: "none", description: "closeup: one image of 1-4 objects (targets: object ids; a group includes its parts) from three cameras of its own, three-quarter, front or side, top, fitted to them, other objects hidden, a figure of a scale-1 character beside them for scale (its height: figure.heightM); the shot camera and the user's view stay as they are" }, frames: { ...union(choices(["even", "beats"]), array(integer(), 8, 1, true)), default: "even", description: "contact_sheet frames: even spacing, beats (grab/release, beat starts, the worst QA frames, then even fill, answered in visualRefs[0].picks), or up to 8 timeline frames of your choice" }, views: { ...array(choices(["front", "side", "three-quarter", "top"]), 2, 1, true), description: "contact_sheet from cameras of its own around the character instead of the shot camera (which stays as it is): a row per view, each held still over the frames and framed on focus, so small actions fill the tile; side and three-quarter look from the focus's side; a sheet always holds two views at least 60 degrees apart: if the asked ones look along nearly one line, side, front or top is added and named in visualRefs[0].addedView" }, focus: { ...union(text(120), array(text(120), 3, 1, true)), description: "with views: what to frame, as refs (object:<id>, joint:<Bone>, prop:<prop>.<point>, landmark:mouth); default the whole character" }, trail: { ...union(text(120), array(text(120), 3, 1, true)), description: "with views: refs whose path over the range is drawn as one dot per frame (spacing shows speed; later frames faint, the tile's own frame ringed), colours in visualRefs[0].trails" }, ghosts: { ...bool, description: "with views: each tile also shows the first target's poses around its frame as translucent ghosts (onion skin), earlier ones blue, later ones orange, carried props included, so spacing and arcs read in one tile; how many and how far apart is view.setGhosts (while it is off: 3 each side, every 4 frames), answered in visualRefs[0].ghosts" } }),
 	undo_edit: object({ receiptId: id }),
 	run_action: object({ action: id }, { args: openObject, confirmationToken: id }),
 };
@@ -206,7 +209,7 @@ export const STUDIO_CATALOGUE = freezeStudioData(STUDIO_TOOLS.map(name => ({ nam
 // object is closed. Null distinguishes unavailable data from measured zero.
 const bounds = object({ min: vec3, max: vec3 });
 const entity = object({ id, kind: choices(["object", "character", "rig"]), token: id }, {
-	name, detailsOmitted: bool, position: vec3, yawDeg: number(), rotationDeg: vec3, scale: union(positive, positiveVec3), bounds: nullable(bounds),
+	name, detailsOmitted: bool, position: vec3, yawDeg: number(), rotationDeg: vec3, scale: union(positive, positiveVec3), standingHeightM: positive, bounds: nullable(bounds),
 	libraryKind: id, renderer: id, color: nullable(text(32)), tint: nullable(text(32)), modelId: nullable(text(120)), assetId: id, parentId: nullable(id), attachment: nullable(object({ characterId: id, bone: nullable(id) })), pathPointCount: integer(0, 64), pathMarks: array(union(number(0, 1), object({ t: number(0, 1) }, { bank: number(-90, 90), pitch: number(-90, 90) })), 6),
 	local: object({ position: vec3, rotationDeg: vec3 }),
 	motion: object({ takeId: nullable(id), frames: integer(), ikKeyCount: integer() }, { poseId: nullable(id), keyIds: ids(8, 0) }),
@@ -220,10 +223,10 @@ const entity = object({ id, kind: choices(["object", "character", "rig"]), token
 const indexRow = object({ id, kind: choices(["object", "character", "rig"]) }, { name, position: vec3 });
 // One compact row per registered Studio command: what run_action can call.
 // Its schema is on request (inspect_studio scope "actions" with ids); the
-// declared generation and hub timeout ride along for the sidecar's gate.
-const actionIndexRow = object({ id }, { label: name, generation: literal("motion"), timeoutMs: integer(1, 300_000) });
-const shotSummary = object({ id, name, range, keyCount: integer() }, { subjectIds: ids(24, 0), kind: choices(["clip", "still"]), caption: text(500) });
-const currentShot = object({ id, name, range, mode: choices(STUDIO_VARIANTS.shotModes) }, { subjectIds: ids(24, 0), kind: choices(["clip", "still"]), caption: text(500) });
+// declared hub timeout rides along for the sidecar's gate.
+const actionIndexRow = object({ id }, { label: name, timeoutMs: integer(1, 300_000) });
+const shotSummary = object({ id, name, range, keyCount: integer() }, { subjectIds: castIds, kind: choices(["clip", "still"]), caption: text(500) });
+const currentShot = object({ id, name, range, mode: choices(STUDIO_VARIANTS.shotModes) }, { subjectIds: castIds, kind: choices(["clip", "still"]), caption: text(500) });
 const camera = object({ position: vec3, lookAt: vec3, focalMm: positive, sensorId: id, slate: name });
 // What the agent can place: a catalogue kind, or an asset imported into the scene.
 const assetTypes = choices(["primitive", "set-piece", "image", "mesh"]);
@@ -232,13 +235,13 @@ const jobSummary = object({ id, characterId: id, state: choices(STUDIO_VARIANTS.
 const contextSchema = object({
 	schema: literal("studio-context-v1"), host, revision,
 	units: object({ distance: literal("m"), angle: literal("deg"), up: literal("+Y"), yawZero: literal("+Z"), yawPositiveToward: literal("+X"), pivot: literal("base"), fps: literal(24), rangeEnd: literal("exclusive") }),
-	scene: object({ name, aspect: text(40), floorY: number(), frameCount: integer(), objectCount: integer(), characterCount: integer() }, { previsMode: choices(PREVIS_MODES), castStyle: choices(CAST_STYLES) }),
+	scene: object({ name, aspect: text(40), floorY: number(), frameCount: integer(), objectCount: integer(), characterCount: integer() }, { previsMode: choices(LEGACY_PREVIS_MODES), castStyle: choices(CAST_STYLES) }),
 	selection, activeCharacterId: nullable(id), view, shot: nullable(currentShot), camera: nullable(camera),
 	entities: array(entity, 24), entityPage: object({ returned: integer(0, 24), total: integer(), truncated: bool, nextCursor: nullable(text(512)) }),
 	shots: array(shotSummary, 8), shotsTruncated: bool, assets: array(assetSummary, STUDIO_CONTEXT_LIMITS.assets),
 	recentReceipts: array(object({ id, summary: name, canUndoDirect: bool }), 3), jobs: array(jobSummary, 8),
 	capabilities: object({ profile: literal("studio-slice-1"), tools: array(choices(STUDIO_TOOLS), STUDIO_TOOLS.length, 0, true) }, { rigReady: bool, cameraReady: bool, bridgeReady: bool, storyboard: bool }),
-}, { entityIndex: array(indexRow, STUDIO_CONTEXT_LIMITS.entityIndex), actionIndex: array(actionIndexRow, 512) });
+}, { entityIndex: array(indexRow, STUDIO_CONTEXT_LIMITS.entityIndex), actionIndex: array(actionIndexRow, 512), marks: array(openObject, 12) }); // marks: the author's annotation marks (context-chips.js)
 const guardSchema = object({ ...identityFields, targetId: id, token: id });
 const efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 // Pictures the author pasted or dropped into the composer (#367). Inline bytes
@@ -253,7 +256,7 @@ const undo = object({ historyEntryId: id, entries: literal(1), canUndoDirect: bo
 const installed = object({ characterId: id, beforeTakeId: nullable(id), takeId: id, targetToken: id, frameCount: integer(1), fps: literal(24), durationSeconds: positive, blocks: array(object({ sourceBeat: integer(0, 7), startFrame: integer(), endFrameExclusive: integer(1) }), 120, 1), selectionChanged: literal(false) });
 const verification = object({ id, status: choices(["verified", "unverified"]), profile: literal("studio-motion-v1"), range, evaluatedFrames: integer(), physicsRevision: integer(), limitations: array(name, 12) }, {
 	surfaceMeasured: bool, maxFloorPenetrationM: number(0), maxContactSlipM: number(0), maxContactFloatM: number(0), unsupportedFrames: integer(), supportedCollisionFrames: integer(), continuityRegressed: bool,
-	semanticStatus: choices(["pending_image_review", "passed", "failed", "unavailable"]),
+	semanticStatus: choices(["unavailable"]),
 });
 // One measured value per patched element path. Exactly one typed member is
 // carried, so a picture is reported by its measured size and a schedule by its
@@ -262,19 +265,19 @@ const verification = object({ id, status: choices(["verified", "unverified"]), p
 // not a missing member.
 const patchedValue = object({ path: text(120) }, { number: number(), text: nullable(text(512)), flag: bool, vec: vec3, count: integer(), bytes: integer() });
 const readback = object({}, { position: vec3, yawDeg: number(), rotationDeg: vec3, scale: union(positive, positiveVec3), name, color: text(32), hidden: bool, modelId: id, renderer: id,
-	parentId: nullable(id), childIds: ids(100, 0), childCount: integer(0), bounds: nullable(bounds), removed: bool, range, camera, keyId: id, frame: integer(), subjectIds: ids(24, 0), selection, activeCharacterId: nullable(id), shotId: nullable(id), view, token: id, takeId: nullable(id), statureM: positive,
+	parentId: nullable(id), childIds: ids(100, 0), childCount: integer(0), bounds: nullable(bounds), removed: bool, range, camera, keyId: id, frame: integer(), subjectIds: castIds, selection, activeCharacterId: nullable(id), shotId: nullable(id), view, token: id, takeId: nullable(id), statureM: positive,
 	patched: array(patchedValue, 32, 1) });
 const CAMERA_SIDES = ["left", "right", "on-axis"];
 const checks = object({ coverage: name }, { relationSatisfied: bool, overlapIds: ids(100, 0), actualGapM: number(), requestedGapM: number(0), maximumFootprintOverlapM: number(0),
-	basis: choices(STUDIO_VARIANTS.positionBases), clipped: bool, occluded: bool, behindCamera: bool, screenFraction: number(0), derivedSize: choices(STUDIO_VARIANTS.framingSizes), support: name, baseY: number(), facesTargetId: id,
-	cameraSide: choices(CAMERA_SIDES), axisConsistent: bool, evaluatedFrames: integer(1), sampledFrames: array(integer(), 64, 1), sampledChecks: array(object({ frame: integer(), screenFraction: number(), clipped: bool, behindCamera: bool, occluded: bool }), 64, 1), issueFrames: array(object({ frame: integer(), codes: array(name, 4, 1), screenFraction: number() }), 64, 0) });
+	basis: choices(STUDIO_VARIANTS.positionBases), clipped: bool, occluded: bool, behindCamera: bool, screenFraction: number(0), derivedSize: choices(STUDIO_VARIANTS.framingSizes), held: object({ frames: array(integer(), 64), hidden: array(integer(), 64), outOfFrame: array(integer(), 64) }, { askedDeg: number(), chosenDeg: number() }), support: name, baseY: number(), facesTargetId: id,
+	cameraSide: choices(CAMERA_SIDES), axisConsistent: bool, evaluatedFrames: integer(1), sampledFrames: array(integer(), 64, 1), sampledChecks: array(object({ frame: integer(), screenFraction: number(), clipped: bool, behindCamera: bool, occluded: bool }, { shot: id }), 64, 1), issueFrames: array(object({ frame: integer(), codes: array(name, 4, 1), screenFraction: number() }, { subjects: array(object({ id, codes: array(name, 4, 1), inFrame: number(0, 1), hidden: number(0, 1) }), 24, 0) }), 64, 0) });
 // Code-computed shot geometry verify_result carries beside a framing check
 // (src/studio-geometry-facts.js): bounded to 8 shots and 24 subjects.
 const geometryFacts = object({
 	subjects: array(object({ id, position: vec3, yawDeg: number() }), 24),
 	pairs: array(object({ a: id, b: id, distanceM: number(0) }), 24),
-	shots: array(object({ shotId: id, subjectIds: ids(2, 0), camera: nullable(object({ position: vec3, lookAt: vec3 })), cameraSide: nullable(choices(CAMERA_SIDES)),
-		occluders: array(object({ subjectId: id, byObjectId: id }), 8) }), 8),
+	shots: array(object({ shotId: id, subjectIds: ids(24, 0), camera: nullable(object({ position: vec3, lookAt: vec3 })), cameraSide: nullable(choices(CAMERA_SIDES)),
+		occluders: array(object({ subjectId: id, byObjectId: id }), 8) }, { axisSubjectIds: ids(2, 0) }), 8),
 	axisConsistent: nullable(bool),
 });
 const warning = object({ code: id }, { id, message: name, suggestedOutwardDeltaM: number(), count: integer() });
@@ -332,46 +335,46 @@ export function validateStudioSchema(schema, value, code = "INVALID_ARGUMENT", p
 		if (matches.length === 0 && failures.length) {
 			const kind = record(value) && record(value.target) ? value.target.kind : undefined, discriminated = kind !== undefined && failures.find(({ branch }) => branch.properties?.target?.properties?.kind?.const === kind);
 			const forms = !discriminated && unionRefusal(path, failures, value);
-			if (forms) fail(code, forms, path);
+			if (forms) fail(code, forms, path, { rule: "variant" });
 			const chosen = discriminated || failures.reduce((best, next) => next.error.details.path.length > best.error.details.path.length ? next : best);
 			throw chosen.error;
 		}
-		if (matches.length !== 1 && schema.oneOf) fail(code, `${path}: matches ${matches.length} variants; send the fields of exactly one.`, path);
+		if (matches.length !== 1 && schema.oneOf) fail(code, `${path}: matches ${matches.length} variants; send the fields of exactly one.`, path, { rule: "variant" });
 		return matches[0];
 	}
-	if (Object.hasOwn(schema, "const")) { if (value !== schema.const) fail(code, wrongType(path, schema, value), path); return value; }
-	if (schema.type === "null") { if (value !== null) fail(code, wrongType(path, schema, value), path); return null; }
+	if (Object.hasOwn(schema, "const")) { if (value !== schema.const) fail(code, wrongType(path, schema, value), path, { rule: "type" }); return value; }
+	if (schema.type === "null") { if (value !== null) fail(code, wrongType(path, schema, value), path, { rule: "type" }); return null; }
 	if (schema.type === "object") {
-		if (!record(value)) fail(code, wrongType(path, schema, value), path);
+		if (!record(value)) fail(code, wrongType(path, schema, value), path, { rule: "type" });
 		const open = schema.additionalProperties === true;
-		for (const key of Object.keys(value)) if (!Object.hasOwn(schema.properties, key) && !open) fail(code, unknownField(path, schema, key), path);
+		for (const key of Object.keys(value)) if (!Object.hasOwn(schema.properties, key) && !open) fail(code, unknownField(path, schema, key), path, { rule: "unknown_field" });
 		const result = {};
 		if (open) for (const key of Object.keys(value)) if (!Object.hasOwn(schema.properties, key)) result[key] = structuredClone(value[key]);
 		for (const [key, child] of Object.entries(schema.properties)) {
 			if (Object.hasOwn(value, key)) result[key] = validateStudioSchema(child, value[key], code, `${path}.${key}`);
-			else if (schema.required.includes(key)) fail(code, missingField(path, key), `${path}.${key}`);
+			else if (schema.required.includes(key)) fail(code, missingField(path, key), `${path}.${key}`, { rule: "missing" });
 			else if (Object.hasOwn(child, "default")) result[key] = structuredClone(child.default);
 		}
-		if (schema["x-studio-range"] && result.endFrameExclusive <= result.startFrame) fail(code, "Frame range must be nonempty and half-open.", path);
+		if (schema["x-studio-range"] && result.endFrameExclusive <= result.startFrame) fail(code, "Frame range must be nonempty and half-open.", path, { rule: "range" });
 		return result;
 	}
 	if (schema.type === "array") {
-		if (!Array.isArray(value) || value.length < schema.minItems || value.length > schema.maxItems) fail(code, arrayRefusal(path, schema, value), path);
+		if (!Array.isArray(value) || value.length < schema.minItems || value.length > schema.maxItems) fail(code, arrayRefusal(path, schema, value), path, { rule: Array.isArray(value) ? "items" : "type" });
 		const result = value.map((item, i) => validateStudioSchema(schema.items, item, code, `${path}[${i}]`));
-		if (schema.uniqueItems && new Set(result.map(item => JSON.stringify(item))).size !== result.length) fail(code, duplicateItem(path, result), path);
+		if (schema.uniqueItems && new Set(result.map(item => JSON.stringify(item))).size !== result.length) fail(code, duplicateItem(path, result), path, { rule: "unique" });
 		return result;
 	}
 	if (schema.type === "string") {
-		if (typeof value !== "string" || !value.trim() || (schema.maxLength !== undefined && [...value].length > schema.maxLength) || (schema.pattern && !new RegExp(schema.pattern).test(value))) fail(code, stringRefusal(path, schema, value), path);
-		if (schema.enum && !schema.enum.includes(value)) fail(code, enumRefusal(path, schema, value), path);
+		if (typeof value !== "string" || !value.trim() || (schema.maxLength !== undefined && [...value].length > schema.maxLength) || (schema.pattern && !new RegExp(schema.pattern).test(value))) fail(code, stringRefusal(path, schema, value), path, { rule: typeof value === "string" ? "format" : "type" });
+		if (schema.enum && !schema.enum.includes(value)) fail(code, enumRefusal(path, schema, value), path, { rule: "enum" });
 		return value;
 	}
-	if (schema.type === "boolean") { if (typeof value !== "boolean") fail(code, wrongType(path, schema, value), path); return value; }
+	if (schema.type === "boolean") { if (typeof value !== "boolean") fail(code, wrongType(path, schema, value), path, { rule: "type" }); return value; }
 	if (schema.type === "number" || schema.type === "integer") {
-		if (typeof value !== "number" || !Number.isFinite(value) || (schema.type === "integer" && !Number.isSafeInteger(value)) || (schema.exclusiveMinimum !== undefined && value <= schema.exclusiveMinimum)) fail(code, numberRefusal(path, schema, value), path);
+		if (typeof value !== "number" || !Number.isFinite(value) || (schema.type === "integer" && !Number.isSafeInteger(value)) || (schema.exclusiveMinimum !== undefined && value <= schema.exclusiveMinimum)) fail(code, numberRefusal(path, schema, value), path, { rule: Number.isFinite(value) && (schema.type !== "integer" || Number.isSafeInteger(value)) ? "range" : "type" });
 		if ((schema.minimum !== undefined && value < schema.minimum) || (schema.maximum !== undefined && value > schema.maximum)) {
 			const bounds = [schema.minimum, schema.maximum].filter(bound => bound !== undefined);
-			fail(code, `${path}: Expected a number within [${bounds.join(", ")}], got ${value}.`, path);
+			fail(code, `${path}: Expected a number within [${bounds.join(", ")}], got ${value}.`, path, { rule: "range" });
 		}
 		return value;
 	}
@@ -468,7 +471,8 @@ function validatePatchPaths(args) {
 export function validateStudioCommand(command) {
 	if (!record(command) || !STUDIO_TOOLS.includes(command.name)) fail("UNKNOWN_TOOL", "Unsupported Studio tool.");
 	if (command.name === "patch_elements") validatePatchPaths(command.args);
-	const { args } = validateStudioSchema(object({ name: choices(STUDIO_TOOLS), args: toolSchemas[command.name] }), command);
+	// A frame_shot intent in a crew's words ("medium", "eye level") reads as the declared ones first (studio-framing-words.js).
+	const { args } = validateStudioSchema(object({ name: choices(STUDIO_TOOLS), args: toolSchemas[command.name] }), command.name === "frame_shot" ? { ...command, args: normalizeFramingArgs(command.args) } : command);
 	if (command.name === "inspect_studio" && args.ids && args.query !== undefined) fail("INVALID_ARGUMENT", "IDs and query are exclusive.");
 	if (command.name === "operate_studio" && (!Object.keys(args).length || (args.view && !Object.keys(args.view).length))) fail("INVALID_ARGUMENT", "Transient operation must specify an action.");
 	if (args.ops) {

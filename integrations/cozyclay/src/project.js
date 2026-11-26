@@ -3,7 +3,7 @@
  *
  * A project is ONE file (`.cclayproject`, JSON) holding the full authoring
  * state: the scene document (scenes + cast + animation layers), the
-  * workspace layout, the custom pose library, the workflow graph, and the
+  * workspace layout, the workflow graph, and the
  * embedded resources (images and meshes) the scenes point at. A compiled
  * take travels inside the scene document as its motion spec. Editor
  * preferences (theme, locale) deliberately stay OUT — they belong to the
@@ -19,21 +19,19 @@ import { SCENES_VERSION } from "./scenes.js";
 import { asArrayBuffer, bytesToBase64, base64ToBytes } from "./project-base64.js";
 import { ASSET_MAX_SOURCE_BYTES, assetIdForBytes, isAssetId, isImageAssetId, isMeshAssetId, meshIdForBytes, normalizeAsset, referencedAssetIds } from "./scene-assets.js";
 import { ko } from "./locale.js"; import { hdrIdForBytes, isHdrAssetId } from "./stage-hdr.js";
+import { hasHostProjectFiles, hostProjectFilePermission, isHostProjectFile, pickHostProjectFile, readHostProjectFile, writeHostProjectFile } from "./host-project-files.js";
 
 export const PROJECT_VERSION = 5;
-// A project is authored either as a storyboard (stills) or as animation
-// (clips). v5 records the choice on the envelope; v2-v4 files are animation.
-export const PREVIS_MODES = Object.freeze(["storyboard", "animation"]);
-export const DEFAULT_PREVIS_MODE = "animation";
-
-export const normalizePrevisMode = (value) => (PREVIS_MODES.includes(value) ? value : DEFAULT_PREVIS_MODE);
+// Every project is an animation project. A v5 file written by an older build
+// may say `previsMode: "storyboard"`: it is read as `wasStoryboard` and opened
+// as an unsaved animation copy (animationCopyOfStoryboard).
 // Which bodies the project is cast with: rigged humanoids for detailed previs,
 // capsule figures for simple previs, or a mix. A file without the field
 // predates the choice and already holds a rig character, so it reads as hybrid.
 export const CAST_STYLES = Object.freeze(["rig", "capsule", "hybrid"]), DEFAULT_CAST_STYLE = "hybrid";
 export const normalizeCastStyle = (value) => (CAST_STYLES.includes(value) ? value : DEFAULT_CAST_STYLE);
 export const PROJECT_EXTENSION = ".cclayproject";
-export const WORKFLOW_VERSION = 1;
+const WORKFLOW_VERSION = 1;
 export const WORKFLOW_STORAGE_KEY = "cozyclay.workflow.v1";
 const IDB_NAME = "cozyclay.project-handle.v1";
 const IDB_STORE = "kv";
@@ -262,7 +260,7 @@ function readEmbeddedAssets(value, report) {
  * assetRef references them. Throws `resources-too-large` when the whole
  * manifest exceeds its budget.
  */
-export function createProjectDocument({ scenesDocument, workspaceLayout, customPoses, name, previsMode, castStyle, assets, savedAt, workflow }) {
+export function createProjectDocument({ scenesDocument, workspaceLayout, name, castStyle, assets, savedAt, workflow }) {
 	const assetRecords = new Map();
 	for (const record of Array.isArray(assets) ? assets : []) {
 		const asset = embeddedAsset(record);
@@ -284,43 +282,27 @@ export function createProjectDocument({ scenesDocument, workspaceLayout, customP
 		kind: "project",
 		version: PROJECT_VERSION,
 		name: typeof name === "string" && name.trim() ? name.trim() : "Untitled",
-		previsMode: normalizePrevisMode(previsMode), castStyle: normalizeCastStyle(castStyle),
+		castStyle: normalizeCastStyle(castStyle),
 		...(Number.isFinite(savedAt) && savedAt > 0 ? { savedAt } : {}),
 		scenes: scenesDocument,
 		workspace: workspaceLayout ?? null,
-		poseLibrary: Array.isArray(customPoses) ? customPoses : [],
 		workflow: normalizeWorkflowGraph(workflow),
 		resources: { assets: embeddedAssets },
 	};
 }
 
-/** Convert a normalized storyboard project into a fresh animation envelope.
- * The source remains untouched: still shot records are copied with their
- * ranges, camera keys, captions, cast overrides and stylized asset references.
+/** The animation copy of a project read from an old storyboard file: the same
+ * scenes under a new name, unsaved (no savedAt). Still shots open as ordinary
+ * shots with their ranges (the shot reader drops the storyboard-only fields).
+ * The source object is not changed and nothing is written to its file.
  */
-export function buildAnimationProjectFromStoryboard(project) {
-	const scenesDocument = structuredClone(project?.scenesDocument ?? { version: SCENES_VERSION, activeSceneId: null, scenes: [] });
-	scenesDocument.scenes = (scenesDocument.scenes ?? []).map((scene) => ({
-		...scene,
-		shotDocument: scene.shotDocument && typeof scene.shotDocument === "object"
-			? {
-				...scene.shotDocument,
-				shots: Array.isArray(scene.shotDocument.shots)
-					? scene.shotDocument.shots.map((shot) => ({ ...shot, ...(shot.kind === "still" ? { kind: "clip" } : {}) }))
-					: scene.shotDocument.shots,
-			}
-			: scene.shotDocument,
-	}));
-	return createProjectDocument({
-		scenesDocument,
-		workspaceLayout: structuredClone(project?.workspaceLayout ?? null),
-		customPoses: structuredClone(project?.customPoses ?? []),
+export function animationCopyOfStoryboard(project) {
+	return {
+		...project,
 		name: `${project?.name || "Untitled"} - ${ko("Animation", "애니메이션")}`,
-		previsMode: "animation", castStyle: project?.castStyle,
-				assets: project?.assets ?? [],
-		workflow: structuredClone(project?.workflow ?? createWorkflowGraph()),
-		savedAt: Date.now(),
-	});
+		savedAt: null,
+		wasStoryboard: false,
+	};
 }
 
 /**
@@ -328,8 +310,9 @@ export function buildAnimationProjectFromStoryboard(project) {
  * problems?, project? }. Invalid embedded records are skipped, each one
  * reported as a warning string and a `{ kind, id, code, message }` problem.
  * v2/v3 files carry images at the top-level `assets`; v4 moves everything
- * under `resources`; v5 adds the top-level `previsMode` and `castStyle`
- * (absent or unknown reads as the default). Older files are read as-is, never rewritten.
+ * under `resources`; v5 adds the top-level `castStyle` (absent or unknown reads
+ * as the default). A v5 file that says `previsMode: "storyboard"` reads with
+ * `wasStoryboard: true`. Older files are read as-is, never rewritten.
  */
 export function readProjectDocument(raw) {
 	let parsed;
@@ -363,22 +346,21 @@ export function readProjectDocument(raw) {
 		problems,
 		project: {
 			name: typeof parsed.name === "string" && parsed.name.trim() ? parsed.name.trim() : "Untitled",
-			previsMode: normalizePrevisMode(parsed.previsMode), castStyle: normalizeCastStyle(parsed.castStyle),
+			castStyle: normalizeCastStyle(parsed.castStyle),
+			...(parsed.previsMode === "storyboard" ? { wasStoryboard: true } : {}),
 			savedAt: Number.isFinite(parsed.savedAt) && parsed.savedAt > 0 ? parsed.savedAt : null,
-			scenesDocument: { version: scenes.version, activeSceneId: scenes.activeSceneId ?? null, scenes: scenes.scenes },
+			scenesDocument: { version: scenes.version, activeSceneId: scenes.activeSceneId ?? null, scenes: scenes.scenes, ...(scenes.version < 3 && plainRecord(scenes.stage) ? { stage: scenes.stage } : {}) },
 			workspaceLayout: parsed.workspace && typeof parsed.workspace === "object" ? parsed.workspace : null,
-			customPoses: Array.isArray(parsed.poseLibrary)
-				? parsed.poseLibrary.filter((p) => p && typeof p === "object" && typeof p.id === "string" && p.bones && typeof p.bones === "object")
-				: [],
 						assets,
 			workflow,
 		},
 	};
 }
 
-export function hasFileSystemAccess() {
-	return typeof window !== "undefined" && typeof window.showSaveFilePicker === "function" && typeof window.showOpenFilePicker === "function";
-}
+// A host app's window may provide the project files instead
+// (src/host-project-files.js): their handles are plain records that the
+// functions below hand back to the host.
+export const hasFileSystemAccess = () => hasHostProjectFiles() || (typeof window !== "undefined" && typeof window.showSaveFilePicker === "function" && typeof window.showOpenFilePicker === "function");
 
 const PICKER_TYPES = [
 	{
@@ -388,26 +370,24 @@ const PICKER_TYPES = [
 ];
 
 export async function pickProjectFileForSave(suggestedName) {
-	const handle = await window.showSaveFilePicker({
-		suggestedName: `${suggestedName || "Untitled"}${PROJECT_EXTENSION}`,
-		types: PICKER_TYPES,
-	});
-	return handle;
+	const fileName = `${suggestedName || "Untitled"}${PROJECT_EXTENSION}`;
+	return hasHostProjectFiles() ? pickHostProjectFile("save", fileName) : window.showSaveFilePicker({ suggestedName: fileName, types: PICKER_TYPES });
 }
 
 export async function pickProjectFileForOpen() {
-	const [handle] = await window.showOpenFilePicker({ types: PICKER_TYPES, multiple: false });
-	return handle;
+	if (hasHostProjectFiles()) return pickHostProjectFile("open");
+	return (await window.showOpenFilePicker({ types: PICKER_TYPES, multiple: false }))[0];
 }
 
 export async function writeProjectFile(handle, serialized) {
+	if (isHostProjectFile(handle)) return writeHostProjectFile(handle, serialized);
 	const writable = await handle.createWritable();
 	await writable.write(serialized);
 	await writable.close();
 }
 
 export async function readProjectFile(handle) {
-	const file = await handle.getFile();
+	const file = isHostProjectFile(handle) ? await readHostProjectFile(handle) : await handle.getFile();
 	return { name: file.name.replace(/\.cclayproject$|\.json$/i, ""), text: await file.text(), savedAt: file.lastModified };
 }
 
@@ -445,7 +425,7 @@ function openIdb() {
 	});
 }
 
-export async function storeProjectHandle(handle, name) {
+async function storeProjectHandle(handle, name) {
 	try {
 		const db = await openIdb();
 		await new Promise((resolve, reject) => {
@@ -510,18 +490,18 @@ export function loadProjectSession(storage = globalThis.localStorage) {
 		const value = JSON.parse(storage?.getItem(PROJECT_SESSION_KEY) || "null");
 		if (!value || typeof value !== "object") return null;
 		const name = typeof value.name === "string" ? value.name.trim() : "";
-		return name ? { name, previsMode: normalizePrevisMode(value.previsMode), castStyle: normalizeCastStyle(value.castStyle), updatedAt: Number.isFinite(value.updatedAt) ? value.updatedAt : 0 } : null;
+		return name ? { name, castStyle: normalizeCastStyle(value.castStyle), updatedAt: Number.isFinite(value.updatedAt) ? value.updatedAt : 0 } : null;
 	} catch {
 		return null;
 	}
 }
 
-// `identity` is the previs mode, or `{ previsMode, castStyle }`.
-export function storeProjectSession(name, identity = DEFAULT_PREVIS_MODE, storage = globalThis.localStorage) {
+// `identity` is `{ castStyle }`.
+export function storeProjectSession(name, identity = {}, storage = globalThis.localStorage) {
 	const normalized = typeof name === "string" ? name.trim() : "";
 	if (!normalized) return false;
 	try {
-		storage?.setItem(PROJECT_SESSION_KEY, JSON.stringify({ name: normalized, previsMode: normalizePrevisMode(identity?.previsMode ?? identity), castStyle: normalizeCastStyle(identity?.castStyle), updatedAt: Date.now() }));
+		storage?.setItem(PROJECT_SESSION_KEY, JSON.stringify({ name: normalized, castStyle: normalizeCastStyle(identity?.castStyle), updatedAt: Date.now() }));
 		return true;
 	} catch {
 		return false;
@@ -559,11 +539,11 @@ async function idbGet(key) {
 	}
 }
 
-/** Record a project open/save in the recents list (most recent first). */
-export async function rememberRecentProject(handle, name) {
+/** Record a project open/save in the recents list (most recent first), with its projectSummary when known. */
+export async function rememberRecentProject(handle, name, summary = null) {
 	const list = (await idbGet(RECENTS_KEY)) ?? [];
 	const next = [
-		{ handle, name, openedAt: Date.now() },
+		{ handle, name, openedAt: Date.now(), ...summary },
 		...list.filter((entry) => entry.name !== name),
 	].slice(0, RECENTS_MAX);
 	await idbSet(RECENTS_KEY, next);
@@ -616,7 +596,7 @@ export async function listProjectsInDirectory(dirHandle) {
 /** "granted" | "prompt" | "denied" — never throws. */
 export async function queryHandlePermission(handle) {
 	try {
-		return await handle.queryPermission({ mode: "readwrite" });
+		return isHostProjectFile(handle) ? hostProjectFilePermission() : await handle.queryPermission({ mode: "readwrite" });
 	} catch {
 		return "denied";
 	}
@@ -628,6 +608,7 @@ export async function queryHandlePermission(handle) {
  * "granted" | "prompt" | "denied" — never throws. */
 export async function requestHandlePermission(handle) {
 	try {
+		if (isHostProjectFile(handle)) return hostProjectFilePermission();
 		if ((await handle.queryPermission({ mode: "readwrite" })) === "granted") return "granted";
 		return await handle.requestPermission({ mode: "readwrite" });
 	} catch {

@@ -3,7 +3,7 @@
 // looks each field up here, and throws when one is missing, so a new field needs a type here.
 // Shared shapes are $refs into DEFS (describe.js adds the ones an answer uses).
 import { REF_KINDS, OBJECT_KEY_FIELDS } from "./fields.js";
-import { CONVENTIONS, GRASPS } from "../compiler/vocab.js";
+import { CONVENTIONS, GRASPS, CARRY_GRASPS } from "../compiler/vocab.js";
 import { QA_LIMITS } from "../qa/checks.js";
 import { SPRING } from "../compiler/spring.js";
 import { CAPSULES } from "../qa/geometry.js";
@@ -58,6 +58,8 @@ export const SPEC_TYPES = {
 	goals: { type: "array", description: "topic goals" },
 	flow: { oneOf: [{ const: false }, { type: "object" }] },
 	idle: { const: false, description: "held poses do not breathe" },
+	look: { type: "array" },
+	auto: { oneOf: [{ const: false }, { type: "object" }] },
 	fill: { type: "boolean", description: "true: MotionBricks generates the transition between two poses (free spans) in the safe gaps (off by default)" },
 };
 
@@ -103,7 +105,7 @@ export const OBJECT_TYPES = {
 	keys: { type: "array", items: { type: "object", properties: Object.fromEntries(OBJECT_KEY_FIELDS.map(f => [f, OBJECT_KEY_TYPES[f]])), required: ["f", "pos"], additionalProperties: false },
 		description: "world pose; hand follows" },
 	fall: { ...FALL, description: "or a list" },
-	grasp: { enum: GRASPS }, mass: num("kg", { minimum: 0.01, maximum: 60 }), spring: SPRING_TYPE,
+	grasp: { enum: CARRY_GRASPS }, mass: num("kg", { minimum: 0.01, maximum: 60 }), spring: SPRING_TYPE,
 	follow: ref("ref"), offset: ref("vec3"), aim: { oneOf: [{ enum: ["face", "up"] }, { $ref: "#/$defs/vec3" }, { $ref: "#/$defs/ref" }], default: "up" },
 };
 
@@ -142,13 +144,16 @@ export const PROBE_TYPES = {
 
 export const FIX_TYPES = {
 	reach: bool("wrist targets past reach go onto it softly; hips lower for near-miss ankles", { default: true }),
+	clear: bool("a swinging foot in a body lifts over it or backs out; a still foot sunk in a top comes up", { default: true }),
 	slide: bool("lifts sunk soles; a planted heel or ball drifting under 1 cm stays put; a heel-up foot pivots on its ball", { default: true }),
 	penetration: { oneOf: [{ type: "boolean" }, { type: "number", minimum: 0, maximum: 0.05 }], default: 0, description: "push hands out of boxes up to this depth, m (true = 0.02)" },
 	self: bool("arms kept out of the body's skin (wrists, elbows)", { default: true }),
-	retime: bool("speed spikes borrow frames from the neighbouring keys", { default: true }),
+	retime: bool("speed spikes borrow frames from the neighbouring keys; a flight's frames stay as keyed", { default: true }),
 	stance: bool("a standIdle stance in a scene body slides out of it (observations.placed)", { default: true }),
 	grasp: bool("fingers close on what the hand holds; it rests in the hand", { default: true }),
 	person: bool("arms kept out of the other characters (QA PERSON)", { default: true }),
+	ballistic: bool("in a flight the whole body moves so the centre of mass rides the gravity parabola between takeoff and landing (past 0.5 m, or into what the keyed flight stayed out of: reported)", { default: true }),
+	spin: bool("in a flight the root's turn is re-timed so the angular momentum stays constant: faster tucked, slower open, the keyed total turn kept", { default: true }),
 };
 
 export const REF_DOCS = {

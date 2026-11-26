@@ -174,10 +174,16 @@
 			"eventSeq": 1
 		},
 		{
+			"type": "context",
+			"tokens": "<tokens>",
+			"window": 128000,
+			"eventSeq": 2
+		},
+		{
 			"type": "execution_tool_started",
 			"turn_id": "<turn>",
 			"telemetry_id": "<telemetry>",
-			"tool_category": "other"
+			"tool_category": "scene_read"
 		},
 		{
 			"type": "tool.start",
@@ -187,7 +193,7 @@
 			"args": {
 				"section": "selection"
 			},
-			"eventSeq": 2
+			"eventSeq": 3
 		},
 		{
 			"type": "tool.done",
@@ -195,14 +201,14 @@
 			"ok": false,
 			"elapsedMs": "<ms>",
 			"error": "INVALID_ARGUMENT: Unexpected field.",
-			"eventSeq": 3
+			"eventSeq": 4
 		},
 		{
 			"type": "execution_telemetry",
 			"event": "agent:tool_executed",
 			"props": {
 				"turn_id": "<turn>",
-				"tool_category": "other",
+				"tool_category": "scene_read",
 				"outcome": "failed",
 				"duration_bucket": "<bucket>"
 			},
@@ -212,7 +218,13 @@
 			"type": "tool.compose",
 			"index": 0,
 			"name": "patch_elements",
-			"eventSeq": 4
+			"eventSeq": 5
+		},
+		{
+			"type": "context",
+			"tokens": "<tokens>",
+			"window": 128000,
+			"eventSeq": 6
 		},
 		{
 			"type": "execution_tool_started",
@@ -237,7 +249,7 @@
 					}
 				]
 			},
-			"eventSeq": 5
+			"eventSeq": 7
 		},
 		{
 			"type": "execution_telemetry",
@@ -292,7 +304,7 @@
 				},
 				"warnings": []
 			},
-			"eventSeq": 6
+			"eventSeq": 8
 		},
 		{
 			"type": "execution_telemetry",
@@ -309,13 +321,19 @@
 			"type": "tool.compose",
 			"index": 0,
 			"name": "verify_result",
-			"eventSeq": 7
+			"eventSeq": 9
+		},
+		{
+			"type": "context",
+			"tokens": "<tokens>",
+			"window": 128000,
+			"eventSeq": 10
 		},
 		{
 			"type": "execution_tool_started",
 			"turn_id": "<turn>",
 			"telemetry_id": "<telemetry>",
-			"tool_category": "other"
+			"tool_category": "scene_read"
 		},
 		{
 			"type": "tool.start",
@@ -331,7 +349,7 @@
 				],
 				"visual": "frame"
 			},
-			"eventSeq": 8
+			"eventSeq": 11
 		},
 		{
 			"type": "tool.done",
@@ -352,14 +370,14 @@
 				"visualStatus": "attached",
 				"imageId": "capture-1"
 			},
-			"eventSeq": 9
+			"eventSeq": 12
 		},
 		{
 			"type": "execution_telemetry",
 			"event": "agent:tool_executed",
 			"props": {
 				"turn_id": "<turn>",
-				"tool_category": "other",
+				"tool_category": "scene_read",
 				"outcome": "succeeded",
 				"duration_bucket": "<bucket>"
 			},
@@ -368,7 +386,13 @@
 		{
 			"type": "text.delta",
 			"text": "done",
-			"eventSeq": 10
+			"eventSeq": 13
+		},
+		{
+			"type": "context",
+			"tokens": "<tokens>",
+			"window": 128000,
+			"eventSeq": 14
 		},
 		{
 			"type": "execution_telemetry",
@@ -387,13 +411,7 @@
 				"cacheWrite": "<tokens>",
 				"requests": 4
 			},
-			"eventSeq": 11
+			"eventSeq": 15
 		}
-	],
-	"B": [
-		{ "type": "tool.start", "name": "run_action", "args": { "action": "shot.createStill" } },
-		{ "type": "tool.start", "name": "run_action", "args": { "action": "character.add" } },
-		{ "type": "tool.start", "name": "frame_shot" },
-		{ "type": "tool.start", "name": "verify_result" }
 	]
 }

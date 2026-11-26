@@ -34,7 +34,7 @@ export async function pickNativeMedia(kind: 'image' | 'video' | 'audio' | 'media
     }
     return files;
 }
-export const testLocalMcp = (scope: 'canvas' | 'director') => postLocal<{ tools: number; workspaces: number }>('/local/mcp/test', { scope });
+export const testLocalMcp = (scope: 'canvas') => postLocal<{ tools: number; workspaces: number }>('/local/mcp/test', { scope });
 export const desktopAssetId = (storageKey?: string, url?: string) => {
     const id = storageKey?.match(/^server:([a-f0-9-]{36})$/i)?.[1];
     return id || url?.match(/^\/api\/files\/([a-f0-9-]{36})\/content(?:\?|$)/i)?.[1];

@@ -49,9 +49,11 @@ editor -> server, one per command, echoing `id`:
     { "type": "result", "id": "<same id>", "ok": false, "error": "<human message>" }
 
 Unknown `name` MUST answer `ok:false`, never silence. The server times a
-command out after 5 s and treats it as failed, except `import_asset` and the
-Studio commands (`inspect_studio`, `run_action`, `capture_framing_png`, ...),
-which retain a dedicated 30 s editor bound. A timeout or disconnect during
+command out after 5 s and treats it as failed, except `import_asset`,
+`capture_frame` and the Studio commands (`inspect_studio`, `run_action`,
+`capture_framing_png`, ...), which retain a dedicated 30 s editor bound, and
+`run_workflow`, which gets 180 s. A caller's own per-call timeout replaces
+these bounds, capped at 300 s. A timeout or disconnect during
 a mutation is ambiguous: it may already have applied, so callers MUST NOT retry
 blindly and should `describe` before recovering.
 
@@ -104,17 +106,18 @@ can wait for an editor instead of polling:
 
 All coordinates are metres, rotations are degrees of yaw, ids are the ids the
 scene document already uses.
+`describe` also takes an optional `{ tops: true }`: each visible solid object row then gains `tops: [{ y, x0, z0, x1, z1 }]`, the flat heights it offers in its own frame (metres, `y` over its base, largest first; `[]` when its geometry is not mounted). With `{ parts: true }` each such row gains `parts: [{ name, at, size, turn? }]`, one box per drawn mesh in the same frame (`at` its centre, `turn` in degrees about X, Y, Z; at most 16, the nearest merged; `[]` when its geometry is not mounted).
 
 | name | args | value | notes |
 | --- | --- | --- | --- |
 | `ping` | `{}` | `{ "pong": true }` | liveness |
-| `describe` | `{}` | `{ document, sceneName, previsMode, camera, stage, timeline, activeCharacterId, characters, objects }` | read the full live scene document plus active-scene convenience fields; the full `document` prevents one workspace's inactive scenes from leaking into another workspace's scene operations; `activeCharacterId` pins asynchronous work to the character selected when it started; `previsMode` (`"storyboard"` or `"animation"`, optional for older editors) is the project's previs mode, and a cast entry whose `model` is `proxy-figure` is a capsule figure that `describe_scene` reports as `kind: proxy` (otherwise `kind: rig`) |
+| `describe` | `{}` | `{ document, sceneName, camera, stage, timeline, activeCharacterId, characters, objects }` | read the full live scene document plus active-scene convenience fields; the full `document` prevents one workspace's inactive scenes from leaking into another workspace's scene operations; `activeCharacterId` pins asynchronous work to the character selected when it started; a cast entry whose `model` is `proxy-figure` is a capsule figure that `describe_scene` reports as `kind: proxy` (otherwise `kind: rig`) |
 | `capture_frame` | `{}` | `{ width: 640, height: 360, mimeType: "image/png", encoding: "base64", byteSize, data, assertions: { renderable, blackFrame, nonBlackPixels, behindCameraPlane, fartherAlongCameraForward, distanceToFloor, occludedBy, visiblePixelCount, characters } }` | leaves the authored document untouched, but is classified open-world/non-idempotent because an oversized PNG creates a mode-0600 managed temporary artifact. Character visibility and occlusion are computed from mounted engine geometry with bounded ray samples. Missing camera, black frame and compressed payloads above 1 MB fail explicitly. Inline responses honor `max_inline_bytes`; managed artifacts are capped at 20 and expire after 10 minutes. |
-| `capture_framing_png` | `{}` | `{ dataUrl, width: 1920, height: 1080, frame, shotId }` | full-resolution PNG (data URL) of the CURRENT shot camera framing at the current timeline frame, rendered through the same park-and-restore shot pipeline the editor's own exports use; `width`/`height` follow the shot aspect preset (1920x1080 at 16:9) and `shotId` names the shot under the playhead. The viewport and the authored document are untouched (idempotent read), and the editor's 640x360 `capture_frame` contract is unchanged. Fails while no shot camera is mounted (e.g. a cast model is still downloading). |
+| `capture_framing_png` | `{ frame? }` | `{ dataUrl, width: 1920, height: 1080, frame, shotId }` | full-resolution PNG (data URL) of the CURRENT shot camera framing at the current timeline frame (with `frame`, that timeline frame as the video export renders it: cast posed and shot camera sampled there, then restored, so the playhead does not move; a frame outside the timeline fails), rendered through the same park-and-restore shot pipeline the editor's own exports use; `width`/`height` follow the shot aspect preset (1920x1080 at 16:9) and `shotId` names the shot under the playhead. The viewport and the authored document are untouched (idempotent read), and the editor's 640x360 `capture_frame` contract is unchanged. Fails while no shot camera is mounted (e.g. a cast model is still downloading). |
 | `set_camera` | `{ x?, y?, z?, focalMm?, lookAtX?, lookAtY?, lookAtZ? }` | `{ camera }` | omitted fields keep their value; the **viewport must visibly move**. The `lookAt*` triple is additive to v1 and must arrive complete or not at all: given it, the editor aims the shot camera at that world point and records the resulting orientation as the camera's own (so the framing it commits is the one it just applied); without it the orientation is untouched, so an editor that ignores the fields degrades to the pre-aim behaviour instead of failing. `frame_shot` always sends the framing pivot, because the shot vocabulary (`deriveShot`, `captureFraming`) measures the shot as if the lens points at that pivot — a placed-but-unaimed camera reports a framing it is not holding. |
 | `add_character` | `{ subject, x?, z?, rot?, model?, posture? }` | `{ id }` | `model` is one of the stable character model ids, or `proxy-figure` for a rigless capsule figure; `posture` (`stand`, `sit`, `lie`; `stand` when omitted) applies to a capsule figure |
 | `update_character` | `{ ref, x?, y?, z?, rot?, subject?, hidden? }` | `{ id }` | `ref` = id, letter (`"A"`) or 1-based slot |
-| `remove_character` | `{ ref }` | `{ id }` | must refuse to empty the cast |
+| `remove_character` | `{ ref }` | `{ id }` | an empty cast is legal (an `arrange_characters` remove op still refuses the final or active character) |
 | `place_object` | `{ kind, x?, z?, y?, rot?, name?, parent? }` | `{ id }` | `kind` from OBJECT_LIBRARY; optional `name` labels the object and optional `parent` attaches it under another object |
 | `import_asset` | `{ name, mimeType, dataUrl, placeAs, clay?, x?, y?, z?, rot?, height? }` | `{ assetId, objectId }` | decode `dataUrl` and store the bytes in the content-addressed asset store under `assetId`, then stand the result up through the Studio's own import pipeline. `placeAs: "cutout"` is a 1.8 m standee 2.6 m in front of the shot camera; `placeAs: "backdrop"` is the same card as a 5 m background plate 12 m down the shot camera's view ray, turned to face the lens (PNG, WebP, JPEG or GIF; `dataUrl` must be `data:image/…`; `mimeType` optional when the data URL carries it). `placeAs: "mesh"` imports a GLB, a Wavefront OBJ or an FBX (`data:model/gltf-binary`, `data:model/obj`, `data:model/fbx`, `data:text/plain` when `name` ends in `.obj` or `.fbx`, or `data:application/octet-stream`, and those same types as `mimeType`), fits height/footprint once, and stands the model on the floor. Omit both `x` and `z` to place it in front of the shot camera; if either is present, those are world metres and the missing axis is 0. Optional `rot` is yaw in degrees (omitted is 0, like the Import button). Optional `height` overrides the fitted standing size. Optional `y` is lift off the floor, applied after mint (`createMeshObject` always writes `y: 0`). Optional `clay: true` replaces file materials with matte clay. Bytes decide the format (glTF magic first, then FBX magic/`FBXVersion:`, then OBJ vertices). Exactly ONE undo entry: a single Ctrl+Z removes the placed object (the asset bytes stay, being content-addressed). This deliberately does NOT reuse the Workflow-tab scene sync, which writes the document without touching undo. |
 | `update_object` | `{ id, x?, y?, z?, rot?, rotX?, rotZ?, scale?, scaleX?, scaleY?, scaleZ?, color?, name?, height?, clay?, hidden? }` | `{ id }` | `scale` sets all three axes; per-axis values override it; `name` renames the object. `height` is metres (cutout card height, or a mesh's fitted box height). `clay` is a boolean on mesh objects (file materials when false, matte clay when true). `hidden` shows or hides the prop without deleting it. |
@@ -127,21 +130,17 @@ scene document already uses.
 ### Previs mode and character kind in the Studio context
 
 `inspect_studio` returns the `studio-context-v1` context that every `run_action`
-is admitted against. Two parts of it describe what a project and its cast can do:
+is admitted against. Two parts of it describe what its cast can do:
 
 | field | value | meaning |
 | --- | --- | --- |
-| `scene.previsMode` | `"storyboard"` \| `"animation"` | the project's previs mode; optional for older editors |
-| `capabilities.storyboard` | boolean | `true` exactly when `scene.previsMode` is `storyboard` |
 | `entities[].characterKind` | `"rig"` \| `"proxy"` | a rigged model, or a rigless capsule figure (`model: "proxy-figure"`) |
 | `entities[].posture` | `"stand"` \| `"sit"` \| `"lie"` | a capsule figure's posture; absent for a rig |
 
-Before an animation-only tool runs, the server reads these fields from the
-context it admits the command against (`mark_camera_move`, which sends no
-command, reads `previsMode` from `describe`). In a storyboard project
-`mark_camera_move` answers `{ ok: false, code: "NOT_IN_MODE", reason }` and sends
-no command. The editor's own motion, take, IK and pose commands refuse a capsule
-figure with `TARGET_NOT_READY`, so `studio_run` reaches that answer.
+An older editor may still send `scene.previsMode`, a shot's `kind` and `caption`,
+and `capabilities.storyboard`; they are optional and ignored. The editor's own
+motion, take, IK and pose commands refuse a capsule figure with
+`TARGET_NOT_READY`, so `studio_run` reaches that answer.
 
 ## Hard rules for the editor side
 

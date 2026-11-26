@@ -46,8 +46,7 @@ export function readStudioSource() {
   return paths.map(path => read(path).replace(/export default /g, '')).join('\n');
 }
 
-export function readStudioFunction(name) {
-  const source = readStudioSource();
+export function readStudioFunction(name, source = readStudioSource()) {
   let found;
   walk(parseSync('studio.jsx', source).program, node => {
     if (node.type === 'FunctionDeclaration' && node.id.name === name) found = node;
@@ -141,7 +140,7 @@ function verify() {
       scenes: ['persistScenes', 'openScene', 'saveProject', 'applyProject'],
       objects: ['addSceneObject', 'importCutout', 'importMesh', 'spawnCutoutAt', 'spawnMeshAt'],
       shots: ['addCameraKeyframe', 'moveCameraKeyframe', 'removeCameraKeyframe'],
-      cast: ['updateCharacterAt', 'removeCharacter', 'savePose', 'removePose'],
+      cast: ['updateCharacterAt', 'removeCharacter'],
       motion: ['clearMotion', 'toggleIkMode', 'ikAddKeyframe', 'ikDragEnd'],
     };
     const functions = tree => {

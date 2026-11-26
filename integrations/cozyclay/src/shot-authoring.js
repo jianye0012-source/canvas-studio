@@ -5,67 +5,41 @@
  */
 
 import { createTiming, timingIsFlat } from "./speed-envelope.js";
-import { createShot } from "./cuts.js";
-import { railShotFields } from "./camera-block.js";
+import { createShot } from "./cuts.js"; import { EASES } from "./camera-move.js";
+import { cameraRoll, railShotFields } from "./camera-block.js"; import { craneMarkTurn } from "./camera-rail-head.js";
 import { normalizeStableItems } from "./stable-items.js";
 import { VIDEO_MODEL_PRESETS } from "./model-presets.js";
-import { elementByPath } from "./studio-elements.js";
-import { isImageAssetId } from "./scene-assets.js";
-import { createCharacterEntry } from "./scenes.js";
+import { elementByPath } from "./studio-elements.js"; import { WORLD } from "./world-scale.js";
+import { repairOptics } from "./camera-optics.js";
+import { repairReview } from "./shot-review.js";
+import { toTimelineFrame } from "./timeline-fps.js";
 
 const VIDEO_MODEL_IDS = new Set(VIDEO_MODEL_PRESETS.map((preset) => preset.id));
 const CAMERA_KEY_LIMITS = elementByPath("shot.cameraKeys");
 
-export const SHOT_AUTHORING_VERSION = 5;
-export const SHOT_AUTHORING_KEY = "cozyclay.shot-authoring.v5";
+// v7 drops the storyboard fields (kind, caption, cast, stylizedAssetId); an
+// older body is read as migrated and written back without them. v8 lifts the
+// 4 m/s rail-dolly cap every older body stored as its default (see below).
+export const SHOT_AUTHORING_VERSION = 8;
+export const SHOT_AUTHORING_KEY = "cozyclay.shot-authoring.v8";
 // The single-key alias points at the newest legacy body for older callers.
 // New readers should walk the list so a user can still arrive directly from v1.
-export const SHOT_AUTHORING_LEGACY_KEY = "cozyclay.shot-authoring.v4";
+export const SHOT_AUTHORING_LEGACY_KEY = "cozyclay.shot-authoring.v7";
 export const SHOT_AUTHORING_LEGACY_KEYS = Object.freeze([
 	SHOT_AUTHORING_LEGACY_KEY,
+	"cozyclay.shot-authoring.v6",
+	"cozyclay.shot-authoring.v5",
+	"cozyclay.shot-authoring.v4",
 	"cozyclay.shot-authoring.v3",
 	"cozyclay.shot-authoring.v2",
 	"cozyclay.shot-authoring.v1",
 ]);
-export const SHOT_AUTHORING_QUARANTINE_KEY = "cozyclay.shot-authoring.v5.quarantine";
-
-/** A still holds one picture for `endFrame - startFrame + 1` frames (24 fps). */
-export const STILL_HOLD_DEFAULT = 48;
-export const STILL_HOLD_MAX = 240;
-export const shotHold = (shot) => shot.endFrame - shot.startFrame + 1;
-
-/** Lay the stills end to end from frame 0 in their array order, each keeping
- * its hold; camera keys travel with their still. Clip shots are untouched.
- * The result is sorted by startFrame, the order the document stores. */
-export function reflowStillShots(shots) {
-	let cursor = 0;
-	return shots.map((shot) => {
-		if (shot.kind !== "still") return shot;
-		const hold = shotHold(shot), delta = cursor - shot.startFrame;
-		cursor += hold;
-		if (!delta) return shot;
-		return { ...shot, startFrame: shot.startFrame + delta, endFrame: shot.endFrame + delta,
-			cameraKeys: shot.cameraKeys.map((key) => ({ ...key, frame: key.frame + delta })) };
-	}).sort((a, b) => a.startFrame - b.startFrame);
-}
-
-/** The timeline length a reflowed document needs, unclamped so a caller can
- * refuse a storyboard past STILL_FRAME_COUNT_MAX instead of truncating it. */
-export function stillFrameCount(shots) {
-	return Math.max(DEFAULT_FRAME_COUNT, ...shots.map((shot) => shot.endFrame + 1));
-}
-
-const SHOT_KINDS = new Set(["clip", "still"]);
-const CAPTION_MAX = 500;
-// Mirrors the cast posture vocabulary (POSTURES in src/scenes.js once the
-// proxy-figure work lands); kept local so this module does not wait on it.
-const POSTURES = new Set(["stand", "sit", "lie"]);
+export const SHOT_AUTHORING_QUARANTINE_KEY = "cozyclay.shot-authoring.v8.quarantine";
 
 /** clip length sanity bounds, frames @ 24 fps: 1 s .. 20 min */
 const FRAME_COUNT_MIN = 24;
 const FRAME_COUNT_MAX = 28800;
 const DEFAULT_FRAME_COUNT = 144;
-export const STILL_FRAME_COUNT_MAX = FRAME_COUNT_MAX;
 const RAIL_MAX_POINTS = 512;
 const finite = Number.isFinite;
 
@@ -73,9 +47,6 @@ const finite = Number.isFinite;
  * on the 24 fps production clock. Every frame-bearing number is multiplied so
  * a saved roll keeps its DURATION: a 300-frame clip was 15 s and stays 15 s as
  * 360 frames. Reinterpreting instead would silently shorten it to 12.5 s. */
-const LEGACY_FRAME_FPS = 20;
-const TIMELINE_FRAME_FPS = 24;
-const toTimelineFrame = (frame) => Math.round((frame * TIMELINE_FRAME_FPS) / LEGACY_FRAME_FPS);
 const rescaleFrame = (value) => (finite(value) ? toTimelineFrame(value) : value);
 const rescaleKeys = (entries) => (Array.isArray(entries)
 	? entries.map((key) => (key && typeof key === "object" ? { ...key, frame: rescaleFrame(key.frame) } : key))
@@ -111,7 +82,7 @@ const FOLLOW_BOUNDS = {
 	height: [0.2, Number.POSITIVE_INFINITY],
 	response: [0.1, 3],
 	lead: [0, 1],
-	maxDollySpeed: [0.2, 40],
+	maxDollySpeed: [0.2, WORLD.dollySpeed],
 	pitchOffsetDeg: [-170, 170],
 	orbitOffsetDeg: [-180, 180],
 };
@@ -121,11 +92,26 @@ const FOLLOW_DEFAULTS = {
 	response: 0.7,
 	lead: 0.25,
 	railStartMode: "head",
-	maxDollySpeed: 4,
+	// No cap below the world's fastest dolly: the rail's schedule sets the speed.
+	maxDollySpeed: WORLD.dollySpeed,
 	pitchOffsetDeg: 0,
 	orbitOffsetDeg: 0,
 };
 const CAMERA_MODES = new Set(["keys", "follow", "rail"]);
+
+/** Bodies before v8 wrote a 4 m/s dolly cap into every camera as its default,
+ * so a camera of a fast subject lagged behind its own rail. That stored 4 is the
+ * old default, not a choice: it is read as no cap. Any other stored cap stays. */
+const OLD_DOLLY_CAP = 4;
+const liftOldDollyCap = (followCam) => (followCam && typeof followCam === "object" && followCam.maxDollySpeed === OLD_DOLLY_CAP
+	? { ...followCam, maxDollySpeed: undefined } : followCam);
+const liftCameraCap = (camera) => (camera && typeof camera === "object" && !Array.isArray(camera)
+	? { ...camera, followCam: liftOldDollyCap(camera.followCam) } : camera);
+function liftOldDollyCaps(parsed) {
+	const next = { ...parsed, followCam: liftOldDollyCap(parsed.followCam) };
+	if (Array.isArray(parsed.shots)) next.shots = parsed.shots.map((shot) => (shot && typeof shot === "object" ? { ...shot, camera: liftCameraCap(shot.camera) } : shot));
+	return next;
+}
 
 function validFraming(framing) {
 	return (
@@ -147,12 +133,13 @@ function repairKeys(entries, minFrame, maxFrame, ids = new Set()) {
 		const frame = Math.max(firstFrame, Math.min(maxFrame, Math.round(key.frame)));
 		byFrame.set(frame, {
 			id: key.id,
-			frame,
+			// Retain valid pacing while repairing malformed saves.
+			frame, ...(typeof key.ease === "string" && Object.hasOwn(EASES, key.ease) ? { ease: key.ease } : {}),
 			framing: {
 				pos: { x: key.framing.pos.x, y: key.framing.pos.y, z: key.framing.pos.z },
 				yaw: key.framing.yaw,
 				pitch: key.framing.pitch,
-				fovDeg: key.framing.fovDeg,
+				fovDeg: key.framing.fovDeg, ...(cameraRoll(key.framing.rollDeg) ? { rollDeg: cameraRoll(key.framing.rollDeg) } : {}),
 			},
 		});
 	}
@@ -183,47 +170,25 @@ function repairShots(entries, frameCount, inheritedCamera = null, ids = new Set(
 		// from a newer build is dropped rather than kept, because the badge must
 		// never cite a preset this build cannot describe.
 		const targetModel = VIDEO_MODEL_IDS.has(entry.targetModel) ? { targetModel: entry.targetModel } : null;
+		const optics = repairOptics(entry.optics);
 		const nextStart = ordered[index + 1]?.startFrame ?? frameCount;
 		// Pre-overlay v3 bodies had no endFrame and were gapless by definition.
 		// Infer their old boundary exactly; new bodies persist an explicit end.
 		const storedEnd = finite(entry.endFrame) ? Math.round(entry.endFrame) : nextStart - 1;
 		const endFrame = Math.max(startFrame, Math.min(frameCount - 1, nextStart - 1, storedEnd));
+		const review = repairReview(entry.review, { startFrame, endFrame }), subjectIds = [...new Set((Array.isArray(entry.subjectIds) ? entry.subjectIds : []).filter(id => typeof id === "string" && id.trim()))];
 		return {
 			id: entry.id,
 			name: typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : `Shot ${index + 1}`,
 			startFrame,
 			endFrame,
 			cameraKeys: repairKeys(entry.cameraKeys, startFrame, endFrame, ids),
-			camera: repairCamera(inheritedCamera ?? entry.camera),
+			camera: repairCamera(inheritedCamera ?? entry.camera), ...(subjectIds.length ? { subjectIds } : {}),
 			...targetModel,
-			kind: SHOT_KINDS.has(entry.kind) ? entry.kind : "clip",
-			caption: repairCaption(entry.caption),
-			cast: repairCast(entry.cast),
-			stylizedAssetId: isImageAssetId(entry.stylizedAssetId) ? entry.stylizedAssetId : null,
+			...(optics ? { optics } : {}),
+			...(review ? { review } : {}),
 		};
 	});
-}
-
-function repairCaption(value) {
-	return typeof value === "string" ? Array.from(value.trim()).slice(0, CAPTION_MAX).join("") : "";
-}
-
-/** Per-shot placement overrides keyed by character id. An entry without a
- * usable id or a finite x/z/rot is dropped; its valid siblings survive. */
-function repairCast(value) {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-	const rows = [];
-	for (const [characterId, entry] of Object.entries(value)) {
-		if (!characterId.trim() || !entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-		if (!finite(entry.x) || !finite(entry.z) || !finite(entry.rot)) continue;
-		const row = { x: entry.x, z: entry.z, rot: entry.rot };
-		if (POSTURES.has(entry.posture)) row.posture = entry.posture;
-		const pose = createCharacterEntry({ pose: entry.pose }).pose;
-		if (pose) row.pose = pose;
-		rows.push([characterId, row]);
-	}
-	// fromEntries defines own properties, so a "__proto__" id stays data.
-	return Object.fromEntries(rows);
 }
 
 function repairWaypoints(entries, ids = new Set()) {
@@ -273,7 +238,7 @@ function repairCraneHeight(value) {
 	if (!raw) return null;
 	const cleaned = raw
 		.filter((point) => point && finite(point.t) && finite(point.height))
-		.map((point) => ({ t: Math.max(0, Math.min(1, point.t)), height: Math.max(0.1, point.height) }))
+		.map((point) => ({ t: Math.max(0, Math.min(1, point.t)), height: Math.max(0.1, point.height), ...craneMarkTurn(point) }))
 		.sort((a, b) => a.t - b.t)
 		.filter((point, i, arr) => i === arr.length - 1 || arr[i + 1].t - point.t > 1e-6)
 		.slice(0, 8);
@@ -346,8 +311,9 @@ export function readShotAuthoringDocument(raw) {
 	if (!Number.isInteger(version) || version < 1) return { status: "corrupt", state: null };
 	if (version > SHOT_AUTHORING_VERSION) return { status: "future", state: null };
 
-	// One conversion at the door: everything below reads one clock.
-	const parsed = version < 4 ? rescaleShotAuthoringFrames(raw) : raw;
+	// One conversion at the door: everything below reads one clock and no old default cap.
+	const retimed = version < 4 ? rescaleShotAuthoringFrames(raw) : raw;
+	const parsed = version < 8 ? liftOldDollyCaps(retimed) : retimed;
 	const frameCount = repairFrameCount(parsed.frameCount);
 	const effectiveFrameCount = frameCount ?? DEFAULT_FRAME_COUNT;
 	if (version === 1) {
@@ -372,15 +338,14 @@ export function readShotAuthoringDocument(raw) {
 	}
 	const ids = new Set();
 	return {
-		// A v3 body was authored on the old clock and a v4 body lacks the v5
-		// kind/caption/cast/stylizedAssetId defaults; both are rewritten, so they
-		// report as migrated, not valid.
+		// Older bodies were authored on another clock or lack newer shot fields;
+		// all are rewritten, so they report as migrated, not valid.
 		status: version < SHOT_AUTHORING_VERSION ? "migrated" : "valid",
 		state: { ...repairShared(parsed, frameCount, ids), shots: repairShots(parsed.shots, effectiveFrameCount, null, ids) },
 	};
 }
 
-/** JSON compatibility adapters used by App and older model callers. */
+/** JSON adapters: readShotAuthoring backs the shot domain; the serializer is the tests' round trip. */
 export function serializeShotAuthoring(state) {
 	return JSON.stringify(createShotAuthoringDocument(state));
 }
@@ -394,7 +359,7 @@ export function readShotAuthoring(raw) {
 	}
 }
 
-/** Compatibility-shaped convenience for model callers and tests. */
+/** Compatibility-shaped convenience the tests read with. */
 export function loadShotAuthoring(raw) {
 	return readShotAuthoring(raw).state;
 }

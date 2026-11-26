@@ -6,8 +6,6 @@
 	.v2-statusbar,
 	.menubar-menu,
 	.menubar-dialog-backdrop {
-		--topbar-swatch-size: 20px;
-		--topbar-swatch: var(--project-swatch);
 		--topbar-dot: 6px;
 		--topbar-primary-height: 30px;
 		--topbar-primary-pad: 14px;
@@ -41,13 +39,6 @@
 		align-items: center;
 		gap: 10px;
 		min-width: 0;
-	}
-	.v2-topbar .topbar-swatch {
-		flex: none;
-		width: var(--topbar-swatch-size);
-		height: var(--topbar-swatch-size);
-		border-radius: var(--r-2, 6px);
-		background: var(--topbar-swatch);
 	}
 	/* The project name is the project menu's trigger: plain name, dirty dot after.
 	   The trigger's 8px inline padding (details.css) is pulled back so the
@@ -83,32 +74,7 @@
 		background: var(--text-off, #4f4f55);
 	}
 	.v2-topbar .topbar-mcp[data-state="connected"] .topbar-mcp-dot { background: var(--ok, #4fbf7a); }
-	.v2-topbar .topbar-mcp-text { overflow: hidden; text-overflow: ellipsis; }
 
-	/* Generate Motion: the one violet primary, with its caret joined on. */
-	.v2-topbar .topbar-generate { display: flex; flex: none; }
-	.v2-topbar .topbar-generate button {
-		height: var(--topbar-primary-height);
-		border: 0;
-		background: var(--primary, #7258a0);
-		color: var(--text-selected, #fff);
-		font: 500 var(--ui-size) var(--sans);
-		cursor: pointer;
-	}
-	.v2-topbar .topbar-generate-main {
-		padding: 0 var(--topbar-primary-pad);
-		border-radius: var(--r-1, 4px) 0 0 var(--r-1, 4px);
-		white-space: nowrap;
-	}
-	.v2-topbar .topbar-generate-caret {
-		display: grid;
-		place-items: center;
-		width: var(--topbar-caret-width);
-		padding: 0;
-		border-radius: 0 var(--r-1, 4px) var(--r-1, 4px) 0;
-		box-shadow: inset 1px 0 0 var(--surface-bar, #121214);
-	}
-	.v2-topbar .topbar-generate-caret svg,
 	.menubar-dialog-close svg {
 		width: 12px;
 		height: 12px;
@@ -118,17 +84,10 @@
 		stroke-linecap: round;
 		stroke-linejoin: round;
 	}
-	.v2-topbar .topbar-generate button:hover,
-	.v2-topbar .topbar-generate-caret[aria-expanded="true"] {
-		background: color-mix(in srgb, var(--primary, #7258a0) 86%, var(--text-selected, #fff));
-	}
-	.v2-topbar .topbar-generate-main[aria-disabled="true"] { color: color-mix(in srgb, var(--text-selected, #fff) 62%, transparent); }
-	.v2-topbar .topbar-generate button:focus-visible,
 	.v2-topbar .menubar-trigger:focus-visible {
 		outline: 1px solid var(--select, #e8a33d);
 		outline-offset: 1px;
 	}
-	.v2-topbar .topbar-generate-short { display: none; }
 
 	/* ---------------------------------------------------------- menu bar */
 	.v2-topbar .menubar {
@@ -225,13 +184,6 @@
 		margin-left: auto;
 		color: var(--text-3, #636369);
 		font: 400 var(--secondary-size) var(--mono);
-	}
-	.menubar-menu .menubar-item-reason {
-		flex: 1 0 100%;
-		padding-bottom: 4px;
-		color: var(--text-3, #636369);
-		font-size: var(--secondary-size);
-		white-space: normal;
 	}
 	.menubar-menu [role="menuitemcheckbox"]::before {
 		content: "";
@@ -417,7 +369,6 @@
 	/* ------------------------------------------------ narrow windows (G11) */
 	@media (max-width: 720px) {
 		.app:not([data-embed-mode]) .v2-topbar { gap: var(--sp-1, 8px); }
-		.v2-topbar .topbar-mcp-text { display: none; }
 		.v2-topbar .project-menu-trigger { max-width: 96px; }
 		.v2-topbar { --menubar-trigger-pad: 5px 6px; }
 		.v2-statusbar .statusbar-fps { display: none; }
@@ -426,8 +377,6 @@
 		.app:not([data-embed-mode]) .v2-topbar { padding: 0 var(--sp-1, 8px); }
 		.v2-topbar .project-menu-wrap,
 		.v2-topbar .topbar-mcp { display: none; }
-		.v2-topbar .topbar-generate-full { display: none; }
-		.v2-topbar .topbar-generate-short { display: inline; }
 		.v2-statusbar .source-offer,
 		.v2-statusbar .export-status progress { display: none; }
 		.app:not([data-embed-mode]) .v2-statusbar { gap: var(--sp-1, 8px); padding: 0 var(--sp-1, 8px); }

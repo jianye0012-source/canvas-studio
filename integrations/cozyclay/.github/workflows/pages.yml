@@ -8,6 +8,10 @@ on:
       - "docs/**/*.md"
       - "*.md"
   workflow_dispatch:
+  # Daily rebuild so the GitHub star count on the landing page stays current
+  # (tools/github-stars.mjs). It runs the same tests before deploying.
+  schedule:
+    - cron: "17 0 * * *"
 
 permissions:
   contents: read
@@ -42,6 +46,8 @@ jobs:
           # Public Turnstile site key for the hosted demo composer (pairs with
           # the TURNSTILE_SECRET_KEY Worker secret; not sensitive).
           VITE_TURNSTILE_SITE_KEY: "0x4AAAAAAEbNDDTxohyi9XFd"
+          # Read-only token for the star count; unauthenticated calls share a rate limit.
+          GITHUB_TOKEN: ${{ github.token }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
@@ -90,10 +96,6 @@ jobs:
       # records its own per-file seconds for tools/update-test-durations.mjs
       # and writes "selected N, predicted X s, actual Y s" to its summary (#632).
       - run: node tools/run-tests.mjs --shard "${{ matrix.shard }}/4" --durations-out test-durations.json
-        env:
-          # The MorphGS truth comparison needs uv + torch; the runner has
-          # neither, so only its structural checks run in hosted CI.
-          MORPHGS_SKIP_TRUTH: "1"
       - uses: actions/upload-artifact@v4
         with:
           name: test-durations-${{ matrix.shard }}
@@ -118,4 +120,6 @@ jobs:
         with:
           node-version: 22
       - run: node tools/indexnow.mjs
+        # The daily rebuild changes only the star count; no need to ping search engines.
+        if: github.event_name != 'schedule'
         continue-on-error: true

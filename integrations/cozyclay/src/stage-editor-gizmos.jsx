@@ -4,7 +4,7 @@ import { Line, Text } from "@react-three/drei";
 import * as THREE from "three";
 import { GIZMO_LAYER } from "./dualview.jsx";
 import { craneHeightAt, prepareRailBend, railPoint } from "./camera-follow.js";
-import { floorDragStart } from "./rail-dot-drag.js";
+import { floorDragStart } from "./rail-dot-drag.js"; import { railTurnAt } from "./camera-rail-head.js";
 import { insertPathMark, MARK_GAP, MAX_PATH_LEAN, MAX_PATH_MARKS, MAX_PATH_POINTS, nearestPathFraction, pathCurve, pathMarkFractions, pathMarks, pathPointAtFraction } from "./object-path.js";
 
 /**
@@ -267,17 +267,13 @@ export function CameraRailScenePreview({ points, cumLen, length, crane }) {
  * adds a mark and Delete removes a non-endpoint. Dots live on GIZMO_LAYER, so the
  * recording never sees them.
  */
-export const CRANE_AXES = [
+const CRANE_AXES = [
 	{ axis: "x", dir: new THREE.Vector3(1, 0, 0), color: "#ff5340" },
 	{ axis: "y", dir: new THREE.Vector3(0, 1, 0), color: "#54e05c" },
 	{ axis: "z", dir: new THREE.Vector3(0, 0, 1), color: "#3d8bff" },
 ];
-export const CRANE_ARROW_LEN = 0.5;
-export const CRANE_GIZMO_SCALE = 0.16; // metres of gizmo per metre of camera distance
-
-// The rail-bend preparation is shared with the Top-View board and lives with the
-// rest of the rail math.
-export { prepareRailBend };
+const CRANE_ARROW_LEN = 0.5;
+const CRANE_GIZMO_SCALE = 0.16; // metres of gizmo per metre of camera distance
 
 /**
  * A floating readout beside a drag — billboarded, sized to the screen, on
@@ -857,7 +853,9 @@ export function ObjectPathHandles({ path, selectedIndex, enabled, mode = "move",
 	);
 }
 
-export function CraneHandles({ rail, crane, controlPoints, selectedIndex, enabled, paneRef, camRef, onSelect, onChangePoints, onChangeRail, onDragStart, onDragEnd }) {
+// Under the rotate tool (mode "rotate") the selected mark shows no move arrows: its pan and tilt rings
+// (crane-turn-rings.jsx) turn the camera there instead.
+export function CraneHandles({ rail, crane, controlPoints, selectedIndex, enabled, mode = "move", paneRef, camRef, onSelect, onChangePoints, onChangeRail, onDragStart, onDragEnd }) {
 	const { gl } = useThree();
 	const invalidate = useThree((state) => state.invalidate);
 	const groupRef = useRef(null);
@@ -1069,7 +1067,7 @@ export function CraneHandles({ rail, crane, controlPoints, selectedIndex, enable
 			if (s.crane.points.some((entry) => Math.abs(entry.t - best.t) < 0.03)) return;
 			event.stopImmediatePropagation();
 			event.preventDefault();
-			const added = [...s.crane.points, { t: best.t, height: craneHeightAt(s.crane, best.t) }].sort((a, b) => a.t - b.t);
+			const added = [...s.crane.points, { t: best.t, height: craneHeightAt(s.crane, best.t), ...railTurnAt(s.crane, best.t) }].sort((a, b) => a.t - b.t);
 			s.onChangePoints(added);
 			s.onSelect(added.findIndex((entry) => entry.t === best.t));
 			invalidate();
@@ -1107,7 +1105,7 @@ export function CraneHandles({ rail, crane, controlPoints, selectedIndex, enable
 	const selectedBase = selectedPoint ? railPoint(rail, selectedPoint.t * rail.length) : null;
 	return (
 		<group ref={groupRef}>
-			{selectedPoint && (
+			{selectedPoint && mode !== "rotate" && (
 				<group ref={gizmoRef} position={[selectedBase.x, selectedPoint.height, selectedBase.z]} renderOrder={999}>
 					{CRANE_AXES.map(({ axis, dir, color }) => {
 						const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
@@ -1205,17 +1203,17 @@ export function ShotPathPreview({ waypoints, start, activeWaypointId }) {
 				return (
 					<group key={waypoint.id} position={[waypoint.x, 0.03, waypoint.z]}>
 						<mesh rotation={[-Math.PI / 2, 0, 0]}>
-							<ringGeometry args={[0.13, 0.19, 28]} />
+							<ringGeometry args={[0.21, 0.25, 32]} />
 							<meshBasicMaterial color={color} depthWrite={false} />
 						</mesh>
 						<Text
-							position={[0, 0.02, 0.34]}
+							position={[0, 0.02, 0.36]}
 							rotation={[-Math.PI / 2, 0, 0]}
-							fontSize={0.24}
+							fontSize={0.12}
 							color={color}
 							anchorX="center"
 							anchorY="middle"
-							outlineWidth={0.03}
+							outlineWidth={0.01}
 							outlineColor="#1c1a17"
 							outlineOpacity={0.85}
 						>

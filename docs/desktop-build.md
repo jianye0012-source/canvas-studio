@@ -74,7 +74,7 @@ Windows 10/11 实机启动、Windows 密钥加密、真实服务商调用和 Win
 
 ## v1.3 MCP、循环与 Skill
 
-画布 MCP 使用启动器同源 `/mcp/canvas`，导演台使用 `/mcp/director`，均要求本整合包专属本机 Bearer 凭据。浏览器通过同源会话读取连接配置；stdio 桥读取 `data/config/mcp-connection.json`，每次启动写入当前端口。两个工具名前缀分别为 `canvas_studio_`、`canvas_studio_director_`；与上游 3210 Agent 和配置目录分开。连接不依赖 Codex。画布桥在页面打开时连接，助手面板收起不影响工具执行；多个页面要求 workspace_id，导演台要求 workspace_handle。
+画布 MCP 使用启动器同源 `/mcp/canvas`，要求本整合包专属本机 Bearer 凭据。浏览器通过同源会话读取连接配置；stdio 桥读取 `data/config/mcp-connection.json`，每次启动写入当前端口。工具名前缀为 `canvas_studio_`；与上游 3210 Agent 和配置目录分开。连接不依赖 Codex。画布桥在页面打开时连接，助手面板收起不影响工具执行；多个页面要求 workspace_id。导演台升级到 3.3.2 时已去掉独立的 MCP 接入（见 `docs/progress/cozyclay-upgrade-assessment.md`），其智能体和场景工具仍在导演台自身的助手面板里使用。
 
 目录授权通过 Electron 原生对话框，保存为本机不透明授权编号。扫描跳过符号链接并限制数量／层级；导入时重新检查真实路径、大小与修改时间。循环将模板按拓扑顺序复制，每文件保留独立输入和结果；每步一份结果，组／导演台／嵌套循环会拒绝。每次推进先同步保存项目，状态不明时停止自动提交。浏览器重开不自动触发付费生成。
 
@@ -84,7 +84,7 @@ Skill 使用原有本机用户 Skill API 与 SQLite，不另建浏览器私有�
 
 新增验证脚本：`launcher/test/workspace-smoke.cjs`（需 headless 服务，CANVAS_SMOKE_FOLDER 指向含两个 UTF-8 文本的测试目录，work/video-fixture 放 H.264 8／10 位编码样例），`launcher/test/skills-launcher.cjs`（原生 Electron Skill 管理）。测试使用本地模型替身，不发起付费请求。
 
-导演台 MCP 的 open_project／save_project 只允许在启动器数据目录中读写 `.cclayproject` 文件。传入相对文件名即可；场景在线编辑仍由画布适配器自动保存完整项目与资源。
+导演台场景在线编辑由画布适配器自动保存完整项目与资源，落盘到启动器数据目录的 `.cclayproject` 文件；不再经由独立的导演台 MCP。
 
 ### 3D 建模任务
 

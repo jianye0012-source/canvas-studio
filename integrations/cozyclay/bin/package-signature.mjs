@@ -2,7 +2,7 @@ import { createHash, createPublicKey, verify } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 
-export const PACKAGE_SIGNATURE_PUBLIC_KEY = "MCowBQYDK2VwAyEAiDLutMZ8CX/NzpuQF/juhT8v9QwPBUvIOHFRqEZoG3U=";
+const PACKAGE_SIGNATURE_PUBLIC_KEY = "MCowBQYDK2VwAyEAiDLutMZ8CX/NzpuQF/juhT8v9QwPBUvIOHFRqEZoG3U=";
 
 const CONTENT_ROOTS = [
 	"bin",
@@ -28,7 +28,10 @@ const CONTENT_ROOTS = [
 function ignored(relativePath) {
 	return relativePath === "dist/cozyclay-package.json"
 		|| (/^dist\/media\/[^/]+\.mp4$/i.test(relativePath))
-		|| /^tools\/qa-[^/]+\.mjs$/i.test(relativePath);
+		|| /^tools\/qa-[^/]+\.mjs$/i.test(relativePath)
+		// the lowvis development files package.json#files leaves out
+		|| /^(tools\/lowvis|src\/lowvis\/engine-m3|src\/lowvis\/engine-simple\/demos)(\/|$)/.test(relativePath)
+		|| /^src\/lowvis\/(kick-cc-free|viewer\/main)\.js$/.test(relativePath);
 }
 
 function collectFiles(path, packageRoot, output) {
@@ -80,7 +83,7 @@ export function verifyPackageMarker(
 		if (payload.distribution !== "npm") return false;
 		if (payload.package !== "cozyclay") return false;
 		if (payload.version !== packageMetadata.version) return false;
-		if (payload.repository !== "NomaDamas/CozyClay") return false;
+		if (payload.repository !== "HaD0Yun/CozyClay") return false;
 		if (payload.content_sha256 !== computePackageDigest(packageRoot)) return false;
 		const publicKey = createPublicKey({
 			key: Buffer.from(publicKeyBase64, "base64"),

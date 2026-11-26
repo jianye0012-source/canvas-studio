@@ -47,6 +47,12 @@ export function stepLabel(step, toolLabels = {}) {
 /** One line of what a verify_result measured: the framing size, motion verification, the image it looked at. */
 function verifySummary(result, args) {
 	const parts = [];
+	// The turn's own review of its edits (bin/agent/studio-review.mjs): what failed, and that the model was shown the pictures.
+	if (Array.isArray(result?.findings)) {
+		const n = result.findings.length;
+		parts.push(n ? `${ko(`${n} check${n === 1 ? "" : "s"} failed`, `검사 ${n}건 실패`, `${n} 项检查未通过`)}: ${result.findings[0]}` : ko("checks passed", "검사 통과", "检查通过"));
+		if (result.images > 0) parts.push(ko("looked at the shot", "샷 화면 확인", "已查看镜头画面"));
+	}
 	const size = result?.checks?.framing?.derivedSize;
 	if (size) parts.push(size);
 	if (result?.geometry?.axisConsistent === false) parts.push(ko("cameras cross the line", "카메라가 축을 넘음"));
@@ -182,8 +188,16 @@ export function changedLine(ids, context) {
 	return ko(`Changed ${shown || "the scene"}${more > 0 ? ` and ${more} more` : ""}`, `${shown || "장면"}${more > 0 ? ` 외 ${more}개` : ""} 변경`, `修改了 ${shown || "场景"}${more > 0 ? ` 以及另外 ${more} 项` : ""}`);
 }
 
-/** What a stopped turn left behind, as far as its steps tell: their edits stay (one undo entry), or none landed. */
+/** What a stopped turn left behind, as far as its steps tell: their edits stay (one undo entry), or none landed; and a
+ *  motion it started whose result no motion_result answered was not stopped with it (bin/agent/motion-job.mjs): worded
+ *  so that it stays true of this turn whatever became of that motion since. */
 export function stoppedNote(block) {
+	const note = stoppedEdits(block), started = block.steps.findLastIndex(step => step.kind === "tool" && step.name === "motion" && step.result?.started === true);
+	// a motion_result that answered the draft (draft: true) did not answer the motion; one that failed answered its error
+	if (started < 0 || block.steps.slice(started + 1).some(step => step.kind === "tool" && step.name === "motion_result" && (step.status === "failed" || (step.status === "done" && step.result?.draft !== true)))) return note;
+	return `${note} ${ko("The motion this turn started was not stopped: nothing more of it is installed until a later message of yours asks for it or asks to stop it.", "이 턴에서 시작한 모션 작성은 중지되지 않았어요. 다음 메시지에서 모션을 요청하거나 중지를 요청하기 전까지는 더 설치되지 않아요.", "本回合开始编写的动作没有被停止：在你之后的消息要求安装它或要求停止之前，不会再安装任何内容。")}`;
+}
+function stoppedEdits(block) {
 	const authored = block.steps.some(step => step.result?.authored === true || (step.result?.calls ?? []).some(call => call?.revision && call.revision.after !== call.revision.before));
 	if (authored) return ko("Stopped by you. What already ran stays in the scene; Cmd+Z undoes this turn.", "직접 중지했어요. 이미 실행된 편집은 장면에 남아 있고, Cmd+Z로 이번 턴을 되돌릴 수 있어요.");
 	if (block.steps.some(step => step.kind === "tool" && step.status === "cancelled")) return ko("Stopped by you while a step was running; its result is unknown.", "단계 실행 중에 직접 중지했어요. 그 단계의 결과는 알 수 없어요.");

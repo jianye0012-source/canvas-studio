@@ -1,25 +1,29 @@
 // Studio composites prepare private domain drafts; the App owns publication,
 // history, gesture fences and semantic revision/telemetry. No UI callbacks here.
-import { Euler, Vector3, Quaternion, PerspectiveCamera } from 'three';
+import { Euler, Vector3, PerspectiveCamera } from 'three';
 import { createSceneObject, updateSceneObject, removeSceneObject, setSceneObjectParent, descendantsOf, isEffectivelyHidden, supportHeightForObject, OBJECT_MENU_ENTRIES } from './scene-objects.js';
-import { createCharacterEntry } from './scenes.js';
+import { createCharacterEntry, NEW_CHARACTER_MODEL } from './scenes.js'; import { characterName } from './character-name.js';
 import { createShot, shotAtFrame } from './cuts.js';
 import { captureFraming } from './camera-move.js';
 import { createStableItemId } from './stable-items.js';
 import { focalMmToFov, SENSOR_FORMATS } from './shot.js';
 import { coplanarConflicts } from './coplanar-depth.js';
 import { clampWarning } from './receipt-findings.js';
-import { occludersOf, primarySubjects, sideOfAxis } from './studio-geometry-facts.js';
+import { axisSubjects, occludersOf, sideOfAxis, framingCodes, subjectIssues, outlinePoints } from './studio-geometry-facts.js';
+import { frameSubject } from './studio-frame-subject.js'; import { subjectsCenter } from './shot-subjects.js';
 import { StudioProtocolError, StudioSchemas, STUDIO_PATCH_KINDS, STUDIO_PATCH_DESCRIPTORS, validateStudioSchema, validateStudioIdentity, validateReceipt, freezeStudioData } from './studio-agent-protocol.js';
 import { sampleContactSheetFrames } from './studio-contact-sheet.js';
-import { supportGaps } from './studio-support-gap.js';
+import { attachedFrameOp, attachedPlace, parentFrameOp, writeAttached } from './studio-local-frame.js';
+import { supportGaps, liftOffDeck, floorLiftWarnings, placedTogether } from './studio-support-gap.js';
+import { contactBody, interpenetration } from './solid-contact.js';
 
 const DEG = Math.PI / 180, EPS = 1e-8, CHARACTER_SUPPORT_TOLERANCE = 5e-3;
 const fail = (code, message) => { throw new StudioProtocolError(code, message); };
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const pos = e => ({ x: e.x, y: e.y ?? 0, z: e.z });
 const vector = p => new Vector3(p.x, p.y, p.z);
-const normalizedName = name => name.normalize('NFC').trim();
+// entityName: an object's name, or a character's display name, the one the scene context shows (character-name.js).
+const normalizedName = name => name.normalize('NFC').trim(), entityName = (e, state) => (state.characters.includes(e) ? characterName(e) : e.name ?? '');
 const entityById = (state, id) => {
   const entity = [...state.objects, ...state.characters].find(e => e.id === id);
   if (!entity) fail('AMBIGUOUS_TARGET', 'Target ID is not present in the admitted scene.');
@@ -31,7 +35,7 @@ const entityById = (state, id) => {
 function resolveRef(ref, state, field) {
   const all = [...state.objects, ...state.characters];
   if (all.some(e => e.id === ref)) return ref;
-  const named = all.filter(e => normalizedName(e.name ?? e.subject ?? '') === normalizedName(ref));
+  const named = all.filter(e => normalizedName(entityName(e, state)) === normalizedName(ref));
   if (named.length === 1) return named[0].id;
   if (named.length) fail('AMBIGUOUS_TARGET', `${field} '${ref}' matches ${named.length} objects by name (${named.map(e => e.id).join(', ')}); reference one by id.`);
   fail('AMBIGUOUS_TARGET', `${field} '${ref}' not found; reference an existing id, or a part created EARLIER in this batch by its name (create it before it is referenced).`);
@@ -60,7 +64,7 @@ function resolveOpRefs(op, state, selfId) {
 }
 function boxPoints(bounds) {
   if (!bounds || ['x', 'y', 'z'].some(a => !Number.isFinite(bounds.min?.[a]) || !Number.isFinite(bounds.max?.[a]) || bounds.min[a] > bounds.max[a])) fail('TARGET_NOT_READY', 'Evaluated bounds are unavailable.');
-  return [bounds.min.x, bounds.max.x].flatMap(x => [bounds.min.y, bounds.max.y].flatMap(y => [bounds.min.z, bounds.max.z].map(z => new Vector3(x, y, z))));
+  return Object.assign([bounds.min.x, bounds.max.x].flatMap(x => [bounds.min.y, bounds.max.y].flatMap(y => [bounds.min.z, bounds.max.z].map(z => new Vector3(x, y, z)))), { body: bounds.points, bones: bounds.bones, radii: bounds.radii }); // body: posed bone points, bones their [parent, child] pairs, radii a drawn radius round each point, when the port has them
 }
 function geometry(entity, state, ports) {
   // Attached/path objects need evaluated world geometry, never local channels.
@@ -157,63 +161,7 @@ function place(entity, op, state, ports) {
   }
   return { entity: result, relation: { id: result.id, spec, axis, support: surface.label, baseY: surface.y, ...(axis ? { actualGapM, requestedGapM: spec.gapM, basis: spec.basis } : {}) } };
 }
-// Parent-relative (local) space. Object rows are flat world-space; `parent` only
-// groups. A parent's frame is its stored pivot (base, y = bottom) and Euler XYZ
-// degrees; parent SCALE is deliberately not part of the frame.
-const objectQuat = o => new Quaternion().setFromEuler(new Euler((o.rotX ?? 0) * DEG, (o.rot ?? 0) * DEG, (o.rotZ ?? 0) * DEG, 'XYZ'));
-const wrapDeg = a => ((a + 540) % 360 + 360) % 360 - 180;
-// XYZ Euler angles come in two equal-orientation spellings, (x,y,z) and
-// (x+180, 180-y, z+180). Report the one with the least pitch/roll, so a pure
-// yaw of 135 reads back as yaw 135 rather than (180, 45, 180).
-function eulerDegOf(q) {
-  const e = new Euler().setFromQuaternion(q, 'XYZ'), a = { x: e.x / DEG, y: e.y / DEG, z: e.z / DEG };
-  const b = { x: wrapDeg(a.x + 180), y: wrapDeg(180 - a.y), z: wrapDeg(a.z + 180) };
-  return Math.abs(b.x) + Math.abs(b.z) < Math.abs(a.x) + Math.abs(a.z) - 1e-9 ? b : a;
-}
-const eulerQuat = r => new Quaternion().setFromEuler(new Euler(r.x * DEG, r.y * DEG, r.z * DEG, 'XYZ'));
-/** world = parentPivot + R_parent * local; orientation = R_parent * R_local. */
-export function localToWorld(parent, local) {
-  const p = vector(local.position ?? { x: 0, y: 0, z: 0 }).applyQuaternion(objectQuat(parent)).add(vector(pos(parent)));
-  const q = objectQuat(parent).multiply(eulerQuat(local.rotationDeg ?? { x: 0, y: 0, z: 0 }));
-  return { position: { x: p.x, y: p.y, z: p.z }, rotationDeg: eulerDegOf(q) };
-}
-/** Inverse of localToWorld for an object row under its parent row. */
-export function worldToLocal(parent, object) {
-  const inverse = objectQuat(parent).invert();
-  const p = vector(pos(object)).sub(vector(pos(parent))).applyQuaternion(inverse);
-  return { position: { x: p.x, y: p.y, z: p.z }, rotationDeg: eulerDegOf(inverse.multiply(objectQuat(object))) };
-}
-const tidy = v => Math.round(v * 1e4) / 1e4 + 0;
-/** Compact readback: the object's transform in its parent's frame, or null for
- * a root, a missing parent or a parent whose stored pose is not its world pose. */
-export function localTransformReadback(object, objects) {
-  const parent = object.parent ? objects.find(o => o.id === object.parent) : null;
-  if (!parent || parent.attach || parent.path || object.attach || object.path) return null;
-  const { position, rotationDeg } = worldToLocal(parent, object);
-  const round = v => ({ x: tidy(v.x), y: tidy(v.y), z: tidy(v.z) });
-  return { position: round(position), rotationDeg: round(rotationDeg) };
-}
-const resolveParentRef = (ref, rows, createdByName) => rows.some(e => e.id === ref) ? ref : createdByName.get(normalizedName(ref));
-/** Rewrites an op given in the parent's local frame into the equivalent world op. */
-function parentFrameOp(op, entity, rows, createdByName) {
-  const create = op.op === 'create';
-  if (create && op.parent === undefined) fail('INVALID_ARGUMENT', 'space "parent" needs `parent` on a create: an existing object id, or the name of an object created earlier in this batch.');
-  if (!create && !entity.parent) fail('INVALID_ARGUMENT', 'space "parent" needs an object that already has a parent; group it under one first, or omit space for world coordinates.');
-  const parentId = create ? resolveParentRef(op.parent, rows, createdByName) : entity.parent;
-  const parent = rows.find(e => e.id === parentId);
-  if (!parent) fail('AMBIGUOUS_TARGET', 'space "parent": the parent is neither an existing object id nor an object created earlier in this batch.');
-  if (parent.attach || parent.path) fail('CAPABILITY_MISSING', 'space "parent": an attached or routed parent has no fixed pose to place against.');
-  if (!op.position && !op.rotationDeg && !op.facing) fail('INVALID_ARGUMENT', 'space "parent" applies to position, rotationDeg or facing; none was given.');
-  if (op.position && !op.position.world) fail('INVALID_ARGUMENT', 'space "parent" takes position {world:{x,y,z}} as local metres from the parent pivot; relativeTo, between and onObject resolve in world space, so omit space for them.');
-  if (op.facing && !('yawDeg' in op.facing)) fail('INVALID_ARGUMENT', 'space "parent" takes facing {yawDeg} only (local yaw); towardId, awayFromId and sameAsId are world-space.');
-  const current = create ? { position: { x: 0, y: 0, z: 0 }, rotationDeg: { x: 0, y: 0, z: 0 } } : worldToLocal(parent, entity);
-  // Local rotation: rotationDeg, else the current local one with its yaw set by
-  // facing; a new child with neither takes the parent's orientation (local zero).
-  const rotation = op.rotationDeg ?? (op.facing ? { ...current.rotationDeg, y: op.facing.yawDeg } : create ? current.rotationDeg : null);
-  const world = localToWorld(parent, { position: op.position ? op.position.world : current.position, rotationDeg: rotation ?? current.rotationDeg });
-  const { space, facing, ...rest } = op;
-  return { ...rest, ...(op.position ? { position: { world: world.position } } : {}), ...(rotation ? { rotationDeg: world.rotationDeg } : {}) };
-}
+export { localToWorld, worldToLocal, localTransformReadback } from "./studio-local-frame.js";
 function groupRootOf(id, objects) {
   const seen = new Set();
   let current = objects.find(o => o.id === id);
@@ -223,27 +171,29 @@ function groupRootOf(id, objects) {
   }
   return current?.id ?? id;
 }
+// What solid-contact.js reads of an entity: an object's drawn body, a character's posed bones (geometry's corners.body and .bones).
+const pieceOf = (e, corners, state, ports) => (e.renderer ? { body: contactBody(e, () => entityWorldBounds(e, state, ports), state) } : { points: corners.body, bones: corners.bones, radii: corners.radii });
 function overlapsFor(entity, state, ports) {
-  const own = aabb(geometry(entity, state, ports));
-  // Parts of one grouped object are built to touch; only other bodies count.
-  const root = groupRootOf(entity.id, state.objects);
-  return [...state.objects, ...state.characters].filter(e => e.id !== entity.id && !isEffectivelyHidden(e, state.objects, state.characters)
-    && groupRootOf(e.id, state.objects) !== root).map(other => ({ id: other.id, bounds: aabb(geometry(other, state, ports)) })).map(other => ({ ...other, of: entity.id, depth: overlap(own, other.bounds) })).filter(o => o.depth > EPS);
+  const corners = geometry(entity, state, ports), own = aabb(corners), mine = pieceOf(entity, corners, state, ports), root = groupRootOf(entity.id, state.objects);
+  // Parts of one grouped object are built to touch, and an object attached to a character is on that body; only other bodies
+  // count. Boxes that cross count only where the drawn shapes or the posed body stand inside each other (solid-contact.js): a chair under a table, a body on a seat touch.
+  // What one character places with the other (attached to it, moved by its take) touches as that take says (studio-support-gap.js).
+  return [...state.objects, ...state.characters].filter(e => e.id !== entity.id && e.attach?.characterId !== entity.id && entity.attach?.characterId !== e.id && !isEffectivelyHidden(e, state.objects, state.characters) && groupRootOf(e.id, state.objects) !== root && !placedTogether(entity, e, state, ports.takes)).map(other => {
+    const theirs = geometry(other, state, ports), bounds = aabb(theirs), depth = overlap(own, bounds);
+    return { id: other.id, bounds, of: entity.id, depth: depth > EPS && interpenetration(mine, pieceOf(other, theirs, state, ports), own, bounds) === 0 ? 0 : depth };
+  }).filter(o => o.depth > EPS);
 }
-function overlapsOf(ids, state, ports) {
-  const entities = [...state.objects, ...state.characters];
-  return ids.flatMap(id => { const e = entities.find(row => row.id === id); return e ? overlapsFor(e, state, ports) : []; });
-}
+const overlapsOf = (ids, state, ports) => ids.flatMap(id => { const e = [...state.objects, ...state.characters].find(row => row.id === id); return e ? overlapsFor(e, state, ports) : []; });
 /** World AABB of one entity as {min,max}, or null when its evaluated bounds are unavailable (a prop whose renderer is not mounted). */
 export function entityWorldBounds(entity, state, ports) {
   try {
-    const box = aabb(geometry(entity, state, ports)), round = v => Number(v.toFixed(4));
-    return { min: Object.fromEntries(['x', 'y', 'z'].map(a => [a, round(box[a].min)])), max: Object.fromEntries(['x', 'y', 'z'].map(a => [a, round(box[a].max)])) };
+    const corners = geometry(entity, state, ports), box = aabb(corners), round = v => Number(v.toFixed(4)); // posed bone points ride along unlisted (no JSON, no spread) for the sight-line check
+    return Object.defineProperties({ min: Object.fromEntries(['x', 'y', 'z'].map(a => [a, round(box[a].min)])), max: Object.fromEntries(['x', 'y', 'z'].map(a => [a, round(box[a].max)])) }, { points: { value: corners.body }, radii: { value: corners.radii } });
   } catch { return null; }
 }
 const overlapEvidence = overlaps => ({ coverage: 'same-frame-world-AABB-proxies', overlapIds: [...new Set(overlaps.map(o => o.id))].slice(0, 100), maximumFootprintOverlapM: Math.max(0, ...overlaps.map(o => o.depth)) });
 // Placement evidence for entity ids: the AABB overlap an arrangement receipt reports, and each object's support gap (studio-support-gap.js).
-export const placementChecks = (ids, state, ports) => ({ ...overlapEvidence(overlapsOf(ids, state, ports)), ...supportGaps(ids, state, ports.takes, entity => entityWorldBounds(entity, state, ports)) });
+export const placementChecks = (ids, state, ports) => ({ ...overlapEvidence(overlapsOf(ids, state, ports)), ...supportGaps(ids, state, ports.takes, entity => entityWorldBounds(entity, state, ports), entity => contactBody(entity, () => entityWorldBounds(entity, state, ports), state)) });
 function avoid(entity, relation, state, ports) {
   const blocked = overlapsFor(entity, state, ports);
   if (!blocked.length) return entity;
@@ -268,7 +218,7 @@ function transformPatch(op, isObject) {
 export function arrangement(command, before, ports) {
   const isObject = command.name === 'arrange_objects', key = isObject ? 'objects' : 'characters';
   let rows = before[key];
-  const relations = [], warnings = [], clamps = [], createdByName = new Map();
+  const relations = [], warnings = [], clamps = [], liftedIds = new Set(), createdByName = new Map();
   // References resolve against the evolving draft (`rows`), in op order.
   const draft = () => ({ ...before, [key]: rows });
   for (const rawOp of command.args.ops) {
@@ -277,26 +227,28 @@ export function arrangement(command, before, ports) {
     if (id && !entity) fail('AMBIGUOUS_TARGET', `Edited target '${id}' is not present in the draft; ids of parts created in this batch are not known yet, so use the part name in position references and create it before it is referenced.`);
     let op = resolveOpRefs(rawOp, draft(), id);
     if (op.op === 'create') {
-      if (op.name && rows.some(e => normalizedName(e.name ?? e.subject) === normalizedName(op.name))) fail('DUPLICATE_NAME', 'Create name already exists in the domain.');
+      if (op.name && rows.some(e => normalizedName(isObject ? e.name ?? '' : characterName(e)) === normalizedName(op.name))) fail('DUPLICATE_NAME', 'Create name already exists in the domain.');
       let parentId;
       if (isObject && op.parent !== undefined) {
         parentId = rows.some(e => e.id === op.parent) ? op.parent : createdByName.get(normalizedName(op.parent));
         if (!parentId) fail('AMBIGUOUS_TARGET', `Create parent '${op.parent}' is neither an existing object id nor an object created earlier in this batch; create the parent first.`);
       }
-      entity = isObject ? createSceneObject(op.source.kind, rows) : createCharacterEntry({ id: createStableItemId('character'), subject: normalizedName(op.name) });
+      entity = isObject ? createSceneObject(op.source.kind, rows) : createCharacterEntry({ id: createStableItemId('character'), model: NEW_CHARACTER_MODEL, subject: normalizedName(op.name) });
       if (!entity) fail('INVALID_ARGUMENT', 'Unsupported object library kind.');
       rows = [...rows, entity];
       // Parent before placing, so avoidance and overlap checks see one body.
       if (parentId) { rows = setSceneObjectParent(rows, entity.id, parentId); entity = rows.find(e => e.id === entity.id); }
     }
     if (['create', 'update'].includes(op.op)) {
-      if (entity.attach) fail('CAPABILITY_MISSING', 'Attached transforms require a world-preserving attachment adapter.');
-      if (op.space === 'parent') op = parentFrameOp(op, entity, rows, createdByName);
+      const attached = Boolean(entity.attach);
+      if (attached) op = attachedFrameOp(op, entity);
+      else if (op.space === 'parent') op = parentFrameOp(op, entity, rows, createdByName);
       entity = patchEntity(entity, transformPatch(op, isObject));
       const placed = place(entity, op, draft(), ports);
-      entity = placed.entity;
-      // What was asked against what the domain kept: scale and position limits move values silently.
-      const asked = isObject ? { ...(op.position?.world ?? {}), ...(op.scale ? { scaleX: op.scale.x, scaleY: op.scale.y, scaleZ: op.scale.z } : {}) }
+      // An object placed on the deck (world or floor support, never stacked) is lifted off its plane (studio-support-gap.js); a bone-frame place is not on the deck.
+      entity = attached ? attachedPlace(placed.entity, op) : liftOffDeck(placed.entity, Boolean(op.position?.world) || placed.relation?.support === 'floor', e => Math.min(...geometry(e, draft(), ports).map(p => p.y)), before.floorY ?? 0, patchEntity, liftedIds);
+      // What was asked against what the domain kept: scale and position limits move values silently; the lift is FLOOR_LIFT, not a clamp.
+      const asked = isObject ? { ...(op.position?.world ?? {}), ...(liftedIds.has(entity.id) ? { y: undefined } : {}), ...(op.scale ? { scaleX: op.scale.x, scaleY: op.scale.y, scaleZ: op.scale.z } : {}) }
         : { ...(op.position?.world ?? {}), ...(op.scale === undefined ? {} : { scale: op.scale }) };
       const clamp = clampWarning(entity.id, Object.fromEntries(Object.entries(asked).filter(([k]) => ['x', 'y', 'z', 'scale', 'scaleX', 'scaleY', 'scaleZ'].includes(k))), entity);
       if (clamp) clamps.push(clamp);
@@ -308,7 +260,7 @@ export function arrangement(command, before, ports) {
         if (placed.relation.actualGapM < op.position.gapM - EPS) fail('VERIFICATION_FAILED', 'Avoidance cannot preserve the requested facing and minimum clearance.');
       }
       const patch = Object.fromEntries(Object.entries(entity).filter(([k, v]) => !equal(v, rows.find(e => e.id === entity.id)[k])));
-      rows = isObject ? updateSceneObject(rows, entity.id, patch) : rows.map(e => e.id === entity.id ? entity : e);
+      rows = attached ? writeAttached(rows, entity.id, patch, updateSceneObject) : isObject ? updateSceneObject(rows, entity.id, patch) : rows.map(e => e.id === entity.id ? entity : e);
       if (placed.relation) relations.push(placed.relation);
       if (op.op === 'create' && op.name) createdByName.set(normalizedName(op.name), entity.id);
     } else if (op.op === 'remove') {
@@ -339,8 +291,8 @@ export function arrangement(command, before, ports) {
   }
   if (command.args.collisionPolicy === 'avoid' && overlaps.length) fail('VERIFICATION_FAILED', 'The final batch is still blocked after its outward adjustments.');
   // Every finding the receipt carries: a value moved to a limit first, then what the final scene shows wrong.
-  const nameOf = id => { const e = [...after.objects, ...after.characters].find(row => row.id === id); return e?.name ?? e?.subject ?? id; };
-  warnings.push(...clamps.slice(0, 3));
+  const nameOf = id => { const e = [...after.objects, ...after.characters].find(row => row.id === id); return e ? entityName(e, after) : id; };
+  warnings.push(...clamps.slice(0, 3), ...floorLiftWarnings([...liftedIds].filter(id => rows.some(e => e.id === id)), nameOf));
   for (const item of overlaps.slice(0, 5)) warnings.push({ code: 'FOOTPRINT_OVERLAP', id: item.id, message: [...`${nameOf(item.of)} overlaps ${nameOf(item.id)} by ${Number(item.depth.toFixed(2))} m`].slice(0, 120).join('') });
   if (overlaps.length > 5) warnings.push({ code: 'FOOTPRINT_OVERLAP', count: overlaps.length - 5, message: `${overlaps.length - 5} more footprint overlaps omitted` });
   if (isObject) {
@@ -364,15 +316,16 @@ export function arrangement(command, before, ports) {
     warnings, details: relations.map(({ axis, ...rest }) => rest) };
 }
 
-const FRACTIONS = { 'extreme close-up': 3.4, 'close-up': 2.2, 'medium close-up': 1.375, 'medium shot': 0.975, 'medium-wide shot': 0.66, 'wide shot': 0.41, 'extreme wide shot': 0.2 };
-const LEVELS = { ground: 0.3 / 1.8, low: 0.7 / 1.8, hip: 1.1 / 1.8, eye: 1.65 / 1.8, high: 2.1 / 1.8, overhead: 2.8 / 1.8 };
-const ANGLES = { front: 0, 'front three-quarter': 40, profile: 90, 'rear three-quarter': 140, back: 180 };
+export const FRAMING_FRACTIONS = { 'extreme close-up': 3.4, 'close-up': 2.2, 'medium close-up': 1.375, 'medium shot': 0.975, 'medium-wide shot': 0.66, 'wide shot': 0.41, 'extreme wide shot': 0.2 };
+export const FRAMING_LEVELS = { ground: 0.3 / 1.8, low: 0.7 / 1.8, hip: 1.1 / 1.8, eye: 1.65 / 1.8, high: 2.1 / 1.8, overhead: 2.8 / 1.8 };
+export const FRAMING_ANGLES = { front: 0, 'front three-quarter': 40, profile: 90, 'rear three-quarter': 140, back: 180 };
 /** Where subject bound points land through one camera: the evidence a
  * frame_shot receipt reports, plus the screen box its details keep. */
 export function projectSubject(points, camera, fov, aspectRatio) {
   const direction = vector(camera.lookAt).sub(vector(camera.position));
   const projection = new PerspectiveCamera(fov / DEG, aspectRatio, 0.01, 10000);
-  projection.position.copy(vector(camera.position)); projection.lookAt(vector(camera.lookAt)); projection.updateMatrixWorld(true);
+  // A vertical sight line needs the same yaw-defined up as the shot key.
+  projection.position.copy(vector(camera.position)); if (Math.hypot(direction.x, direction.z) < 1e-10) projection.rotation.set(Math.atan2(direction.y, 0), camera.yaw ?? 0, 0, 'YXZ'); else projection.lookAt(vector(camera.lookAt)); projection.updateMatrixWorld(true);
   const screen = points.map(p => p.clone().project(projection));
   const screenBounds = aabb(screen);
   const behindCamera = points.some(p => p.clone().sub(projection.position).dot(direction) <= 0);
@@ -387,8 +340,8 @@ const boundsOf = points => { const box = aabb(points); return { min: { x: box.x.
  * crosses the sight line to any subject, and the camera's side of the line between
  * the two leading characters (the subjects, else the ones nearest the camera). */
 function sightChecks(subjects, boxes, cameraPosition, state, ports) {
-  const occluders = subjects.flatMap((subject, index) => occludersOf(subject, cameraPosition, state, ports, boundsOf(boxes[index])));
-  const pair = primarySubjects(subjects.map(subject => subject.id), cameraPosition, state);
+  const occluders = subjects.flatMap((subject, index) => occludersOf(subject, cameraPosition, state, ports, { ...boundsOf(boxes[index]), points: boxes[index].body }));
+  const pair = axisSubjects(subjects.map(subject => subject.id), cameraPosition, state);
   const cameraSide = pair.length === 2 ? sideOfAxis(pair[0], pair[1], cameraPosition) : null;
   return { occluders, checks: { occluded: occluders.length > 0, ...(cameraSide ? { cameraSide } : {}) } };
 }
@@ -396,9 +349,11 @@ function sightChecks(subjects, boxes, cameraPosition, state, ports) {
  * current frame: the same subject-bounds projection and sight line frame_shot reports. */
 export function framingChecks(ids, state, ports) {
   if (!state.camera || !SENSOR_FORMATS[state.filmback?.sensorId] || !(state.filmback.aspectRatio > 0)) fail('TARGET_NOT_READY', 'The shot camera and filmback must be available.');
-  const subjects = ids.map(id => entityById(state, id)), boxes = subjects.map(entity => geometry(entity, state, ports));
-  const projected = projectSubject(boxes.flat(), state.camera, focalMmToFov(state.camera.focalMm, state.filmback.sensorId, state.filmback.aspectRatio), state.filmback.aspectRatio).checks;
-  return { ...projected, ...sightChecks(subjects, boxes, state.camera.position, state, ports).checks };
+  const subjects = ids.map(id => entityById(state, id)), boxes = subjects.map(entity => geometry(entity, state, ports)), fov = focalMmToFov(state.camera.focalMm, state.filmback.sensorId, state.filmback.aspectRatio);
+  // Cut by the frame edge: a posed body's bones (its box's corners stand off the body) with the outline of any drawn radius round them
+  // (a capsule figure, outlinePoints), anything else's box. The size is the boxes'.
+  const project = points => projectSubject(points, state.camera, fov, state.filmback.aspectRatio).checks, cut = project(boxes.flatMap(b => (b.body?.length ? outlinePoints(b.body, b.radii, state.camera) : b)));
+  return { ...project(boxes.flat()), clipped: cut.clipped, behindCamera: cut.behindCamera, ...sightChecks(subjects, boxes, state.camera.position, state, ports).checks };
 }
 
 /** Framing evidence over explicit timeline samples. The caller supplies the
@@ -411,11 +366,12 @@ export function sampledFramingChecks(ids, state, ports, frames) {
   const samples = frames.map(frame => {
     const sampledState = ports.sampleStateAt(frame, state);
     if (!sampledState) fail('TARGET_NOT_READY', `The editor could not read timeline frame ${frame}.`);
-    const checks = framingChecks(ids, sampledState, ports), codes = [checks.clipped ? 'CLIPPED' : null, checks.behindCamera ? 'BEHIND_CAMERA' : null, checks.occluded ? 'OCCLUDED' : null].filter(Boolean);
-    return { frame, checks, codes };
+    const checks = framingChecks(ids, sampledState, ports), codes = framingCodes(checks);
+    // which subject each failure is about, and how much of it is seen: a figure out of this shot is not cut by its edge
+    return { frame, checks, codes, ...(codes.length ? { subjects: subjectIssues(ids, sampledState, ports, framingChecks) } : {}) };
   });
-  const sampledChecks = samples.map(({ frame, checks }) => ({ frame, screenFraction: checks.screenFraction, clipped: checks.clipped, behindCamera: checks.behindCamera, occluded: checks.occluded }));
-  const issueFrames = samples.filter(sample => sample.codes.length).map(({ frame, checks, codes }) => ({ frame, codes, screenFraction: checks.screenFraction }));
+  const shotOf = frame => shotAtFrame(state.shotDocument?.shots ?? [], frame)?.id, sampledChecks = samples.map(({ frame, checks }) => ({ frame, ...(shotOf(frame) ? { shot: shotOf(frame) } : {}), screenFraction: checks.screenFraction, clipped: checks.clipped, behindCamera: checks.behindCamera, occluded: checks.occluded })); // shot: which cut the sample is in
+  const issueFrames = samples.filter(sample => sample.codes.length).map(({ frame, checks, codes, subjects }) => ({ frame, codes, screenFraction: checks.screenFraction, subjects }));
   return { ...samples.at(-1).checks, coverage: 'sampled-timeline-subject-bounds-projection', evaluatedFrames: frames.length, sampledFrames: frames, sampledChecks, issueFrames };
 }
 export function sampledFramingResult(args, scene, ports, frameCount, measured, receipt) {
@@ -427,21 +383,20 @@ export function sampledFramingResult(args, scene, ports, frameCount, measured, r
   catch (error) { if (!(error instanceof StudioProtocolError)) throw error; return { reason: error.message }; }
 }
 export function frameDraft(command, state, ports) {
-  if (state.frameCount <= 0) fail('TARGET_NOT_READY', 'A nonempty timeline is required.');
-  const subject = state.characters.find(e => e.id === command.args.subjectIds[0]);
-  if (!subject || subject.hidden) fail('TARGET_NOT_READY', 'Framing requires one visible character.');
-  const points = geometry(subject, state, ports), bounds = aabb(points), height = bounds.y.max - bounds.y.min;
-  if (height <= EPS || !state.camera || !SENSOR_FORMATS[state.filmback?.sensorId] || !(state.filmback.aspectRatio > 0)) fail('TARGET_NOT_READY', 'Subject stature and camera filmback must be available.');
+  if (state.frameCount <= 0) fail('TARGET_NOT_READY', 'A nonempty timeline is required; installing a take with motion.compile grows it to cover the take.');
+  const subjects = command.args.subjectIds.map(id => frameSubject(id, state, SENSOR_FORMATS)), subject = subjectsCenter(subjects), boxes = subjects.map(entry => geometry(entry, state, ports));
+  const points = boxes.flat(), bounds = aabb(points), height = bounds.y.max - bounds.y.min;
+  if (height <= EPS) fail('TARGET_NOT_READY', `${subjects[0].id} has no measurable height yet (its body is still loading); wait a moment and send the same frame_shot again.`);
   let shot = command.args.shotId ? state.shotDocument.shots.find(s => s.id === command.args.shotId) : shotAtFrame(state.shotDocument.shots, state.frame) ?? state.shotDocument.shots.find(s => s.id === state.selectedShotId);
   const created = !shot && !state.shotDocument.shots.length && !command.args.shotId;
   if (created) shot = createShot('Shot 1', 0, state.frameCount - 1);
   if (!shot) fail('AMBIGUOUS_TARGET', 'No shot owns this frame; select an existing shot explicitly.');
   // The shot's camera keys are what the contact sheet and the export render, so
   // every framing lands in them. Without keyAtFrame, a shot that holds one
-  // framing (a still, or a clip with at most one key) is reframed whole; a clip
-  // that already moves takes the framing as a key at the playhead.
+  // framing (at most one key) is reframed whole; a shot that already moves
+  // takes the framing as a key at the playhead.
   const existingKey = shot.cameraKeys[0];
-  const hold = shot.kind === 'still' || (command.args.keyAtFrame === undefined && shot.cameraKeys.length <= 1);
+  const hold = command.args.over === 'shot' || (command.args.keyAtFrame === undefined && shot.cameraKeys.length <= 1);
   const frame = hold ? (existingKey?.frame ?? shot.startFrame) : command.args.keyAtFrame ?? state.frame;
   if (frame < shot.startFrame || frame > shot.endFrame || shot.endFrame >= state.frameCount) fail('INVALID_RANGE', 'Framing/key frame must be inside the shot range.');
   const intent = command.args.framing.intent;
@@ -451,29 +406,30 @@ export function frameDraft(command, state, ports) {
   if (fov / DEG < 14 || fov / DEG > 90) fail('INVALID_ARGUMENT', 'Requested lens is outside the editor FOV range.');
   if (intent) {
     const lookAt = { x: (bounds.x.min + bounds.x.max) / 2, y: bounds.y.min + height * (1.3 / 1.8), z: (bounds.z.min + bounds.z.max) / 2 };
-    const distance = height / (2 * FRACTIONS[intent.size] * Math.tan(fov / 2));
-    const y = bounds.y.min + height * LEVELS[intent.level], dy = y - lookAt.y;
+    const width = subjects.length > 1 ? Math.hypot(bounds.x.max - bounds.x.min, bounds.z.max - bounds.z.min) : 0, distance = Math.max(height, width / state.filmback.aspectRatio) / (2 * FRAMING_FRACTIONS[intent.size] * Math.tan(fov / 2));
+    const y = bounds.y.min + height * FRAMING_LEVELS[intent.level], dy = y - lookAt.y;
     if (distance * distance <= dy * dy + EPS) fail('INVALID_ARGUMENT', 'The exact lens cannot satisfy both requested size and level.');
     const horizontal = Math.sqrt(distance * distance - dy * dy);
-    const angle = (subject.rot + (intent.side === 'right' ? -1 : 1) * ANGLES[intent.view]) * DEG;
+    const angle = (subject.rot + (intent.side === 'right' ? -1 : 1) * FRAMING_ANGLES[intent.view]) * DEG;
     camera = { position: { x: lookAt.x + Math.sin(angle) * horizontal, y, z: lookAt.z + Math.cos(angle) * horizontal }, lookAt, focalMm };
   }
   const direction = vector(camera.lookAt).sub(vector(camera.position));
   if (direction.length() <= EPS) fail('INVALID_ARGUMENT', 'Camera position and aim must differ.');
-  const framing = captureFraming({ pos: camera.position, yaw: Math.atan2(-direction.x, -direction.z), pitch: Math.atan2(direction.y, Math.hypot(direction.x, direction.z)), fovDeg: fov / DEG });
+  // A vertical aim keeps the existing key yaw, or uses zero for a new shot.
+  const framing = captureFraming({ pos: camera.position, yaw: Math.hypot(direction.x, direction.z) < 1e-10 ? existingKey?.framing.yaw ?? 0 : Math.atan2(-direction.x, -direction.z), pitch: Math.atan2(direction.y, Math.hypot(direction.x, direction.z)), fovDeg: fov / DEG });
   const keyId = (hold ? existingKey?.id : shot.cameraKeys.find(k => k.frame === frame)?.id) ?? createStableItemId('camera-key');
   const keys = hold ? [{ id: keyId, frame, framing }] : [...shot.cameraKeys.filter(k => k.frame !== frame), { id: keyId, frame, framing }].sort((a, b) => a.frame - b.frame);
-  const nextShot = { ...shot, cameraKeys: keys, camera: { ...shot.camera, mode: 'keys' } };
+  const subjectIds = subjects.map(entry => entry.id), nextShot = { ...shot, subjectIds, cameraKeys: keys, camera: { ...shot.camera, mode: 'keys' } };
   const shots = created ? [nextShot] : state.shotDocument.shots.map(s => s.id === shot.id ? nextShot : s);
-  const { screenBounds, checks: projected } = projectSubject(points, camera, fov, state.filmback.aspectRatio), derivedSize = projected.derivedSize;
-  const sight = sightChecks([subject], [points], camera.position, state, ports), checks = { ...projected, ...sight.checks };
-  const resolvedCamera = { ...camera, sensorId: state.filmback.sensorId, slate: derivedSize };
+  const { screenBounds, checks: projected } = projectSubject(points, { ...camera, yaw: framing.yaw }, fov, state.filmback.aspectRatio), derivedSize = projected.derivedSize;
+  const sight = sightChecks(subjects, boxes, camera.position, state, ports), checks = { ...projected, ...sight.checks };
+  const resolvedCamera = { ...camera, ...(Math.hypot(direction.x, direction.z) < 1e-10 ? { yaw: framing.yaw } : {}), sensorId: state.filmback.sensorId, slate: derivedSize };
   // Not a manual override: the keys drive the live shot camera from here, so a
   // later playhead move shows what the export renders at that frame.
   const draft = { shotDocument: { ...state.shotDocument, shots }, camera: resolvedCamera, manual: false };
   return { domain: 'shot', draft, affectedIds: [shot.id, keyId],
     checks,
-    warnings: sight.occluders.slice(0, 5).map(item => ({ code: 'OCCLUDED', id: item.byObjectId })), details: { created, shotId: shot.id, keyId, frame, framing, screenBounds, subjectIds: [subject.id] } };
+    warnings: sight.occluders.slice(0, 5).map(item => ({ code: 'OCCLUDED', id: item.byObjectId })), details: { created, shotId: shot.id, keyId, frame, framing, screenBounds, subjectIds } };
 }
 
 /** Local journal. Unsettled/protected records are never evicted. Call prune on

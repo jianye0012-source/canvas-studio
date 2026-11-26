@@ -2,7 +2,7 @@
 // Browser QA for the v2 Preferences dialog (#532 / todo 18).
 //
 // Run against the full dev server, not bare Vite:
-//   QA_URL=http://127.0.0.1:5532/app/?motion=/demo/walk-then-stop.npz \
+//   QA_URL=http://127.0.0.1:5532/app/ \
 //   CDP_PORT=9532 QA_OUT=/Users/yun/CClineFix/.omo/evidence/cozyclay-ui-overhaul \
 //   node tools/qa-browser.mjs -- node test/qa-shell-preferences-browser.mjs
 
@@ -119,10 +119,6 @@ await send("Runtime.enable");
 await send("Page.enable");
 await send("Network.enable");
 await send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
-// Keep the failure scenario deterministic: the bridge health route is
-// unreachable, so Retry must settle back to unavailable without dismissing the
-// dialog. The app catches this network failure and renders its state copy.
-await send("Network.setBlockedURLs", { urls: ["*/ardy/health*"] });
 await waitForDom("!!document.querySelector('.settings-menu-trigger')", 30000);
 await evaluate(`(() => {
 	localStorage.setItem("cozyclay.locale", "en");
@@ -142,10 +138,7 @@ await clickAndWait(trigger, `!!document.querySelector(${JSON.stringify(dialog)})
 expect("opening via the Settings trigger shows the Preferences dialog", await evaluate(`document.querySelector(${JSON.stringify(dialog)})?.getAttribute("role") === "dialog"`));
 expect("the dialog is modal", await evaluate(`document.querySelector(${JSON.stringify(dialog)})?.getAttribute("aria-modal") === "true"`));
 
-const expectedNav = [
-	"Appearance", "Viewport", "Input & Camera", "Hotkeys",
-	"ARDY Connection", "IK Correction", "MCP Server", "Units & Frame rate", "Autosave",
-];
+const expectedNav = ["Appearance", "Viewport", "Export", "Hotkeys"];
 const actualNav = await evaluate(`JSON.stringify([...document.querySelectorAll(${JSON.stringify(nav)})].map((item) => item.textContent.trim()))`);
 expect("the Preferences nav labels match the 2c list exactly", actualNav === JSON.stringify(expectedNav), actualNav);
 expect(
@@ -174,46 +167,32 @@ await clickAndWait(trigger, `!!document.querySelector(${JSON.stringify(dialog)})
 const koreanTitle = await evaluate(`document.querySelector('.v2-preferences__nav-title')?.textContent.trim()`);
 const koreanNav = await evaluate(`JSON.stringify([...document.querySelectorAll(${JSON.stringify(nav)})].map((item) => item.textContent.trim()))`);
 expect("switching language changes the dialog title", koreanTitle === "환경설정", koreanTitle || "missing");
-expect("switching language changes the dialog nav labels", koreanNav.includes("입력 및 카메라") && !koreanNav.includes("Input & Camera"), koreanNav);
+expect("switching language changes the dialog nav labels", koreanNav === JSON.stringify(["모양", "뷰포트", "내보내기", "단축키"]), koreanNav);
 await pressEscape();
 await waitForDom(`!document.querySelector(${JSON.stringify(dialog)})`);
 await evaluate(`localStorage.setItem("cozyclay.locale", "en")`);
 await reload();
 
-// Invert Y is a viewer preference: author it, reload the actual editor, and
-// reopen Preferences to prove the stored state is read on a fresh mount.
+// Auto colour is an editor preference: author it, reload the actual editor,
+// and reopen Preferences to prove the stored state is read on a fresh mount.
 await clickAndWait(trigger, `!!document.querySelector(${JSON.stringify(dialog)})`);
-await clickTextAndWait(nav, "Input & Camera", `([...document.querySelectorAll(${JSON.stringify(nav)})].find((item) => item.textContent.trim() === "Input & Camera"))?.getAttribute("aria-current") === "page"`);
-const invert = "[data-testid=\"preferences-invert-y\"]";
-const invertFlip = waitForDom(`document.querySelector(${JSON.stringify(invert)})?.getAttribute("aria-pressed") === "true"`);
-await evaluate(`document.querySelector(${JSON.stringify(invert)})?.click()`);
-await invertFlip;
+await clickTextAndWait(nav, "Appearance", `([...document.querySelectorAll(${JSON.stringify(nav)})].find((item) => item.textContent.trim() === "Appearance"))?.getAttribute("aria-current") === "page"`);
+const autoColor = "[data-testid=\"preferences-auto-color\"]";
+const autoColorFlip = waitForDom(`document.querySelector(${JSON.stringify(autoColor)})?.getAttribute("aria-pressed") === "true"`);
+await evaluate(`document.querySelector(${JSON.stringify(autoColor)})?.click()`);
+await autoColorFlip;
 await pressEscape();
 await waitForDom(`!document.querySelector(${JSON.stringify(dialog)})`);
 await reload();
 await clickAndWait(trigger, `!!document.querySelector(${JSON.stringify(dialog)})`);
-await clickTextAndWait(nav, "Input & Camera", `([...document.querySelectorAll(${JSON.stringify(nav)})].find((item) => item.textContent.trim() === "Input & Camera"))?.getAttribute("aria-current") === "page"`);
-expect("Invert Y persists after reload", await evaluate(`document.querySelector(${JSON.stringify(invert)})?.getAttribute("aria-pressed") === "true"`));
-
-// Failure path: the blocked health request settles as unavailable, and Retry
-// returns to the same unavailable state while the modal remains mounted.
-const ardyNav = "[data-testid=\"preferences-nav-item\"]";
-const ardyOpen = waitForDom(`([...document.querySelectorAll(${JSON.stringify(ardyNav)})].find((item) => item.textContent.trim() === "ARDY Connection"))?.getAttribute("aria-current") === "page"`);
-await evaluate(`([...document.querySelectorAll(${JSON.stringify(ardyNav)})].find((item) => item.textContent.trim() === "ARDY Connection"))?.click()`);
-await ardyOpen;
-await waitForDom(`document.querySelector('[data-testid="motion-setup"]')?.dataset.state === "unavailable"`, 12000);
-expect("an unreachable motion server shows the unavailable state", await evaluate(`document.querySelector('[data-testid="motion-setup"]')?.dataset.state === "unavailable"`));
-const retrySettled = waitForDom(`document.querySelector('[data-testid="motion-setup"]')?.dataset.state === "unavailable" && !document.querySelector('[data-testid="motion-health-retry"]')?.disabled`, 12000);
-await evaluate(`document.querySelector('[data-testid="motion-health-retry"]')?.click()`);
-await retrySettled;
-expect("Retry returns to unavailable", await evaluate(`document.querySelector('[data-testid="motion-setup"]')?.dataset.state === "unavailable"`));
-expect("Retry keeps the Preferences dialog open", await evaluate(`!!document.querySelector(${JSON.stringify(dialog)})`));
+await clickTextAndWait(nav, "Appearance", `([...document.querySelectorAll(${JSON.stringify(nav)})].find((item) => item.textContent.trim() === "Appearance"))?.getAttribute("aria-current") === "page"`);
+expect("Auto colour persists after reload", await evaluate(`document.querySelector(${JSON.stringify(autoColor)})?.getAttribute("aria-pressed") === "true"`));
 
 // Capture the reference-size Preferences surface after the functional checks.
-await clickTextAndWait(nav, "Input & Camera", `([...document.querySelectorAll(${JSON.stringify(nav)})].find((item) => item.textContent.trim() === "Input & Camera"))?.getAttribute("aria-current") === "page"`);
-const invertOff = waitForDom(`document.querySelector(${JSON.stringify(invert)})?.getAttribute("aria-pressed") === "false"`);
-await evaluate(`document.querySelector(${JSON.stringify(invert)})?.click()`);
-await invertOff;
+await clickTextAndWait(nav, "Appearance", `([...document.querySelectorAll(${JSON.stringify(nav)})].find((item) => item.textContent.trim() === "Appearance"))?.getAttribute("aria-current") === "page"`);
+const autoColorOff = waitForDom(`document.querySelector(${JSON.stringify(autoColor)})?.getAttribute("aria-pressed") === "false"`);
+await evaluate(`document.querySelector(${JSON.stringify(autoColor)})?.click()`);
+await autoColorOff;
 const prefsPath = await screenshot("task-18-prefs.png");
 console.log(`SCREENSHOT ${prefsPath}`);
 
@@ -222,4 +201,4 @@ expect("the browser emitted no console errors", consoleErrors.length === 0, JSON
 
 ws.close();
 if (failures) process.exit(1);
-console.log("all v2 Preferences browser checks PASS — dialog, focus restore, privacy, locale, persistence, retry and visual evidence");
+console.log("all v2 Preferences browser checks PASS — dialog, focus restore, privacy, locale, persistence and visual evidence");

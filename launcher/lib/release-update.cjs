@@ -149,7 +149,7 @@ class ReleaseUpdater extends EventEmitter {
     const intent = this.intent(version);
     this.candidate = { ...(release.signedAsset || await this.githubAsset(release, version)), version, intent };
     const source = release.signedAsset ? ` · Gitee 版本列表 · ${this.candidate.mirror ? '国内下载优先' : 'GitHub 下载'}` : '';
-    this.update({ phase: this.staged?.version === version ? 'ready' : 'available', selectedVersion: version, intent, notes: String(release.body || '').slice(0, 20000), progress: this.staged?.version === version ? 100 : 0, message: (this.staged?.version === version ? `版本 ${version} 已校验，可以安装` : intent === 'upgrade' ? `发现新版本 ${version}，可下载并校验后安装` : `已选择${intent === 'rollback' ? '回退' : '重装'}版本 ${version}，下载校验后可安装`) + source });
+    this.update({ phase: this.staged?.version === version ? 'ready' : 'available', selectedVersion: version, intent, notes: String(release.body || '').slice(0, 20000), progress: this.staged?.version === version ? 100 : 0, message: (this.staged?.version === version ? `版本 ${version} 已校验，可以安装` : intent === 'upgrade' ? `发现新版本 ${version}，可下载并校验后安装` : `已选择${intent === 'rollback' ? '回退' : '重装'}版本 ${version}，下载校验后可安装`) + source + (intent === 'rollback' ? '；回退后，用新版本保存过的 3D 导演台项目重新打开时镜头可能丢失，建议先在旧版本确认导演台项目不受影响再安装' : '') });
     return this.status();
   }
   async githubAsset(release, version) {

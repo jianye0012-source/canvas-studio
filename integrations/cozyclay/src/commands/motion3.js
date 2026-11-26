@@ -1,15 +1,18 @@
 // CozyClay 3 motion: the agent writes a motion spec (keys, anchors, props, fits, generators,
 // checks, goals), the deterministic compiler bakes every frame, QA measures it, and the take is
-// installed on the character. Cheap enough to run in a loop until QA reports nothing. The words
+// installed on the character. Cheap enough to run in a loop until QA reports no blocking problem. The words
 // the agent reads live in motion3/docs.js; the contracts in docs/motion-api-v3.1.md.
 import { fail, characterOf } from "./shared.js";
 import { motionScene } from "../motion3/scene.js";
 import { skeletonFor } from "../motion3/rigs/index.js";
+import { isImportedCharacter, isImportedModel, registerCastRigs } from "../character-rig.js";
+import { expandPoses } from "../motion3/poses.js";
 import { fk } from "../motion3/compiler/skeleton.js";
 import { add, apply, ry } from "../motion3/compiler/math.js";
 import { resolveBone } from "../motion3/bones.js";
 import { MOTION_ACTION_HELP as HELP } from "../motion3/docs.js";
-import { DESCRIBE_TOPICS } from "../motion3/schema/fields.js";
+import { DESCRIBE_TOPICS, specRefusalPath } from "../motion3/schema/fields.js";
+import { StudioProtocolError } from "../studio-agent-protocol.js";
 import { describe, describeMany } from "../motion3/describe.js";
 import { createSpecStore, specIdOf, SPEC_STORE_SIZE } from "../motion3/spec-store.js";
 import { applyPatch } from "../motion3/json-patch.js";
@@ -31,6 +34,8 @@ import { peopleOf } from "../motion3/people.js";
 import { hybridCapsuleHint } from "../motion3/hybrid-hint.js";
 import { patchTooBroad, keptFill } from "../motion3/patch-guard.js";
 import { createInstalledQa } from "./motion3-installed.js";
+import { blockingCount, blockingOf, blockingSay, fitFlagged, markBlocking } from "../motion3/qa/blocking.js";
+import { takeOut } from "../motion3/physics-frames.js"; import { characterName } from "../character-name.js"; import { compileBody, bodySkeleton, measurable } from "./motion3-scale.js"; import { bodyScale } from "../lowvis/studio/figure.js";
 
 const TIMELINE_FPS = 24;
 const id = { type: "string", minLength: 1 };
@@ -47,7 +52,7 @@ const declarations = Object.freeze([
 		// patch may be empty: base alone (or patch: []) re-measures the stored spec, with new probes; "never" is install: false
 		input: input({ characterId: id, spec: openObject, base: specId, patch: { type: "array", items: openObject, maxItems: 64 },
 			install: { oneOf: [{ type: "boolean" }, { const: "ifClean" }, { const: "never" }], default: true },
-			probes: list(openObject, 16), repair: { oneOf: [input({ rounds: { type: "integer", minimum: 1, maximum: 8, default: 4 } }, []), { const: false }] }, thin: { type: "boolean" } }, ["characterId"]) },
+			probes: list(openObject, 16), repair: { oneOf: [input({ rounds: { type: "integer", minimum: 1, maximum: 8, default: 4 } }, []), { const: false }] }, thin: { type: "boolean", description: "Remove redundant free-span keys; output.thinned reports removed, kept, before and after. Set false to keep every authored key, especially per-frame specs." } }, ["characterId"]) },
 	{ id: "motion.qa", label: "Measure motion", kind: "job", domain: "motion", timeoutMs: 240000, readOnly: true, description: HELP.qa,
 		input: input({ characterId: id, checks: openObject }, ["characterId"]) },
 	{ id: "motion.sample", label: "Sample motion", kind: "job", domain: "motion", timeoutMs: 30000, readOnly: true, description: HELP.sample,
@@ -69,6 +74,8 @@ const DEFAULT_BONES = ["Hips", "Head", "LeftHand", "RightHand", "LeftFoot", "Rig
 const MAX_ADJUSTED = 8;
 const adjustedOf = notes => (notes.length ? { adjusted: notes.length > MAX_ADJUSTED ? [...notes.slice(0, MAX_ADJUSTED - 1), `${notes.length - MAX_ADJUSTED + 1} more`] : notes } : {});
 const adjustedSay = notes => (notes.length ? `; ${notes.length} input${notes.length > 1 ? "s" : ""} adjusted (output.adjusted)` : "");
+// An argument refusal that names its field for studio:refused (#1042); the message is what the agent reads.
+const argumentFail = (message, path, rule = "check") => { throw new StudioProtocolError("INVALID_ARGUMENT", message, { path, rule }); };
 const unknownSpec = (what, value, then = "send spec") => fail("INVALID_ARGUMENT", `${what} "${value}" is not known (the editor keeps the last ${SPEC_STORE_SIZE} compiled specs this session); ${then}`);
 
 const sameArray = (a, b) => a?.length === b?.length && Array.prototype.every.call(a, (v, i) => v === b[i]);
@@ -82,11 +89,11 @@ function sameTake(installed, take) {
 /** then(value) now, or when the promise settles (a compile answers at once in Node, later from the browser's worker). */
 const after = (value, then) => (typeof value?.then === "function" ? value.then(then) : then(value));
 /** Runs `run`, turning a MOTION_SPEC_INVALID error into INVALID_ARGUMENT with the exact message. */
-function asArgument(run) {
+function asArgument(run, field = specRefusalPath) {
 	try {
 		return run();
 	} catch (error) {
-		if (/^MOTION_SPEC_INVALID/.test(error.message)) fail("INVALID_ARGUMENT", error.message.replace(/^MOTION_SPEC_INVALID:\s*/, ""));
+		if (/^MOTION_SPEC_INVALID/.test(error.message)) throw new StudioProtocolError("INVALID_ARGUMENT", error.message.replace(/^MOTION_SPEC_INVALID:\s*/, ""), { path: typeof field === "function" ? field(error.message) : field, rule: "spec" });
 		throw error;
 	}
 }
@@ -97,36 +104,50 @@ export function register(registry, ports) {
 	// the stop rule: output.stuck when more compiles stopped paying (repair-watch.js)
 	const watch = createRepairWatch(), compiledOnce = new Set();
 	const rounds = createRoundWatch(); // output.noImprovementRounds (motion3-rounds.js)
+	// per character, the groups its last repair faced when it applied nothing: a default repair of the same groups is skipped (repair.js unless)
+	const fruitless = new Map();
 	const owner = () => ports.storeDomain("motion");
 	const mounted = () => Boolean(ports.storeDomain?.("motion")) || "The motion owner is not mounted.";
 	const always = () => true;
 	const rigOf = character => {
-		const sk = skeletonFor(character.model);
-		if (!sk) fail("TARGET_NOT_READY", `${character.subject || character.id} is a ${character.model} body, which motion compile cannot drive; use an X Bot or Y Bot character.`);
-		if (Math.abs((character.scale ?? 1) - 1) > 1e-6) fail("TARGET_NOT_READY", "Set the character's scale back to 1 before compiling motion.");
+		// an imported character carries its rig (character-rig.js): registered here, and sent with each compile job to the worker (rigsOf)
+		const sk = skeletonFor(registerCastRigs([character])[0].model);
+		if (!sk && isImportedModel(character.model)) fail("TARGET_NOT_READY", `${characterName(character)}'s imported skeleton is incomplete in this project; import the file again.`);
+		if (!sk) fail("TARGET_NOT_READY", `${characterName(character)} is a ${character.model} body, which motion compile cannot drive; use an X Bot or Y Bot character.`);
 		return sk;
 	};
 	// the scene a compile sees: the objects, and the other characters' installed takes as moving bodies (people.js)
 	const sceneFor = character => {
-		const state = ports.state(), people = peopleOf(state.characters, character.id, id => owner().motionFor(id));
+		const state = ports.state();
+		// the other characters' adapted rigs first, so their takes count as people (people.js reads skeletonFor(take.rig))
+		registerCastRigs((state.characters ?? []).filter(c => c?.id !== character.id));
+		const people = peopleOf(state.characters, character.id, id => owner().motionFor(id));
 		return { ...motionScene(state.objects), ...(Object.keys(people).length ? { people } : {}) };
+	};
+	// the adapted rigs a compile job reads, for the worker: the character's and those of the people in its scene (people.js)
+	const rigsOf = (character, scene) => {
+		const want = new Set([character.model, ...Object.values(scene.people ?? {}).map(p => p.rig)]);
+		return Object.fromEntries((ports.state().characters ?? []).filter(c => want.has(c?.model) && isImportedCharacter(c)).map(c => [c.model, c.adaptedRig]));
 	};
 	// one compile worker per editor in the browser, the calling thread elsewhere (motion3-compile.js)
 	const runner = createCompileRunner();
-	const workerWarning = () => { const note = runner.takeWarning(); return note ? { warnings: [note] } : {}; };
+	const workerWarning = () => { const note = runner.takeWarning(); return note ? { warnings: [{ code: "MOTION_COMPILE_WORKER_STOPPED", message: note.slice(0, 120) }] } : {}; };
 	/**
 	 * spec on the character's rig and the current scene (compile-job.js) -> { stored (the spec a take keeps and its specId
 	 * names), qa, ..., take when bake is given }, at once or as a promise. opts: probes, checks, lenient, repair.
 	 */
 	const compile = (character, spec, opts = {}, bake, taskId = null, scene = sceneFor(character)) => {
-		rigOf(character);
+		rigOf(character); const body = compileBody(character); // made for the body the character stands as (motion3-scale.js)
 		const placed = bake && { position: [character.x ?? 0, character.y ?? 0, character.z ?? 0], yaw: character.rot ?? 0, ...bake };
-		return runner.run({ model: character.model, scene, spec, ...opts, ...(placed ? { bake: placed } : {}) }, { taskId, characterId: character.id });
+		const rigs = { ...rigsOf(character, scene), ...body.rigs };
+		return after(runner.run({ model: body.model, ...(Object.keys(rigs).length ? { rigs } : {}), scene, spec, ...opts, ...(placed ? { bake: placed } : {}) }, { taskId, characterId: character.id }), body.unit);
 	};
 	// where a take was baked: the body's place and a hash of the scene's bodies (a take kept for the stop rule fits only
 	// there): 0.14 ms for 860 bodies, where their JSON took 0.9 ms and 295 KB a key
 	// the installed take's QA for ifClean and INSTALL_WORSE: stored, or measured once from its spec (a reload empties the store)
 	const installedQa = createInstalledQa({ store, owner, compile });
+	// each group flagged blocking or warning (qa/blocking.js, #1114), blocking first; FLOAT, REACH and SELF legs read the take
+	const flag = (qa, take) => { const out = { ...qa, groups: markBlocking(qa.groups ?? [], () => takeOut(take, ports.state().objects ?? [])) }; return { ...out, blocking: blockingCount(out) }; };
 	const placeKey = (character, scene) => {
 		let h = 2166136261;
 		const mix = v => { h = Math.imul(h ^ Math.round(v * 1e4), 16777619); };
@@ -140,8 +161,12 @@ export function register(registry, ports) {
 	const report = (r, head, extra = {}) => {
 		const specIdValue = store.put(r.stored);
 		store.keepParts(specIdValue, { groups: r.qa.groups, timeline: r.timeline, probes: r.probes ?? {} });
-		return fitOutput({ ...head, specId: specIdValue, qa: r.qa, observations: r.observations, ...extra, ...(r.probes ? { probes: r.probes } : {}), timeline: r.timeline,
-			fixed: r.fixed, ...(r.search ? { search: r.search } : {}), ...(r.used.length ? { skills: r.used } : {}), ms: r.ms });
+		const answer = { ...head, specId: specIdValue, qa: r.qa, observations: r.observations, ...extra, ...(r.probes ? { probes: r.probes } : {}), timeline: r.timeline,
+			fixed: r.fixed, ...(r.search ? { search: r.search } : {}), ...(r.used.length ? { skills: r.used } : {}), ms: r.ms,
+			// what the agent wrote, keys and keyed values before skills expand (#1083; the per-channel counts stay in the job answer)
+			...(r.authored ? { authored: { keys: r.authored.keys, values: r.authored.values } } : {}) };
+		// a flagged qa (flag) keeps each group's flag when cut and its counts in the brief (qa/blocking.js fitFlagged)
+		return typeof r.qa.blocking === "number" ? fitFlagged(answer) : fitOutput(answer);
 	};
 	/**
 	 * A compiled take on the character, installed as one undo entry; put() keeps the timing edit of the take it replaces
@@ -162,33 +187,36 @@ export function register(registry, ports) {
 		: fail("TARGET_NOT_READY", "This character has no compiled take; run motion.compile first.");
 
 	// normalizeArgs: other spellings of install and repair become the declared ones before the schema check (lenient.js)
-	registry.register({ ...declarations[0], normalizeArgs: normalizeCompileArgs, available: mounted, target: args => args.characterId, run({ characterId, spec, base, patch, install: asked = true, probes, repair, thin }, context) {
+	registry.register({ ...declarations[0], normalizeArgs: normalizeCompileArgs, available: mounted, target: args => args.characterId, run({ characterId, spec, base, patch, install: asked = true, probes, repair, thin, filled }, context) {
 		const install = asked === "never" ? false : asked;
 		const character = characterOf(ports, characterId);
-		if ((spec === undefined) === (base === undefined)) fail("INVALID_ARGUMENT", "Send exactly one of spec or base (the specId of a compiled spec, with patch).");
-		if (patch !== undefined && base === undefined) fail("INVALID_ARGUMENT", "patch applies to base, the specId of a compiled spec; send base with it, or the whole spec.");
+		if ((spec === undefined) === (base === undefined)) argumentFail(`$.args: send exactly one of spec or base: spec is a whole motion spec (schema "cozyclay.motion-spec.v1"), base the specId ("spec-" + 12 hex) of a compiled spec, with patch${spec === undefined ? "; neither was sent" : "; both were sent"}.`, "$.args.spec", "variant");
+		if (patch !== undefined && base === undefined) argumentFail("$.args.patch applies to base, the specId of a compiled spec; send base with it, or the whole spec.", "$.args.base", "missing");
 		// a base the store forgot (a reload) may still be the installed take's spec: a document read names it by specId
 		const installedSpec = () => { const take = owner().motionFor(characterId); return take?.spec && specIdOf(take.spec) === base ? structuredClone(take.spec) : null; };
-		const patched = [], source = spec ?? asArgument(() => applyPatch(store.get(base) ?? installedSpec() ?? unknownSpec("base", base), patch ?? [], patched));
+		const patched = [], source = spec ? expandPoses(spec, bodySkeleton(character)) : asArgument(() => applyPatch(store.get(base) ?? installedSpec() ?? unknownSpec("base", base), patch ?? [], patched), "$.args.patch");
 		const scene = sceneFor(character), at = placeKey(character, scene);
 		// the take is always baked: the user watches every draft, installed or not
 		// MotionBricks fills between the authored key poses first when spec.fill is true and the dev server can run it (motion3-fill.js autoFill)
 		// the repair engine runs by default (2 rounds) on an installing compile; repair: false opts out (deep research 5: hand-keyed sessions
 		// repaired 93% of first compiles, ours 2-4%, and without it the hints carry no patch)
 		// rounds 2 on a character's first compile, 1 on the repeats (variant I: repair cost +20 s a step on 45% of the compiles)
-		const repairWith = repair === false ? undefined : repair ?? (install === false ? undefined : { rounds: compiledOnce.has(characterId) ? 1 : 2 });
+		// (#1116: skipped when the last repair applied nothing to the same groups; an explicit repair always runs)
+		const repairWith = repair === false ? undefined : repair ?? (install === false ? undefined : { rounds: compiledOnce.has(characterId) ? 1 : 2, ...(fruitless.has(characterId) ? { unless: fruitless.get(characterId) } : {}) });
 		compiledOnce.add(characterId);
 		// the frames this patch touched stay through key thinning (thin.js)
 		const before = base === undefined ? null : store.get(base) ?? installedSpec(), keysAt = (sp, f) => JSON.stringify((sp?.keys ?? []).filter(k => k.f === f));
 		const protect = before ? [...new Set((source.keys ?? []).map(k => k.f))].filter(f => keysAt(before, f) !== keysAt(source, f)) : [];
 		// a small patch on one authored key keeps the fill beside it (patch-guard.js): re-fills there made 14-22% of the new problems
 		const keepFill = base === undefined ? null : keptFill(store.get(base) ?? installedSpec(), source);
-		// the installed take's QA, measured before this compile when the store lost it (motion3-installed.js)
-		return after(install === false ? null : installedQa.measure(character, scene), on => after(keepFill ? { spec: source, fill: keepFill } : autoFill(ports, character, source), auto => after(compile(character, auto.spec, { probes, repair: repairWith, installing: install !== false, thin, protect }, {}, context?.taskId, scene), r => {
-			const { qa, take } = r, notes = [...patched, ...(r.notes ?? [])];
-			// ifClean: install a clean result (qa.ok includes the goals; after repair when asked), and one that beats the installed
-			// take's QA (fewer groups, then fewer frame issues) or the first when none is on (variant K: box ended with no take in 4 of
-			// 5 runs under ifClean / never); over a take whose QA cannot be measured, any take (with a note)
+		// the installed take's QA, measured before this compile when the store lost it (motion3-installed.js); under ifClean the
+		// job skips thinning a repaired take that will not go on over it (compile-job.js ifCleanOver: it would thin keys no take keeps)
+		return after(install === false ? null : installedQa.measure(character, scene), on => after(filled ? { spec: source, fill: filled } : keepFill ? { spec: source, fill: keepFill } : autoFill(ports, character, source), auto => after(compile(character, auto.spec, { probes, repair: repairWith, installing: install !== false, ...(install === "ifClean" ? { ifCleanOver: on && { groups: on.groups } } : {}), thin, protect }, {}, context?.taskId, scene), r => {
+			const { take } = r, qa = flag(r.qa, take), notes = [...patched, ...(r.notes ?? [])], { faced, ...repaired } = r.repair ?? {};
+			if (r.repair) { if (!repaired.applied?.length && faced?.length) fruitless.set(characterId, faced); else fruitless.delete(characterId); }
+			// ifClean: install a clean result (0 blocking problems, goals included; after repair when asked), and one that beats the
+			// installed take's blocking groups (fewer, then fewer frame issues) or the first when none is on (variant K: box ended with no
+			// take in 4 of 5 runs under ifClean / never); over a take whose QA cannot be measured, any take (with a note)
 			const verdict = install === "ifClean" ? installedQa.verdict(on, qa) : { wanted: install };
 			const wanted = verdict.wanted;
 			let installs = wanted, kept = false, timing;
@@ -203,29 +231,31 @@ export function register(registry, ports) {
 			const delta = base === undefined ? {} : { delta: deltaOf(store.parts(base)?.groups ?? [], qa.groups, base) };
 			// the stop rule (repair-watch.js): a note, and the best take so far put on when the note would leave the take empty or worse
 			const own = specIdOf(r.stored), carried = owner().motionFor(characterId)?.spec, current = carried ? specIdOf(carried) : null;
-			const { say: stuck, install: best } = watch.note({ characterId, turnId: context?.turnId, callId: context?.callId, specId: own, base, qa, at, take, installed: Boolean(installs || kept), current });
+			const { say: stuck, install: best, polish } = watch.note({ characterId, turnId: context?.turnId, callId: context?.callId, specId: own, base, qa, at, take, installed: Boolean(installs || kept), current });
 			if (best) timing = put(character, best.take, context) ?? timing;
 			const self = best?.specId === own, how = kept ? "; already installed, unchanged" : self ? "; installed as the best take so far"
 				: best ? `; not installed; the best take so far, ${best.specId}, installed` : install === "ifClean" ? (installs ? "; installed" : "; not installed") : "";
-			const hint = hybridCapsuleHint(ports.storeDomain?.("scenes")?.metadata?.().castStyle, { stuck, qa });
+			const hint = hybridCapsuleHint(ports.storeDomain?.("scenes")?.metadata?.().castStyle, { stuck, qa: { ok: qa.blocking === 0, groups: blockingOf(qa.groups) }, polish });
 			const flat = rounds(characterId, qa, base === undefined), broad = patchTooBroad(patch);
-			const output = report(r, { frames: r.frameCount, fps: TIMELINE_FPS, installed: Boolean(wanted) || self, ...(flat ? { noImprovementRounds: flat } : {}), ...(stuck ? { stuck } : {}), ...(hint ? { hint } : {}), ...adjustedOf(notes), ...(broad || worse || verdict.note ? { notes: [broad, worse, verdict.note].filter(Boolean) } : {}) }, { ...delta, ...(r.repair ? { repair: r.repair } : {}), ...(timing ? { timing } : {}), ...(auto.fill ? { fill: auto.fill } : {}), ...(r.thinned ? { thinned: r.thinned } : {}) });
+			const output = report({ ...r, qa }, { frames: r.frameCount, fps: TIMELINE_FPS, installed: Boolean(wanted) || self, ...(flat ? { noImprovementRounds: flat } : {}), ...(stuck ? { stuck } : {}), ...(hint ? { hint } : {}), ...adjustedOf(notes), ...(broad || worse || verdict.note ? { notes: [broad, worse, verdict.note].filter(Boolean) } : {}) }, { ...delta, ...(r.repair ? { repair: repaired } : {}), ...(timing ? { timing } : {}), ...(auto.fill ? { fill: auto.fill } : {}), ...(r.thinned ? { thinned: r.thinned } : {}) });
 			// agent-progress.js: viewport ghost, timeline beats, agent panel
-			const draft = publishDraft(characterId, { take, installed: installs || kept || self, specId: output.specId, label: r.label, qa, timeline: r.timeline });
-			noteDraftCompiled(draft, r, { installed: installs || kept || self, stuck, repaired: Boolean(r.repair), adjusted: notes.length > 0 });
+			const draft = publishDraft(characterId, { take, installed: installs || kept || self, specId: output.specId, label: r.label, qa, timeline: r.timeline, owner: context?.taskId ?? context?.turnId ?? null });
+			noteDraftCompiled(draft, r, { installed: installs || kept || self, stuck, repaired: Boolean(r.repair && !r.repair.skipped), adjusted: notes.length > 0 });
 			// agent:turn_summary: this turn's drafts and their QA (agent-turn-telemetry.js)
 			noteTurnDraft(context?.turnId, { clean: Boolean(qa.ok), problems: qaProblems(qa), stuck: Boolean(stuck) });
-			return { affectedIds: installs || best ? [characterId] : [], summary: `${auto.fill?.calls ? `MotionBricks filled ${auto.fill.calls} gap${auto.fill.calls === 1 ? "" : "s"}. ` : ""}Compiled ${r.frameCount} frames; QA ${qaSay(qa)}${how}${adjustedSay(notes)}.${install !== false && qaProblems(qa) === 0 ? " QA clean — done (no further rounds)." : ""}${installs || kept || self ? ` Installed take: ${output.specId}.` : best ? ` Installed take: ${best.specId}.` : ""}${r.thinned ? ` Thinned ${r.thinned.removed.length} free-span key${r.thinned.removed.length === 1 ? "" : "s"} QA did not need (output.thinned).` : ""}`, output, ...workerWarning() };
+			return { affectedIds: installs || best ? [characterId] : [], summary: `${auto.fill?.calls ? `MotionBricks filled ${auto.fill.calls} gap${auto.fill.calls === 1 ? "" : "s"}. ` : ""}Compiled ${r.frameCount} frames; QA ${qaSay(qa)}, ${blockingSay(qa)}${how}${adjustedSay(notes)}.${installs || kept || self ? ` Installed take: ${output.specId}.` : best ? ` Installed take: ${best.specId}.` : ""}${r.thinned ? ` Thinned ${r.thinned.removed.length} free-span key${r.thinned.removed.length === 1 ? "" : "s"} QA did not need (output.thinned).` : ""}`, output, ...workerWarning() };
 		})));
 	} });
 	registry.register({ ...declarations[1], available: mounted, run({ characterId, checks }) {
-		const character = characterOf(ports, characterId), take = installed(characterId);
-		return after(compile(character, take.spec, { checks }), r => ({ affectedIds: [], summary: `QA ${qaSay(r.qa)}${adjustedSay(r.notes ?? [])}.`,
-			output: report(r, adjustedOf(r.notes ?? [])), ...workerWarning() }));
+		const character = characterOf(ports, characterId), take = installed(characterId); measurable(character, take, "motion.qa");
+		return after(compile(character, take.spec, { checks }), r => { const qa = flag(r.qa, take); return { affectedIds: [], summary: `QA ${qaSay(qa)}, ${blockingSay(qa)}${adjustedSay(r.notes ?? [])}.`,
+			output: report({ ...r, qa }, adjustedOf(r.notes ?? [])), ...workerWarning() }; });
 	} });
 	registry.register({ ...declarations[2], available: mounted, run({ characterId, frames, bones = DEFAULT_BONES }) {
-		const character = characterOf(ports, characterId), take = installed(characterId), sk = rigOf(character);
-		const yaw = ry(take.placement?.yaw ?? 0), at = take.placement?.position ?? [0, 0, 0], B = take.bones.length;
+		// where the stage puts the take's bones: its skeleton (in the take's placement frame, the unit body's) times the character's
+		// scale, turned and placed as the character is now (stage-characters.jsx: a character moved, turned or resized carries its take)
+		const character = characterOf(ports, characterId), take = installed(characterId), sk = rigOf(character), s = bodyScale(character), shown = character.scale ?? 1;
+		const yaw = ry(character.rot ?? 0), at = [character.x ?? 0, character.y ?? 0, character.z ?? 0], B = take.bones.length, drawn = p => (s === 1 ? p : p.map(v => v * s));
 		const rows = frames.map(f => {
 			const ff = Math.min(take.frameCount - 1, f);
 			const quats = Array.from({ length: B }, (_, b) => Array.from(take.rot.subarray((ff * B + b) * 4, (ff * B + b) * 4 + 4)));
@@ -233,10 +263,10 @@ export function register(registry, ports) {
 			return { frame: ff, bones: Object.fromEntries(bones.map(name => {
 				const { bone, hint } = resolveBone(sk, name);
 				if (bone === null) fail("INVALID_ARGUMENT", `Unknown bone ${name}${hint || "."}`);
-				return [name, add(at, apply(yaw, state.P[sk.index[bone]])).map(v => Math.round(v * 1e4) / 1e4)];
+				return [name, add(at, apply(yaw, drawn(state.P[sk.index[bone]]))).map(v => Math.round(v * 1e4) / 1e4)];
 			})) };
 		});
-		return { affectedIds: [], summary: `Sampled ${rows.length} frames.`, output: { frames: rows } };
+		return { affectedIds: [], summary: `Sampled ${rows.length} frames${shown === 1 ? "" : ` at scale ${shown}`}.`, output: { frames: rows } };
 	} });
 	registry.register({ ...declarations[3], available: always, run({ topic, name, topics }) {
 		if (topic === undefined && topics === undefined) fail("INVALID_ARGUMENT", "Send topic (and name) for one answer, or topics: [{ topic, name? }] for several in one call.");
@@ -246,10 +276,10 @@ export function register(registry, ports) {
 			const open = asks.filter(a => a.name === undefined && (asks.length === 1 || a.topic === "skills"));
 			if (name !== undefined && open.length !== 1) fail("INVALID_ARGUMENT", "name goes with one topic; inside topics give each its own: topics: [{ topic, name? }].");
 			if (name !== undefined) open[0].name = name;
-			const output = asArgument(() => describeMany(asks));
+			const output = asArgument(() => describeMany(asks), "$.args.topics");
 			return { affectedIds: [], summary: `Described ${output.topics.map(a => (a.name ? `${a.topic} ${a.name}` : a.topic)).join(", ")}${output.more ? `; ${output.more.length} more did not fit` : ""}.`, output };
 		}
-		return { affectedIds: [], summary: `Described ${topic}${name ? ` ${name}` : ""}.`, output: asArgument(() => describe(topic, name)) };
+		return { affectedIds: [], summary: `Described ${topic}${name ? ` ${name}` : ""}.`, output: asArgument(() => describe(topic, name), "$.args.name") };
 	} });
 	// a characterId reads the installed take's report (session 2ad2760a asked for it that way and was refused): the stored
 	// one when this session compiled that spec, else the take's QA run now
@@ -257,7 +287,7 @@ export function register(registry, ports) {
 		const answer = (parts, id) => { const page = reportPage(parts, id, part, from); return { affectedIds: [], summary: `${page.items.length} ${part} from ${from}.`, output: page }; };
 		if (wanted) return answer(store.parts(wanted) ?? unknownSpec("specId", wanted, "compile it again"), wanted);
 		if (!characterId) fail("INVALID_ARGUMENT", "motion.report needs specId (from a motion.compile or motion.qa answer) or characterId (its installed take).");
-		const take = installed(characterId), id = specIdOf(take.spec), kept = store.parts(id);
+		const take = installed(characterId), id = specIdOf(take.spec), kept = store.parts(id); measurable(characterOf(ports, characterId), take, "motion.report");
 		if (kept) return answer(kept, id);
 		return after(compile(characterOf(ports, characterId), take.spec), r => { const out = report(r, {}); return answer(store.parts(out.specId), out.specId); });
 	} });
@@ -265,7 +295,7 @@ export function register(registry, ports) {
 	// and installed whatever QA says (a user edit), as one undo entry
 	registry.register({ ...declarations[5], available: mounted, target: args => args.characterId, run({ characterId, ...args }, context) {
 		const character = characterOf(ports, characterId), take = installed(characterId), scene = sceneFor(character);
-		const { spec, keyed } = asArgument(() => keyObject(take.spec, scene, args, expandUse(take.spec, { sk: rigOf(character), scene, lenient: true }).spec.objects));
+		const { spec, keyed } = asArgument(() => keyObject(take.spec, scene, args, expandUse(take.spec, { sk: (rigOf(character), bodySkeleton(character)), scene, lenient: true }).spec.objects), "$.args");
 		return after(compile(character, spec, { lenient: true }, { prompt: take.prompt }), r => {
 			const timing = put(character, r.take, context);
 			return { affectedIds: [characterId], summary: `${keyed.removed ? "Removed the key of" : "Keyed"} ${keyed.objectId} at f${keyed.f}; QA ${qaSay(r.qa)}; installed.`,

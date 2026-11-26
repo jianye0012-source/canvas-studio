@@ -14,7 +14,9 @@
 //   POST /agent/turn    -> SSE, lines of `data: {json}`
 //   POST /agent/stop    -> { ok }
 //   GET  /agent/models  -> { providers: [{ id, label, signedIn, models }], models: [flat], roles: { byMain } }
-//   POST /agent/turn/<turnId>/steer -> { ok, queued } while that turn streams
+//   POST /agent/turn/<turnId>/steer { text, id, attachments? } -> { ok, queued } while that turn streams; the turn's
+//        stream then says { type: "steer.received", id } (in the context of its next model call) or
+//        { type: "steer.dropped", id } (the turn ended first)
 //
 // Studio hosts add the frozen task-1 contracts on the same routes:
 //   POST /agent/turn                        -> { surface, sessionId, turnId, text, context, ... }
@@ -29,7 +31,7 @@ import { ko } from "../locale.js";
 import { startAgentTurn, trackAgentTurns } from "./agent-turn-telemetry.js";
 import { STUDIO_VARIANTS, validateReceipt } from "../studio-agent-protocol.js";
 import { refusalFailureCode, transportFailureCode } from "./agent-failure-codes.js";
-import { requestAgentImage, sidecarRequest, sidecarUrl } from "../agent-image-client.js"; import { clearSculptSketch, sculptSketchFrame } from "../sculpt-sketch-state.js";
+import { requestAgentImage, sidecarRequest, sidecarUrl } from "../agent-image-client.js"; import { clearSculptSketch, sculptSketchFrame } from "../sculpt-sketch-state.js"; import { attachStudioTurn, resumedItems } from "./agent-turn-attach.js";
 import { actionLabelsOf, changedLine, scriptNow, stepFields, thinkingLine, withCompose, withThinking, withToolStart, withTurnEnd } from "./agent-turn.js";
 import { isPlanFrame, restoredPlans, withPlanEnd, withPlanFrame } from "./agent-plan.js";
 
@@ -37,7 +39,6 @@ const AGENT_PANEL_WIDTH_KEY = "cozyclay.workflow.agentPanel.width";
 export const AGENT_PANEL_WIDTH_DEFAULT = 360;
 export const AGENT_PANEL_WIDTH_MIN = 300;
 export const AGENT_PANEL_WIDTH_MAX = 560;
-export const AGENT_PANEL_RAIL_WIDTH = 36;
 export const AGENT_PANEL_OVERLAY_BREAKPOINT = 1100;
 export const STUDIO_SESSION_STORAGE_KEY = "cozyclay.agent.session.studio";
 
@@ -123,7 +124,7 @@ export function effortOptions(entry) {
 
 export const SUGGESTION_CHIPS = [
 	"Block a two-shot conversation in this scene",
-	"Render this frame as a storyboard panel",
+	"Render this frame as an ink sketch",
 	"Suggest a camera move for the current shot",
 ];
 
@@ -162,7 +163,6 @@ const STUDIO_TOOL_LABELS = {
 	arrange_characters: ko("Arrange characters", "\uCE90\uB9AD\uD130 \uBC30\uCE58"),
 	patch_elements: ko("Edit properties", "\uC18D\uC131 \uD3B8\uC9D1"),
 	frame_shot: ko("Frame the shot", "\uC0F7 \uAD6C\uB3C4 \uC7A1\uAE30"),
-	generate_motion: ko("Generate motion", "\uBAA8\uC158 \uC0DD\uC131"),
 	verify_result: ko("Verify the result", "\uACB0\uACFC \uAC80\uC99D"),
 	undo_edit: ko("Undo an edit", "\uD3B8\uC9D1 \uB418\uB3CC\uB9AC\uAE30"),
 	run_action: ko("Run an editor action", "\uD3B8\uC9D1\uAE30 \uB3D9\uC791 \uC2E4\uD589"),
@@ -172,7 +172,7 @@ const STUDIO_TOOL_LABELS = {
  * One panel, two hosts. The conversation, the transport, the composer and the
  * activity line are identical on both surfaces; everything below is what each
  * host shows AROUND them. A Workflow-only affordance (the image cost hint, the
- * image entitlement gate, the storyboard chips, the History placeholder, the
+ * image entitlement gate, the suggestion chips, the History placeholder, the
  * dock's stored width) is absent from the Studio column rather than rendered
  * dead, because the Studio turn cannot produce an image at all.
  */
@@ -185,10 +185,6 @@ export const PANEL_PRESENTATIONS = Object.freeze({
 		// The Workflow turn generates images, so an account without the image
 		// entitlement has to be told before it asks for one.
 		imageEntitlement: true,
-		// Steering nudges a turn that is already running. Only the Workflow turn
-		// accepts it: a Studio turn is a frozen envelope the sidecar refuses to
-		// steer (409 STEER_UNSUPPORTED), so that surface keeps Stop alone.
-		steer: true,
 		history: true,
 		persistWidth: true,
 		emptyTitle: "Direct the scene",
@@ -201,7 +197,6 @@ export const PANEL_PRESENTATIONS = Object.freeze({
 		suggestions: STUDIO_SUGGESTION_CHIPS,
 		imageHint: null,
 		imageEntitlement: false,
-		steer: false,
 		history: true,
 		persistWidth: false,
 		emptyTitle: ko("Direct the scene", "\uC7A5\uBA74\uC744 \uC5F0\uCD9C\uD558\uC138\uC694"),
@@ -330,8 +325,6 @@ export function formatResetIn(resetAt, now = Date.now()) {
 
 const TOOL_LABELS = {
 	capture_blocking_frame: { verb: "Capture", target: "blocking frame" },
-	render_from_frame: { verb: "Render", target: "from frame" },
-	place_image_in_scene: { verb: "Place", target: "image in scene" },
 };
 
 /** ToolCallCard shows "verb + target", never a raw function name. */
@@ -351,12 +344,15 @@ export function formatElapsed(ms) {
 	return `${(ms / 1000).toFixed(1)}s`;
 }
 
-/** Why a steer was refused, by the code the sidecar answers 409 with. The
- * draft stays in the composer either way: the author's words are never eaten
- * by a turn that ended a moment earlier. */
+/** A message's pictures as a turn or a steer carries them: at most ATTACHMENT_MAX_COUNT, data URL and name only. */
+const messageAttachments = (list) => list.slice(0, ATTACHMENT_MAX_COUNT).map(({ dataUrl, name }) => ({ dataUrl, ...(name ? { name } : {}) }));
+
+/** Why a steer (a queued row's Send now) was refused, by the code the sidecar
+ * answers 409 with. The row stays in the queue either way: the author's words
+ * are never eaten by a turn that ended a moment earlier. */
 export const STEER_ERROR_COPY = {
-	STEER_UNSUPPORTED: "This surface cannot steer a running turn.",
-	NO_ACTIVE_TURN: "That turn already ended — send it as a new message.",
+	STEER_UNSUPPORTED: ko("This turn cannot take a message while it runs: it stays queued for the next turn.", "이 작업은 도는 중에 메시지를 받을 수 없어요. 다음 턴으로 보내도록 대기열에 남겨요.", "此轮运行中无法接收消息：消息留在队列中，作为下一轮发送。"),
+	NO_ACTIVE_TURN: ko("That turn already ended: the message stays queued for the next turn.", "그 작업은 이미 끝났어요. 다음 턴으로 보내도록 대기열에 남겨요.", "该轮已结束：消息留在队列中，作为下一轮发送。"),
 };
 
 /** Codes a Studio refusal carries: a turn that met one is reviewed by the
@@ -384,9 +380,10 @@ export function supervisorFollowUp(note) {
 export const ERROR_COPY = {
 	auth: "Your session expired. Sign in again to continue.",
 	entitlement: "This account cannot generate images.",
-	rate_limit: "You have hit the usage limit for this window.",
+	rate_limit: "The model provider's quota for your account is used up for now. It is the provider's limit, not CozyClay's.",
 	upstream: "The model service failed to answer.",
 	overloaded: "The model service is overloaded right now. Try again in a moment.",
+	busy: "The agent is still answering. Try again in a moment.",
 };
 
 // Silence is the failure mode this replaces: a live turn says what it is doing
@@ -402,10 +399,11 @@ const ACTIVITY_IDLE_TEXT = "Ready";
 const FAILURE_REASON = {
 	auth: "session expired",
 	entitlement: "not on this plan",
-	rate_limit: "usage limit reached",
-	rate_limited: "usage limit reached",
+	rate_limit: "provider quota reached",
+	rate_limited: "provider quota reached",
 	overloaded: "service overloaded",
 	no_output: "no response",
+	busy: "agent still answering",
 };
 
 function shortFailureReason(failure) {
@@ -565,9 +563,9 @@ export function createHttpTransport({ fetchImpl = globalThis.fetch?.bind(globalT
 			// too showed the page twice. The waiting card links the page from /oauth/status.
 			return request("/oauth/start", { method: "POST", body: "{}" });
 		},
-		async signOut() {
-			return request("/oauth/logout", { method: "POST", body: "{}" });
-		},
+		// The waiting card's Cancel (#1044): the sidecar stops waiting for the sign-in page.
+		async cancelSignIn() { return request("/oauth/cancel", { method: "POST", body: "{}" }); },
+		async signOut() { return request("/oauth/logout", { method: "POST", body: "{}" }); },
 		/** `{ providers, models }` (#379). The flat `models` is key-addressed
 		 * (`provider/id`) and carries each model's efforts; `providers` is the same
 		 * list grouped, with the sign-in state the dropdown disables its options
@@ -586,8 +584,8 @@ export function createHttpTransport({ fetchImpl = globalThis.fetch?.bind(globalT
 			return { providers, models };
 		},
 		/** Steering a turn that is STILL streaming. The id is the one this browser
-		 * minted for that turn; the sidecar answers 409 for a Studio envelope
-		 * (STEER_UNSUPPORTED) and for a turn that already ended (NO_ACTIVE_TURN). */
+		 * minted for that turn; the sidecar answers 409 for a turn that already
+		 * ended (NO_ACTIVE_TURN). */
 		async steer(turnId, body) {
 			return request(`/agent/turn/${encodeURIComponent(turnId)}/steer`, { method: "POST", body: JSON.stringify(body) });
 		},
@@ -601,9 +599,11 @@ export function createHttpTransport({ fetchImpl = globalThis.fetch?.bind(globalT
 			const result = await request(`/agent/sessions?surface=${encodeURIComponent(surface || "studio")}`);
 			return Array.isArray(result?.sessions) ? result.sessions : [];
 		},
-		async loadSession(sessionId) {
-			return request(`/agent/sessions/${encodeURIComponent(sessionId)}`);
+		async loadSession(sessionId, { restore = false } = {}) {
+			return request(`/agent/sessions/${encodeURIComponent(sessionId)}${restore ? "?restore=1" : ""}`);
 		},
+		// The edit on the last message: turn turnId (stopped first if it runs) leaves the conversation; check: only ask whether it would (bin/agent/session-rewind.mjs).
+		rewind: (sessionId, turnId, check = false) => request(`/agent/sessions/${encodeURIComponent(sessionId)}/rewind`, { method: "POST", body: JSON.stringify({ turnId, ...(check ? { check: true } : {}) }) }),
 		// Legacy callers pass a session id; a Studio host passes the frozen stop
 		// envelope so the sidecar can cancel one turn and one owned job.
 		async stop(target) {
@@ -641,6 +641,8 @@ export function createHttpTransport({ fetchImpl = globalThis.fetch?.bind(globalT
 			const note = await response.json();
 			return note?.type === "supervisor" && ["reviewed", "unavailable"].includes(note.verdict) ? note : null;
 		},
+		// A Studio turn already running on the sidecar (the panel reloaded mid-turn), from its first event.
+		attach: (turnId, onEvent, signal) => attachStudioTurn({ fetchImpl, url: sidecarUrl, parse: parseSseChunk, attempts: RESUME_ATTEMPTS }, turnId, onEvent, signal),
 		/** Streams sidecar events to `onEvent`. Resolves when the turn ends. */
 		async turn(turnRequest, onEvent, signal) {
 			const { sessionId, text, attachFrame, model, effort, attachments, supervisor, tasks } = turnRequest;
@@ -699,7 +701,9 @@ export function createHttpTransport({ fetchImpl = globalThis.fetch?.bind(globalT
 					reader.releaseLock();
 				}
 			};
-			const body = studio
+			// A v4 model (the v4 motion engine, on either loop: v4/ or v4pi/) always takes /agent/turn: it is one agent, never the task coordinator.
+			// The lowvis engine (lowvis/, prototype) is one agent in the same way.
+			const tasked = studio && tasks && !/^(v4(pi)?|lowvis)\//.test(String(model ?? "")), body = studio
 				? JSON.stringify({
 					surface: "studio", sessionId, turnId, text, context: turnRequest.context,
 					...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(attachFrame === undefined ? {} : { attachFrame: Boolean(attachFrame) }), ...(typeof supervisor === "boolean" ? { supervisor } : {}), ...attached,
@@ -707,9 +711,9 @@ export function createHttpTransport({ fetchImpl = globalThis.fetch?.bind(globalT
 				: JSON.stringify({ sessionId, text, attachFrame, model, ...(effort ? { effort } : {}), ...attached, ...(telemetry.turnId ? { turn_id: telemetry.turnId } : {}) });
 			try {
 				// Task mode (the panel's Tasks switch): the turn goes to the main agent, which answers at once and runs tasks.
-				const response = await fetchImpl(sidecarUrl(studio && tasks ? "/agent/main" : "/agent/turn"), {
+				const response = await fetchImpl(sidecarUrl(tasked ? "/agent/main" : "/agent/turn"), {
 					method: "POST",
-					headers: { "content-type": "application/json", accept: "text/event-stream", ...(studio && tasks ? { "x-cozyclay-tasks": "on" } : {}) },
+					headers: { "content-type": "application/json", accept: "text/event-stream", ...(tasked ? { "x-cozyclay-tasks": "on" } : {}) },
 					body,
 					signal,
 				});
@@ -722,6 +726,7 @@ export function createHttpTransport({ fetchImpl = globalThis.fetch?.bind(globalT
 					onEvent({ type: "done" });
 					return;
 				}
+				turnRequest.onOpen?.(sessionId); // the sidecar admitted the turn: its session (and a main session's board) exists now
 				let streamError = null;
 				try { await readStream(response); } catch (error) { streamError = error; }
 				// A lost observer is not a lost turn: resume from the cursor instead of
@@ -790,11 +795,11 @@ const MOCK_SCRIPT = [
 	{ delay: 40, event: { type: "text.delta", text: "Framing a wide two-shot from the current blocking. " } },
 	{ delay: 120, event: { type: "text.delta", text: "Capturing the viewport first." } },
 	{ delay: 120, event: { type: "tool.start", callId: "call-1", name: "capture_blocking_frame", label: "Capture blocking frame", args: { shot: "current" } } },
-	{ delay: 260, event: { type: "tool.done", callId: "call-1", ok: true, elapsedMs: 268, result: { width: 1280, height: 720 } } },
-	{ delay: 90, event: { type: "tool.start", callId: "call-2", name: "render_from_frame", label: "Render from frame", args: { style: "storyboard", strength: 0.6 } } },
+	{ delay: 260, event: { type: "tool.done", callId: "call-1", ok: true, elapsedMs: 268, result: { width: 1280, height: 720 } } }, { delay: 0, event: { type: "context", tokens: 41_200, window: 1_000_000 } },
+	{ delay: 90, event: { type: "tool.start", callId: "call-2", name: "run_workflow", label: "Run workflow", args: {} } },
 	{ delay: 420, event: { type: "tool.done", callId: "call-2", ok: true, elapsedMs: 1412, result: { imageId: "img-1" } } },
-	{ delay: 80, event: { type: "image", imageId: "img-1", dataUrl: MOCK_IMAGE, width: 512, height: 288, prompt: "wide two-shot, storyboard ink" } },
-	{ delay: 60, event: { type: "quota", plan: "Plus", primary: { usedPercent: 46, windowMinutes: 300, resetAt: null }, credits: { has: true } } },
+	{ delay: 80, event: { type: "image", imageId: "img-1", dataUrl: MOCK_IMAGE, width: 512, height: 288, prompt: "wide two-shot, ink sketch" } },
+	{ delay: 60, event: { type: "quota", plan: "Plus", primary: { usedPercent: 46, windowMinutes: 300, resetAt: null }, credits: { has: true } } }, { delay: 0, event: { type: "context", tokens: 95_900, window: 1_000_000 } },
 	{ delay: 40, event: { type: "done" } },
 ];
 
@@ -812,11 +817,11 @@ const MOCK_STUDIO_RECEIPT = {
 const MOCK_STUDIO_SCRIPT = [
 	{ delay: 40, event: { type: "text.delta", text: "Reading the scene before I move anyone. " } },
 	{ delay: 120, event: { type: "tool.start", callId: "studio-1", name: "inspect_studio", label: "inspect studio", args: { scope: "selection" } } },
-	{ delay: 220, event: { type: "tool.done", callId: "studio-1", ok: true, elapsedMs: 214, result: { entities: 2 } } },
+	{ delay: 220, event: { type: "tool.done", callId: "studio-1", ok: true, elapsedMs: 214, result: { entities: 2 } } }, { delay: 0, event: { type: "context", tokens: 41_200, window: 1_000_000 } },
 	{ delay: 90, event: { type: "text.delta", text: "Blocking the two-shot now." } },
 	{ delay: 120, event: { type: "tool.start", callId: "studio-2", name: "arrange_characters", label: "arrange characters", args: { ops: [{ op: "update", characterId: "char-a", position: { world: { x: -0.8, y: 0, z: 0.4 } } }] } } },
 	{ delay: 320, event: { type: "tool.done", callId: "studio-2", ok: true, elapsedMs: 332, result: { ok: true, receiptId: MOCK_STUDIO_RECEIPT.receiptId } } },
-	{ delay: 60, event: { type: "receipt", receipt: MOCK_STUDIO_RECEIPT } },
+	{ delay: 60, event: { type: "receipt", receipt: MOCK_STUDIO_RECEIPT } }, { delay: 0, event: { type: "context", tokens: 95_900, window: 1_000_000 } },
 	{ delay: 40, event: { type: "done" } },
 ];
 
@@ -848,7 +853,7 @@ const MOCK_PROVIDER_MODELS = {
 	openrouter: [{ id: "deepseek-v3", label: "DeepSeek V3", efforts: ["none"], defaultEffort: "none" }],
 	cliproxy: [{ id: "claude-sonnet-5", label: "Claude Sonnet 5", efforts: ["none", "low", "medium", "high"], defaultEffort: "medium" }],
 };
-/** A ChatGPT model the sidecar learns about from the live catalogue, which it
+/** A ChatGPT model the sidecar learns about from the account's live list, which it
  * can only read with the credential: signing out does not merely draw it
  * disabled, it stops being advertised at all. That is the transition browser
  * QA drives to prove the panel never submits a model the dropdown is no
@@ -890,8 +895,8 @@ export function createMockTransport(config = { state: "ready" }) {
 	});
 	// The turn a steer may still reach. It is cleared at the last scripted frame,
 	// while the stream is still open, exactly like the sidecar's own turn record.
-	let liveTurn = null;
-	let turns = 0;
+	let liveTurn = null, turns = 0;
+	const steered = []; // ids of accepted steers, reported received at the scripted turn's next frame
 	return {
 		mock: true,
 		state,
@@ -946,14 +951,14 @@ export function createMockTransport(config = { state: "ready" }) {
 			return { ok: true };
 		},
 		/** The scripted steer route. A message only reaches a turn that is still
-		 * running; anything else is the 409 the sidecar answers. QA reads the
-		 * accepted message back out of storage, because a scripted transport has
-		 * no request for it to inspect. */
+		 * running; anything else is the 409 the sidecar answers. The scripted turn
+		 * reports it received at its next frame, as the sidecar's loop does at its
+		 * next step. QA reads the accepted message back out of storage, because a
+		 * scripted transport has no request for it to inspect. */
 		async steer(turnId, body) {
-			if (studio) throw Object.assign(new Error("409 — Steering a Studio turn is not supported."), { status: 409, code: "STEER_UNSUPPORTED" });
 			if (!liveTurn || turnId !== liveTurn) throw Object.assign(new Error("409 — This turn already ended."), { status: 409, code: "NO_ACTIVE_TURN" });
 			try { globalThis.localStorage?.setItem("cozyclay.mock.agent.last-steer", JSON.stringify({ turnId, text: body?.text ?? null, attachments: body?.attachments?.length ?? 0 })); } catch { /* mock proof state is best effort */ }
-			return { ok: true, queued: true };
+			steered.push(body?.id ?? null); return { ok: true, queued: true };
 		},
 		async acceptJob() {
 			return { ok: true };
@@ -989,7 +994,7 @@ export function createMockTransport(config = { state: "ready" }) {
 			const turnId = `mock-turn-${++turns}`;
 			liveTurn = turnId;
 			request?.onTurnId?.(turnId);
-			try { globalThis.localStorage?.setItem("cozyclay.mock.agent.last-turn", JSON.stringify({ turnId, model: request?.model ?? null, effort: request?.effort ?? null, text: request?.text ?? null })); } catch { /* mock proof state is best effort */ }
+			try { globalThis.localStorage?.setItem("cozyclay.mock.agent.last-turn", JSON.stringify({ turnId, model: request?.model ?? null, effort: request?.effort ?? null, text: request?.text ?? null, marks: request?.context?.marks ?? null, attachments: request?.attachments?.length ?? 0 })); } catch { /* mock proof state is best effort */ }
 			try { if (studio && request?.sessionId) globalThis.localStorage?.setItem("cozyclay.mock.agent.last-turn-session", request.sessionId); } catch { /* mock proof state is best effort */ }
 			let transcript = [];
 			const sessionKey = studio && request?.sessionId ? `cozyclay.mock.agent.session.${request.sessionId}` : null;
@@ -1037,12 +1042,13 @@ export function createMockTransport(config = { state: "ready" }) {
 				if (signal?.aborted) break;
 				await wait(step.delay);
 				if (signal?.aborted) break;
+				for (const id of steered.splice(0)) emit({ type: "steer.received", id });
 				emit(step.event);
 			}
 			// The model is done at the last frame, but the stream stays open while the
 			// sidecar closes the turn out. Steering inside that window is exactly the
 			// 409 the real route answers, so the scripted turn reproduces it.
-			liveTurn = null;
+			liveTurn = null; for (const id of steered.splice(0)) emit({ type: "steer.dropped", id });
 			await wait(240);
 			if (signal?.aborted) emit({ type: "done" });
 		},
@@ -1103,13 +1109,16 @@ export function createAgentChatStore({
 	// so it can show the change where the author is looking — on the element
 	// itself — instead of only as another card at the bottom of the chat.
 	onReceipt = null,
+	// onSteer({ type: "steer.received" | "steer.dropped", id }): what became of a steer sent with an id (the queue's
+	// Send now, agent-queue.js). A turn that ends with a steer unanswered (Stop, a lost stream) reports it dropped.
+	onSteer = null,
 	newId = createStudioSessionId,
 	clock = () => Date.now(),
 } = {}) {
 	const studio = surface === "studio";
-	const listeners = new Set();
-	const seenReceipts = new Set();
-	const settledActions = new Set();
+	const listeners = new Set(), seenReceipts = new Set(), settledActions = new Set();
+	// Steers the sidecar took and the turn has not yet put in front of the model: id -> { text, attachments }.
+	const steering = new Map();
 	let controller = null;
 	// What the running turn has actually produced, so a turn that ends with
 	// nothing on screen can be reported as the failure it is.
@@ -1133,7 +1142,7 @@ export function createAgentChatStore({
 		pendingAttachments: [],
 		items: [],
 		streaming: false,
-		quota: null,
+		quota: null, context: null,
 		rateLimit: null,
 		lastPrompt: "",
 		turnStartedAt: null,
@@ -1273,14 +1282,15 @@ export function createAgentChatStore({
 		}
 		if (event?.type === "job.state" || event?.type === "job.progress") { applyJobEvent(event); return; }
 		if (event?.type === "receipt") { applyReceiptEvent(event.receipt); return; }
-		if (event?.type === "quota") {
-			set({ quota: { plan: event.plan, usedPercent: event.primary?.usedPercent, windowMinutes: event.primary?.windowMinutes, resetAt: event.primary?.resetAt, credits: event.credits } });
-			return;
-		}
+		if (event?.type === "quota") { set({ quota: { plan: event.plan, usedPercent: event.primary?.usedPercent, windowMinutes: event.primary?.windowMinutes, resetAt: event.primary?.resetAt, credits: event.credits } }); return; }
+		// The latest model request's prompt against the model's window (bin/agent/agent-runner.mjs countAttempt, agent-context-meter.js).
+		if (event?.type === "context") { set({ context: { tokens: event.tokens, window: event.window ?? null } }); return; }
+		// A steer joins the transcript only once the model's context took it (here, between the steps it came between).
+		if (event?.type === "steer.received" || event?.type === "steer.dropped") { const sent = steering.get(event.id); steering.delete(event.id); if (sent && event.type === "steer.received") setItems((items) => [...items, { kind: "user", id: newId(), text: sent.text, steered: true, attachments: sent.attachments }]); if (sent) onSteer?.(event); return; }
 		if (event?.type !== "error") return;
-		const failure = { code: event.code || "upstream", message: event.code === "unauthorized" ? keyRefusedMessage(event.message) : event.message || ERROR_COPY[event.code] || "The turn failed.", ...(Number.isFinite(event.status) ? { status: event.status } : {}) };
+		const failure = { code: event.code || "upstream", message: event.code === "unauthorized" ? keyRefusedMessage(event.message) : (event.message !== event.code && event.message) || ERROR_COPY[event.code] || event.message || "The turn failed.", ...(Number.isFinite(event.status) ? { status: event.status } : {}) };
 		if (activeTurn) activeTurn.failure = failure;
-		if (event.code === "rate_limit") { set({ rateLimit: { resetAt: event.resetAt || null, message: event.message || ERROR_COPY.rate_limit } }); return; }
+		if (event.code === "rate_limit") { set({ rateLimit: { resetAt: event.resetAt || null, message: event.message || ERROR_COPY.rate_limit, provider: typeof event.provider === "string" ? event.provider : null } }); return; }
 		if (event.code === "auth") { onAuthLost?.(); return; }
 		setItems((items) => {
 			// Only THIS turn's failed tool call can carry the failure. Attaching it to
@@ -1322,42 +1332,48 @@ export function createAgentChatStore({
 	const resetSession = () => {
 		abandonSupervisorNotes();
 		seenReceipts.clear();
-		settledActions.clear();
+		settledActions.clear(); steering.clear();
 		// Clearing the transcript also retires the server session: a cleared chat
 		// the model still remembers is the divergence this replaces.
-		set({ sessionId: newId(), turnId: null, items: [], pendingAttachments: [], rateLimit: null, lastPrompt: "", turnStartedAt: null, lastTurn: null });
+		set({ sessionId: newId(), turnId: null, items: [], pendingAttachments: [], rateLimit: null, context: null, lastPrompt: "", turnStartedAt: null, lastTurn: null });
+	};
+	// How a turn ends, sent or resumed: a turn the author already replaced owns none of this state. Its live sculpt
+	// sketch (the ghost clay of a call still being written) ends with it, whatever ended it. Nothing on screen is a failure.
+	const endTurn = (turn, signal, startedAt) => {
+		if (controller?.signal === signal) controller = null; if (activeTurn !== turn) return false; wireTurnId = null; clearSculptSketch();
+		for (const id of [...steering.keys()]) applyEvent({ type: "steer.dropped", id }); // unanswered (Stop, a lost stream): not shown as received
+		if (!turn.produced && !turn.failure && !signal.aborted) { turn.failure = { code: "no_output", message: "The turn ended without a response.", recovery: { action: "retry", retryAllowed: true } }; setItems((items) => [...items, { kind: "failure", id: newId(), failure: turn.failure }]); }
+		// The end state stays in the transcript with the turn's steps (agent-turn.js withTurnEnd).
+		const endedAt = clock(); activeTurn = null; const lastTurn = { status: signal.aborted ? "stopped" : turn.failure ? "failed" : "done", endedAt, durationMs: endedAt - startedAt, failure: turn.failure };
+		set({ streaming: false, turnStartedAt: null, lastTurn, items: withPlanEnd(withTurnEnd(state.items, lastTurn, newId), lastTurn.status) }); return true;
 	};
 	const restore = (transcript, sessionId = state.sessionId) => {
-		abandonSupervisorNotes(); seenReceipts.clear(); settledActions.clear();
+		abandonSupervisorNotes(); seenReceipts.clear(); settledActions.clear(); steering.clear();
 		const restoredReceiptIds = new Set();
 		// Each turn's plan card comes back under its prompt, settled by how the turn ended (agent-plan.js).
 		const restored = restoredPlans((Array.isArray(transcript) ? transcript : []).flatMap((item) => {
 			if (item?.kind === "user" || item?.kind === "assistant") {
 				const attachments = Array.isArray(item.attachments) ? item.attachments.filter((entry) => typeof entry?.dataUrl === "string") : [];
-				return [{ kind: item.kind, id: newId(), text: String(item.text ?? ""), ...(attachments.length ? { attachments } : {}) }];
+				return [{ kind: item.kind, id: newId(), text: String(item.text ?? ""), ...(attachments.length ? { attachments } : {}), ...(item.kind === "user" && typeof item.turnId === "string" ? { turnId: item.turnId } : {}) }];
 			}
 			if (item?.kind === "tool") return [{ kind: "tool", id: newId(), callId: newId(), name: item.name || "tool", label: item.label, ok: item.ok, elapsedMs: item.elapsedMs, status: item.ok === false ? "failed" : "done" }];
 			if (item?.kind === "receipt") {
 				if (item.receiptId && restoredReceiptIds.has(item.receiptId)) return [];
-				if (item.receiptId) {
-					restoredReceiptIds.add(item.receiptId);
-					seenReceipts.add(item.receiptId);
-				}
+				if (item.receiptId) { restoredReceiptIds.add(item.receiptId); seenReceipts.add(item.receiptId); }
 				return [{ kind: "receipt", id: `receipt:${item.receiptId || newId()}`, receiptId: item.receiptId, summary: item.summary || "Receipt", receipt: { status: "applied", warnings: [], verification: { status: "verified" } } }];
 			}
 			if (item?.kind === "failure") return [{ kind: "failure", id: newId(), failure: { code: item.code || "upstream", message: String(item.message || "The turn failed."), recovery: { action: "retry", retryAllowed: true } } }];
 			return item?.kind === "plan" ? [{ kind: "plan", id: newId(), steps: item.steps }] : [];
 		}));
 		const lastPrompt = [...restored].reverse().find((item) => item.kind === "user")?.text || "";
-		set({ sessionId, turnId: null, items: restored, rateLimit: null, lastPrompt, turnStartedAt: null, lastTurn: null, streaming: false });
+		set({ sessionId, turnId: null, items: restored, rateLimit: null, context: null, lastPrompt, turnStartedAt: null, lastTurn: null, streaming: false });
 		return restored;
 	};
 	return {
 		getState: () => state,
-		subscribe(listener) {
-			listeners.add(listener);
-			return () => listeners.delete(listener);
-		},
+		subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+		/** The edit on the last message (agent-edit.js): that message and everything after it leave the transcript. */
+		rewindTo: (itemId) => { const at = state.items.findIndex((item) => item.id === itemId); if (at !== -1) set({ items: state.items.slice(0, at), lastTurn: null, context: null }); },
 		setDraft: (draft) => set({ draft: String(draft ?? "") }),
 		/** A reply the main agent made on its own (task mode: a task ended while nobody was talking to it). */
 		note: (text) => { if (String(text ?? "").trim()) set({ items: [...state.items, { kind: "assistant", id: newId(), text: String(text) }] }); },
@@ -1387,30 +1403,29 @@ export function createAgentChatStore({
 				return;
 			}
 			const startedAt = clock();
-			const turn = { produced: false, failure: null, reviewable: false };
+			// opened: the sidecar answered the turn (its first frame at the latest), so this browser holds the session's owner cookie a steer needs
+			const turn = { produced: false, failure: null, reviewable: false }; turn.opened = new Promise((resolve) => { turn.open = resolve; });
 			activeTurn = turn;
 			// What the author attached to THIS message: an explicit list wins, the
-			// composer's pending pictures otherwise. Either way the composer is
-			// emptied with the draft, so the next turn cannot re-send them.
-			const attachments = (Array.isArray(options.attachments) ? options.attachments : state.pendingAttachments)
-				.slice(0, ATTACHMENT_MAX_COUNT)
-				.map(({ dataUrl, name }) => ({ dataUrl, ...(name ? { name } : {}) }));
+			// composer's pending pictures otherwise. A message from the composer
+			// empties it with the draft, so the next turn cannot re-send them; a
+			// queued message (options.queued) leaves what the author is writing now.
+			const attachments = messageAttachments(Array.isArray(options.attachments) ? options.attachments : state.pendingAttachments);
 			set({
 				lastPrompt: trimmed,
 				rateLimit: null,
 				turnId,
 				streaming: true,
-				draft: "",
-				pendingAttachments: [],
+				...(options.queued ? {} : { draft: "", pendingAttachments: [] }),
 				turnStartedAt: startedAt,
 				lastTurn: null,
-				items: [...state.items, { kind: "user", id: newId(), text: trimmed, attachFrame: Boolean(options.attachFrame), attachments }],
+				items: [...state.items, { kind: "user", id: newId(), text: trimmed, attachFrame: Boolean(options.attachFrame), attachments, ...(studio ? { turnId } : {}) }],
 			});
 			controller = new AbortController();
 			const signal = controller.signal;
 			try {
 				await transport.turn({
-					onTurnId: (id) => { wireTurnId = id; },
+					onTurnId: (id) => { wireTurnId = id; }, onOpen: (id) => { turn.open(); set({ openSession: id }); },
 					...(studio ? { surface: "studio", turnId, context } : {}),
 					sessionId: state.sessionId,
 					text: trimmed,
@@ -1419,59 +1434,49 @@ export function createAgentChatStore({
 					model: options.model,
 					effort: options.effort ?? undefined,
 					...(typeof options.supervisor === "boolean" ? { supervisor: options.supervisor } : {}), ...(options.tasks ? { tasks: true } : {}),
-				}, (event) => { sculptSketchFrame(event); applyEvent(event); }, signal);
+				}, (event) => { if (event?.type !== "done") turn.open(); sculptSketchFrame(event); applyEvent(event); }, signal);
 			} catch (error) {
 				if (!signal.aborted) applyEvent({ type: "error", code: "upstream", message: String(error?.message || error) });
 			} finally {
-				if (controller?.signal === signal) controller = null;
-				// A turn the author already replaced owns none of this state. Its live sculpt sketch
-				// (the ghost clay of a call still being written) ends with it, whatever ended it.
-				if (activeTurn === turn) {
-					wireTurnId = null; clearSculptSketch();
-					// Ending with nothing on screen is a failure, not a result.
-					if (!turn.produced && !turn.failure && !signal.aborted) {
-						turn.failure = { code: "no_output", message: "The turn ended without a response.", recovery: { action: "retry", retryAllowed: true } };
-						setItems((items) => [...items, { kind: "failure", id: newId(), failure: turn.failure }]);
-					}
-					const endedAt = clock();
-					activeTurn = null;
-					// The end state stays in the transcript with the turn's steps (agent-turn.js withTurnEnd).
-					const lastTurn = { status: signal.aborted ? "stopped" : turn.failure ? "failed" : "done", endedAt, durationMs: endedAt - startedAt, failure: turn.failure };
-					set({ streaming: false, turnStartedAt: null, lastTurn, items: withPlanEnd(withTurnEnd(state.items, lastTurn, newId), lastTurn.status) });
-					if (studio && turn.reviewable && options.supervisor === true && !signal.aborted) requestSupervisorNote(turnId);
-				}
+				turn.open(); if (endTurn(turn, signal, startedAt) && studio && turn.reviewable && options.supervisor === true && !signal.aborted) requestSupervisorNote(turnId);
 			}
+		},
+		// After a reload mid-turn: show its message again and follow the turn to its end (the next message waits, not busy).
+		async resume({ turnId, text } = {}) {
+			if (!studio || !turnId || state.streaming || typeof transport.attach !== "function") return;
+			const startedAt = clock(), turn = { produced: false, failure: null, reviewable: false }, shown = String(text ?? "").trim();
+			activeTurn = turn; wireTurnId = turnId; controller = new AbortController(); const { signal } = controller;
+			set({ turnId, streaming: true, openSession: state.sessionId, turnStartedAt: startedAt, lastTurn: null, ...(shown ? { lastPrompt: shown } : {}), items: resumedItems(state.items, shown, newId, turnId) });
+			try { await transport.attach(turnId, (event) => { sculptSketchFrame(event); applyEvent(event); }, signal); }
+			catch (error) { if (!signal.aborted) applyEvent({ type: "error", code: "upstream", message: String(error?.message || error) }); } finally { endTurn(turn, signal, startedAt); }
 		},
 		/** Steering the turn that is ALREADY running (#379). `send()` deliberately
 		 * returns early while streaming — a second turn would authorize a second
-		 * generation — so the composer's text goes to the running turn instead, as
-		 * a message the model sees before its next step. A refused steer leaves the
-		 * draft exactly where it is and reports the code it was refused with: the
-		 * author's words are never eaten by a turn that ended a moment earlier. */
+		 * generation — so the text goes to the running turn instead, as a message
+		 * the model sees before its next step. options.id names it (a queued row's
+		 * id, agent-queue.js); options.attachments, the composer's pictures
+		 * otherwise. Accepted means the turn's queue holds it: the message joins the
+		 * transcript only when the turn's stream says the model's context took it
+		 * (steer.received), and onSteer hears of it either way. A steer without an
+		 * id came from the composer and empties it. A refused steer leaves the
+		 * draft where it is and reports the code it was refused with. */
 		async steer(text, options = {}) {
 			const trimmed = String(text ?? "").trim();
-			if (!trimmed) return { ok: false, code: "EMPTY", message: "" };
-			if (!state.streaming || !wireTurnId || typeof transport.steer !== "function") {
-				return { ok: false, code: "NO_ACTIVE_TURN", message: STEER_ERROR_COPY.NO_ACTIVE_TURN };
-			}
-			const attachments = (Array.isArray(options.attachments) ? options.attachments : state.pendingAttachments)
-				.slice(0, ATTACHMENT_MAX_COUNT)
-				.map(({ dataUrl, name }) => ({ dataUrl, ...(name ? { name } : {}) }));
+			if (!trimmed) return { ok: false, code: "EMPTY", message: "" }; const ended = () => ({ ok: false, code: "NO_ACTIVE_TURN", message: STEER_ERROR_COPY.NO_ACTIVE_TURN }), turn = activeTurn;
+			if (!state.streaming || !wireTurnId || typeof transport.steer !== "function") return ended();
+			// A new chat's first turn: the owner cookie arrives with the sidecar's answer, so a steer before it would be refused.
+			await turn?.opened; if (activeTurn !== turn || !state.streaming || !wireTurnId) return ended();
+			const attachments = messageAttachments(Array.isArray(options.attachments) ? options.attachments : state.pendingAttachments), id = options.id ?? newId();
+			steering.set(id, { text: trimmed, attachments }); // before the answer: the turn may take it before the answer arrives
 			try {
-				await transport.steer(wireTurnId, { text: trimmed, ...(attachments.length ? { attachments } : {}) });
+				await transport.steer(wireTurnId, { text: trimmed, id, ...(attachments.length ? { attachments } : {}) });
 			} catch (error) {
+				steering.delete(id);
 				const code = typeof error?.code === "string" ? error.code : "upstream";
 				return { ok: false, code, message: STEER_ERROR_COPY[code] || String(error?.message || error) };
 			}
-			// An accepted steer is part of the conversation: it is shown in the
-			// transcript like any other thing the author said, and it empties the
-			// composer like any other send.
-			set({
-				draft: "",
-				pendingAttachments: [],
-				items: [...state.items, { kind: "user", id: newId(), text: trimmed, steered: true, attachments }],
-			});
-			return { ok: true, code: null, message: "" };
+			if (!options.id) set({ draft: "", pendingAttachments: [] });
+			return { ok: true, code: null, message: "", id };
 		},
 		stop() {
 			const running = [...state.items].reverse().find((item) => item.kind === "job" && !isTerminalJobState(item.state));

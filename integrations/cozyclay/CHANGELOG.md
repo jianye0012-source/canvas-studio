@@ -1,6 +1,477 @@
 # Changelog
 
-## Unreleased
+## 3.3.2 - 2026-11-26
+
+Pressing Motion on an empty stage no longer takes the Studio down, the shot camera gets a straight top-down angle and a choice of easing between its keys, a scene can hide its floor, and a host app gets a contract a release keeps.
+
+Fixes
+
+- Pressing Motion on a stage with no character took the whole Studio to the
+  "The studio hit a render error" screen. Since 3.3.0 a first open lands on
+  an empty stage, so a new project was one click away from it. Motion now
+  opens with the scene selected and the Details panel shows its hint.
+  (#1363)
+
+Camera
+
+- A shot camera can look straight down or straight up. Its keys and exact
+  framings reach a pitch of ±90°, from the gizmo, the numeric pitch field
+  and the agent. At that angle the key's yaw is the screen's up direction,
+  and a move to or from such a key turns the yaw along the shortest arc
+  instead of flipping. Flying the viewport and the follow camera keep their
+  85° limit. (#1338)
+- A camera key can say how the move that starts at it is eased: ease-in-out
+  (as before, and for every key that does not say), linear, ease-in or
+  ease-out. `shot.setKeyEase` sets it through the agent, the CLI or MCP, it
+  can be undone, and it stays with the key through cuts, shot copies and
+  saved projects. The timeline has no control for it yet. The "camera halts
+  here" warning lists a key only when the moves on both sides of it slow to
+  a stop. (#1335)
+
+Stage
+
+- A scene can hide the stage floor. With the stage field `floor` set to
+  false the lit deck is left out of the shot preview, captures and exports,
+  so a black sky with a back light gives a clean void instead of a grey band
+  where the deck catches the light. `stage.set` sets it through the agent,
+  the CLI or MCP. Shadows on the floor go with it. Scenes that do not set it
+  are unchanged. (#1339)
+
+Agent
+
+- An `object.path` patch accepts the route's speed curve (`timing`), in the
+  shape the scene context already reads back, so the agent or a script can
+  hold a prop at the start of its route or pause it midway. (#1329)
+
+Host apps
+
+- An app that launches the Studio and shows it in its own window (the
+  desktop app) has a versioned contract. With `COZYCLAY_DESKTOP=1` the
+  launcher prints one JSON ready line (`url`, `version`, `contract`,
+  `capabilities`) before the usual one, `GET /__cozyclay/contract` answers
+  the same facts, and the flags the host passes stay accepted from release
+  to release. When the host provides `window.cozyclayHost.projectFiles`,
+  Open, Save, Save As, the recent projects and the restore after a reload go
+  through the host's dialogs and files. In a browser nothing changes.
+  (#1320)
+- The capability `agent-brief`: a host hands the Studio's agent a job
+  through `window.cozyclayHost.agentBrief`, as text and up to four pictures,
+  optionally bound to a project it opened and saved to its file when the
+  turn is done. It reads back `started`, then exactly one of `done`,
+  `failed` or `stopped`. A brief runs as one plain turn in the Agent pane.
+  (#1324)
+
+Telemetry
+
+- An event the Studio sends while the analytics library is still loading is
+  held until it has loaded, where it was dropped. The one lost was the first
+  project of a session (`scene:created`), which 3.3.1 makes as the Studio
+  opens. With telemetry off nothing is held and nothing is sent. (#1365)
+- The agent's tool events say which family of Studio tool ran (`scene_read`,
+  `view`, `motion`, `planning`, `scripting`) where almost all of them said
+  `other`. Tool names, arguments and results are still not sent, and the
+  privacy page lists the new values. (#1365)
+
+## 3.3.1 - 2026-11-24
+
+The Studio opens straight on the stage with the Agent pane open, the Export menu lists three items, the model picker lists what the signed-in account can run, and depth exports keep the detail of the stage.
+
+Studio
+
+- The Studio opens straight on the stage. A first open (nothing stored for
+  the address yet) starts in a project of its own, "Untitled Project", in the
+  browser's store, instead of the project chooser. The chooser is File > New
+  and File > Open. A stored scene without a project opens as it is, and so
+  does the Studio when a workflow graph with nodes is stored. (#1346)
+- The hosted Studio's first visit (and `?try`) gets its project, its walking
+  character and the camera tutorial also when the visitor is first asked for
+  a language. Before, keeping the page's language left the tutorial without a
+  project or a character, and another language reloaded into the project
+  chooser. (#1346)
+- The Agent pane is open when the Studio opens. Folding it (Window > Agent,
+  Cmd/Ctrl+B, the pane's own button) is kept for the address, and so is
+  opening it again. On a window of 1000 px or narrower it starts folded, and
+  what is folded there is not kept. The pane that is open at start does not
+  take the keyboard: the stage's shortcuts work at once, and the composer has
+  the focus after a click in it, or once the pane is folded and opened again.
+  (#1346)
+
+Export menu
+
+- File > Export lists three items: Video (mp4), which renders the whole
+  timeline, Depth (mp4) and AI video reference (zip). The other formats (the
+  keyframe pack, one shot's video, the depth and normal stills, the
+  storyboard sheet, the OTIO cut list) follow them when the menu is opened
+  with Alt (Option) held. Cmd/Ctrl+E still exports the keyframe pack.
+  (#1349)
+
+Agent
+
+- The agent runs on pi 1.6.0, which adds the newer GPT, Claude and Gemini
+  models to the picker. (#1345)
+- With a ChatGPT sign-in, the ChatGPT list is the account's own lineup: the
+  models the backend names for that account, in its order (gpt-6-astra first
+  when it is among them), without its internal ones. Before, the list was pi's
+  whole catalogue plus those internal models, and a model the plan does not
+  include failed when a turn was sent. The first model of the list is one the
+  account can run. (#1345)
+- The refusal a model reads for a tool call with a wrong argument has pi
+  1.6.0's wording ("frame: expected >= 1" where it was "frame: must be >= 1").
+  (#1345)
+
+Depth exports
+
+- The depth video and the depth still keep the detail of the stage: the pass
+  is read back at half-float precision, the greys are shared out by distance
+  ratio and by where the shot's surfaces stand, and the relief inside one
+  surface (an arm in front of a torso, a moulding on a wall) is drawn larger.
+  The video's range is the shot's own, counted over its frames (about 120 of
+  them in a longer shot); a still's is its frame's. A renderer that cannot
+  read half floats back draws the greys by ratio alone over that range,
+  straight into 8 bits, without the relief. (#1344)
+- Smoke, fire, sparks, steam, dust, rain, snow and trails are in the depth
+  plate: each draws its own distance over what is behind it, mixed by its
+  opacity. Glass and other see-through materials do the same, by the share of
+  what is behind them the picture covers; before, a glass pane was a solid
+  wall. (#1344)
+- The depth and normal passes are no longer drawn through the toon look: the
+  depth plate has no ink lines. (#1344)
+- The edges of a depth plate are softened by 0.6 pixels (at 1080 lines).
+  (#1344)
+- `export.shotVideo` takes `depthCurve: "log"` (the default), `"linear"` or
+  `"inverse"`; the last two are drawn straight into 8 bits over the shot's
+  own range. (#1344)
+
+Fixes
+
+- The viewport bar's lens value is a short number again ("28mm"). It printed
+  every digit of the shot camera's lens ("28.000000000000004mm" for a 28 mm
+  prime that came back from the field of view with an arithmetic tail,
+  "24.44391231902759mm" for a lens between primes), which ran out over the
+  viewport and the Details panel, and the lens menu marked no prime for a
+  lens with a tail. The camera readouts write the lens to a tenth of a
+  millimetre. The bar writes whole millimetres: a lens between primes
+  (27.8 mm) reads "28mm" there, and the menu marks no prime for it. (#1347)
+
+## 3.3.0 - 2026-11-24
+
+Body motion from a motion writer model and a deterministic engine, a cube figure, lights as aimed objects, a rail camera you turn by hand, the toon look by default, and an AI video reference export. Storyboard projects are removed.
+
+Motion
+
+- The Studio agent makes body motion with one tool, `motion`: a second model,
+  the motion writer, writes a scene and a motion spec, a deterministic engine
+  makes every frame and measures foot slide, contacts, balance and bodies
+  inside props, and the writer reads those measures and contact sheets before
+  the take is installed. (#1342)
+- The motion writer runs on the Studio's own sign-ins: `claude-opus-5-5` at
+  effort medium when a sign-in in the model picker offers it, otherwise the
+  model the conversation runs on. A sign-in that lists that model and then
+  refuses it for the account is asked once per conversation; the
+  conversation's model writes that motion and the later ones. The tool's
+  answer names the writer. (#1342)
+- A motion can move any object of the scene, and the object keeps its kind:
+  a moved object rides a track of the take of the character that handles it,
+  and an object one bone carries for the whole motion is attached to that
+  bone. A follow-up request starts from the scene and spec of the motion
+  before it. (#1342)
+- A motion keeps each character's scale and tint. (#1342)
+- The old motion engine (`motion.compile`, QA, motion tasks) comes back with
+  `COZYCLAY_MOTION_ENGINE=old`. MCP and `cclay live` keep `motion.compile`,
+  which now compiles for the body a character stands as (its scale times the
+  figure look's body), so a new character at scale 1 compiles as it is. (#1342)
+- In an installed package a motion run's record, contact sheets and clip go to
+  the user's CozyClay config folder (`motion-runs/`, the newest 20 runs kept),
+  never into the package folder. (#1342)
+
+Studio
+
+- Rig characters are drawn as the cube figure in place of the X Bot mesh: a
+  cube head with two bar eyes, a torso of three boxes and thin limbs, 1.70 m
+  tall at scale 1. `COZYCLAY_FIGURE=block` at launch draws the block figure
+  instead. An X Bot character from an older scene keeps its world size: its
+  scale reads about 1.06 where it was 1. (#1342)
+- The toon look (flat two-tone shading with black lines) is on by default in
+  the viewport and in every capture and export. Turn it off under Show in the
+  viewport toolbar; the choice is kept per browser. (#1342)
+- Untinted rig characters after the first get their own muted clay colours.
+  (#1342)
+- The fly speed pill: click to type a speed; arrows and the wheel over the
+  pill step it. (#1342)
+
+Agent
+
+- The Agent panel queues messages typed during a running turn; Send now hands
+  one to the running turn at its next step. The last message can be edited
+  and sent again in its place. (#1342)
+- A new turn's first request also marks the point before the previous prompt
+  for the provider's prompt cache, and the conversation budget counts the
+  tokens the provider reports. (#1342)
+- The agent can set the timeline length and edit an attached object in its
+  carrier's frame. (#1342)
+
+Lights
+
+- A directional light joins point and spot lights, and a light's aim can
+  follow a character or an object every frame. Up to 16 lights are drawn and
+  4 cast shadows (was 2). (#1342)
+- `verify_result` lighting tells per subject which lights reach it, from which
+  side, its cast shadow and its lit-to-shade ratio. (#1342)
+- A new project's key light opens at brightness 0.9 (was 4), and fog pulls
+  the haze range in evenly (it fell off squared), so at fog 0.3 haze begins at
+  39 m, not 28 m. (#1342)
+
+Camera
+
+- Turn a rail camera by hand, switch its follow off, and pick which
+  characters a shot follows. Aim recording turns 7 degrees per 100 px (was
+  18.3) through a 0.2 s smoothing filter; both are settings. (#1342)
+- E on a selected rail mark gives pan and tilt rings that turn the camera at
+  that place of the rail. (#1342)
+- A rail camera rides the speed the shot asks: the default 4 m/s dolly cap is
+  gone, so it no longer holds a camera behind a fast subject. An older
+  scene's stored default of 4 reads as no cap. (#1342)
+- The Top-View pans (middle-drag, right-drag, or Alt-drag for a touchpad) and
+  zooms about the pointer (wheel), also while a stroke is held. Home returns
+  to the framing it opened with, and a scene larger than the view opens
+  framed whole. (#1342)
+
+Export
+
+- Export → AI video reference (zip) renders the shots (first shot start to last shot end) as a
+  reference video for Seedance-style models: in every 4 frames one light
+  mosaic frame and three heavy-blur frames, restarting at each shot. The
+  model keeps the camera, cuts and blocking but not the mannequin look.
+  (#1340)
+- The AI video reference zip also carries `prompt.txt`: the cast as
+  reference images, each shot's camera move read from its camera keys or
+  rail, the cuts, and the place you type in the export dialog.
+  `scene-facts.json` holds the same facts as data. (#1341)
+
+Fixes
+
+- Planes within one depth step of each other, such as a plane on the floor,
+  get a depth offset against flicker. (#1342)
+
+Changes for existing projects
+
+- Storyboard projects are removed. A saved storyboard file opens as a new,
+  unsaved animation project; saving it never writes to the original file. The
+  Storyboard (PNG) shot-grid export of animation projects stays. (#1342)
+- Still shots, the saved pose library and the X Bot / Y Bot choice are
+  removed. A new character is the X Bot rig; a Y Bot from an older project
+  keeps its mesh, and the Rig panel offers one button to change it. Hand
+  posing stays. (#1342)
+- Under the new motion engine the Studio agent works with rig characters
+  only: it does not add capsule figures, and project cast styles apply only
+  with `COZYCLAY_MOTION_ENGINE=old`. It no longer calls the old motion, pose
+  and IK actions itself; the editor, MCP and `cclay live` keep them. Capsule
+  figures you add stay. (#1342)
+- Scenes saved by 3.3.0 store shot documents at version 8. CozyClay 3.2.3
+  opens them without their shots. (#1342)
+
+Known limits
+
+- A motion takes minutes: the motion writer writes, compiles and reads its
+  result several times before the take is installed.
+- A hand can end a few centimetres off the drawn part it reaches for or
+  holds.
+- A prop a motion adds that is under 5 cm tall comes in as a plain flat box.
+- The motion tool animates rig characters only. Capsule figures and imported
+  rigs stand as they are.
+- The motion writer's tokens do not show in the Agent panel's usage and cost.
+- The motion writer was run for real with `claude-opus-5-5` through a
+  CLIProxyAPI sign-in. The other sign-ins, and the fallback to the
+  conversation's model, were checked against stand-in servers only.
+- Under the toon look a shadow's edge is hard whatever the stage's shadow
+  softness.
+- The AI video reference prompt names a camera move by where the camera
+  travels: a hand turn of a rail camera is not described, and a shot has no
+  action sentence.
+- In Pose mode a rig character laid down with Body contact on rests about
+  4 cm into the floor: the contact is measured on the rig's own mesh, which
+  the cube and block figures hide. Lift the hips by hand.
+- Through MCP and `cclay live` the heights a motion spec keys by hand are
+  metres for the body the character stands as. A spec written for the X Bot's
+  own body (hips at 1.03 m) does not fit a new character under the cube
+  figure (0.97 m); skills and named poses fit the body themselves.
+
+## 3.2.3 - 2026-11-20
+
+Install without a terminal on Windows and macOS, a dark Studio with a guided first visit, Auto Pose, camera roll and per-part motion keys, plus cast and stability fixes.
+
+Install
+
+- On Windows the Install dialog leads with one download, `CozyClay-Setup.exe`;
+  the Node.js and terminal steps stay one click away. (#1188)
+- On macOS the Install dialog leads with one download, `CozyClay.dmg`: a
+  signed, notarized app that opens the Studio in its own window, with no
+  Terminal. `cozyclay.org/install.sh` stays for a one-line install. (#1190)
+- The landing page has one Install action; its dialog asks which computer the
+  Studio goes on. Phones are not offered Install. (#1281, #1189)
+- An install that starts in the hosted Studio says `--via playground`, and an
+  installer start keeps its `installer` label on first launch. (#1183, #1258)
+
+Studio
+
+- The Studio starts in the dark theme. A theme already chosen in Preferences
+  is kept. (#1163)
+- A first visit to the hosted Studio opens on a ready stage with a character
+  on it, then the eight-step camera tutorial in English, 한국어 or 简体中文.
+  `npx cozyclay` keeps the project chooser. (#1159, #1161)
+- Sample motions in the Motion tab: one click installs a walk or a flip on the
+  selected character and plays it, with no agent. (#1156)
+- Fix and tell, Annotate, pose keys, lying poses and a more compact shell.
+  (#1131)
+- The Auto Pose tool. (#1257)
+- Import a character file on another rig and play it on its own bones. (#1150)
+- A large world scale for full-size exterior scenes. (#1143)
+- A smaller gizmo, a repaired Add menu, and a narrow Studio, HUD and install
+  commands that stay usable. (#1182, #1264)
+
+Camera
+
+- Roll the shot camera about its lens axis. (#1144)
+- Record mouse aim while the rail plays. (#1262)
+- Rail readouts stay in sync with the rendered camera. (#1265)
+
+Motion
+
+- Keys are fixed per body part and merge, the Plan card folds, and the beat
+  board is gone. (#1219)
+- The v4 motion engine, on CozyClay's agent loop and on Claude Code, as
+  opt-in Studio Agent models; body motion runs as a motion task designed
+  first. (#1134, #1138)
+- Rig templates compile specs on non-Mixamo rigs; flight physics with FLOAT,
+  DROP and SPIN checks; `fix.self` repairs arms through the body. (#1148,
+  #1149, #1154)
+- QA measures fingers, palms, knees and torso against the floor and objects,
+  and stops at the first take a viewer would accept; trivial spec slips are
+  corrected instead of refusing the spec. (#1113, #1114, #1126)
+
+Agent
+
+- A task card names the model it runs on. (#1165)
+- A visible thing is built as one detailed sculpt, looked at and copied.
+  (#1169)
+- On the hosted Studio the Agent panel shows four ready-made requests and an
+  Install button instead of a server error. (#1156)
+- The generation prompt describes every visible character, keeps the real
+  aspect ratio, and no longer invents a location or look. (#1213, #1238)
+- Tool descriptions and prompts match the code. (#1228, #1239)
+
+Export
+
+- Choose the video export's pixel size. (#1145)
+
+Cast and shots
+
+- Every cast member keeps a stable identity; shots persist and follow the
+  named cast and frame groups. (#1244)
+- A character whose model fails to load falls back to the proxy figure, and
+  aborted model loads recover. (#1197, #1284)
+
+Fixes
+
+- Opening a project normalizes stored objects instead of throwing; save
+  records a written file as saved. (#1196, #1207)
+- A task that touched more than 100 objects finishes normally; an edit no
+  longer rebuilds every sculpt. (#1167, #1168)
+- Fixed a Pin-tool scrub update loop and uncaught pointer and sculpt errors.
+  (#1195, #1186)
+- The unfinished Workflow entry points are hidden. (#1211)
+
+Site
+
+- The hosted Studio (`cozyclay.org/app/`) records masked PostHog session
+  replays: inputs and the agent transcript are masked, the 3D viewport is
+  sampled at 2 fps, and no console logs or network contents are kept. The
+  landing page and the npm package never record. The privacy page says so.
+  (#1321)
+
+Other
+
+- Vite 8.3.8 and patched dependency resolutions; MCP validation on Zod 4.
+  (#1176, #1266, #1291)
+
+## 3.2.2 - 2026-11-07
+
+A patch for the motion compiler and the agent: faster compiles, holds and automatic legs, arms, gaze and tempo, steadier agent turns, and depth exports that read right.
+
+Export
+
+- A depth video whose frames show no empty background (a backdrop that fills
+  the frame, a closed corridor) keeps a readable range instead of going all
+  black. (#1090)
+- Rigged characters render in their current pose in depth frames and
+  `blocking-depth.mp4`, not in the T-pose. (#1094)
+- `export.shotVideo` takes `passKind: "depth"` and `depthCurve: "inverse"` for
+  an inverse-distance depth curve that keeps close-up relief. (#1096)
+
+Camera
+
+- A rail camera aimed at a rising or falling object follows its height each
+  frame instead of one shot-average height. (#1095)
+- Agents can hold camera framing. (#1027)
+
+Motion
+
+- Compiles run about 1.5x faster: `pose()`'s bone edits run in WebAssembly,
+  with takes the same bit for bit. (#1088)
+- Holds, and automatic tempo, knee poles, foot heading, free-arm swing and
+  gaze (`set.look`) where the keys leave them out. (#1080, #1081, #1082)
+- Two-hand carries hold a box from below at its sides; letting go and
+  throwing no longer jump.
+- Repair and retime run by default, with QA-guarded key thinning. (#1006)
+- MotionBricks transition fills (opt-in), a native mode and the Smart
+  Primitive runner, with named poses and fills that hold up in scenes with
+  objects. (#1008, #1017, #1023)
+- A grasp out of reach says so, instead of blaming the grip. (#1066)
+
+Agent
+
+- Provider failures retry gateway 5xx and honour Retry-After; usage limits
+  read as quota; sign-in waits say why they stopped. (#1043, #1044)
+- Refusals name the failing field. (#1042)
+- Tasks: a main turn that makes no progress ends, the watchdog waits on
+  running tools and names a model that did not answer, finished tasks undo
+  after a scene round trip, and paused tasks resume instead of refusing.
+  (#1002, #1004, #1010, #1051, #1056, #1058)
+- Every edited turn is checked, with pictures and relations given to the
+  model, and the panel shows the review and the context used. (#1000, #1030)
+- A handled prop is staged within reach. (#1066)
+- Camera, blocking and review previs workflow. (#1014)
+
+Studio
+
+- Contact sheets show a character behind scene bodies. (#1024)
+- An empty cast is allowed; cancelling the file picker no longer counts as a
+  refusal. (#1041)
+- Pose mode picks the one rigged character; the first-success guide starts
+  with Add a character. (#1047, #1048)
+- Fixed a playback update-depth loop (React #185) and crashes under page
+  translation. (#1045, #1046)
+- A slab resting on the deck no longer z-fights with it. (#1075)
+
+CLI
+
+- `cclay live save --out file.cclayproject [--force]` saves the open project
+  from the terminal. (#1072)
+- `cclay live capture --frames A-B --out-dir DIR` renders a run of frames in
+  one session. (#1074)
+- `live run`, `cmd` and `tool` take `--args-file <path>` or `--args -`
+  (stdin), so large payloads such as GLB data URLs fit. (#1092)
+- `asset.import` decodes meshopt and Draco compressed GLB. (#1092)
+- `inspect` pages entities with `--limit` and `--cursor`; live captures from
+  a hidden Studio tab are refused. (#1070, #1071)
+- `shot.set` camera keys document `framing.yaw` and `pitch` as radians.
+  (#1093)
+
+Other
+
+- three.js 0.187; MCP SDK 1.32.2.
+- Landing page: the shot and the way in on the first screen, a sharper hero
+  take, and a daily GitHub star count.
 
 ## 3.2.1 - 2026-10-28
 

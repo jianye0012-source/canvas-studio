@@ -10,18 +10,21 @@ const SOURCE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs"]);
 const ROOT_DEPENDENCY_ALLOWLIST = Object.freeze({
 	// the anthropic-subscription lane spawns the official Claude Code binary through the SDK
 	"@anthropic-ai/claude-agent-sdk": "^0.3.306",
-	"@earendil-works/pi-agent-core": "1.4.0",
-	"@earendil-works/pi-ai": "1.4.0",
-	"@earendil-works/pi-codemode": "1.4.0",
+	"@earendil-works/pi-agent-core": "1.6.0",
+	"@earendil-works/pi-ai": "1.6.0",
+	"@earendil-works/pi-codemode": "1.6.0",
+	// the tool schemas the pi agents take (bin/agent/schema-to-typebox.mjs, src/lowvis/pi/harness.mjs) and the check of
+	// a tool call's arguments (bin/agent/pi-tools.mjs); pinned exactly
+	typebox: "1.3.27",
 	// JSON Schema → Zod shape for the SDK's tool() definitions (SDK already depends on zod)
 	zod: "^4.6.7",
 });
 const MCP_DEPENDENCY_BASELINE = Object.freeze({
-	"@modelcontextprotocol/sdk": "^1.30.0",
+	"@modelcontextprotocol/sdk": "^1.32.2",
 	// compare_sculpt decodes JPEG references locally (#730); BSD-3-Clause, no dependencies.
 	"jpeg-js": "0.4.4",
 	ws: "^8.19.0",
-	zod: "^3.25.0",
+	zod: "^4.6.7",
 });
 const RAW_EXECUTION_ARGUMENTS = new Set([
 	"code", "script", "scriptpath", "expression", "eval", "command", "cmd", "shell", "source",

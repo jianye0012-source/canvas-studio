@@ -10,10 +10,11 @@ import { exportFailureCode } from "../src/analytics.js";
 import { startExportAttempt } from "../src/export-attempt.js";
 import { keyframePackEntries, keyframePackName } from "../src/keyframe-pack.js";
 import { buildZip } from "../src/zip-store.js";
-import { depthRangeFromFrames } from "../src/render-passes.js";
+import { DEPTH_SOFTEN_PX, PLATE_PASS, createDepthSoftener, depthRangeOverFrames, surveyedDepthPlate } from "../src/depth-plate.js";
 import { shotsFixture } from "./bus/shots-fixture.mjs";
 import { isProxyFigure } from "../src/scenes.js";
 import { placementAt } from "../src/root-path.js";
+import { applyCameraOptics } from "../src/camera-optics.js";
 const shotFixtures = [];
 import { readStudioFunction } from "./bus/verify-domain-modules.mjs";
 
@@ -75,6 +76,7 @@ function fixture() {
 	const shots = [0, 1].map((index) => ({ id: `shot-${index}`, name: `Shot ${index}`, startFrame: index * 2, endFrame: index * 2 + 1,
 		cameraKeys: [{ id: `key-${index}`, frame: index * 2, framing: structuredClone(framing) }] }));
 	const deps = {
+		useEffect: () => {}, applyCameraOptics,
 		useRef: (value) => ({ current: value }),
 		useState: (value) => {
 			const index = hookIndex++;
@@ -91,7 +93,7 @@ function fixture() {
 		ikStatesRef: { current: new Map() }, snapshotIkKeys: (state) => new Map(state.keys),
 		captureCurrentFraming: () => ({ pos: { x: camera.position.x, y: camera.position.y, z: camera.position.z }, yaw: 0.2, pitch: 0.1, fovDeg: camera.fov }),
 		shotCamRef: { current: camera }, rigs: { cast: rig },
-		look: { current: { yaw: 0.2, pitch: 0.1 } }, propFrameRef: { current: 42 }, propSyncRef: { current() {} }, syncCarriers() {}, syncPhysicsOverlays() {},
+		look: { current: { yaw: 0.2, pitch: 0.1, roll: 0 } }, propFrameRef: { current: 42 }, propSyncRef: { current() {} }, syncCarriers() {}, syncPhysicsOverlays() {},
 		captureRef: { current: { createExportCapture(output) {
 			const target = { output: { ...output }, disposed: false, scene: {}, render() {
 				const state = { camera: camera.position.toArray(), fov: camera.fov, scale: rig.scale.toArray(), placement: parent.position.toArray(), bone: bone.position.toArray() };
@@ -136,7 +138,7 @@ function fixture() {
 		keyLight: {}, shot: { focalMm: 35 }, fovDeg: 35, shotAspectKey: "16:9",
 		shotCaptureMeta: ({ shot, size }) => ({ title: shot.name, size }), buildShotPrompt: () => "fixture prompt",
 		keyframePackEntries, keyframePackName, buildZip,
-		renderPass: (capture) => capture.render(), depthRangeFromFrames, DEPTH_RANGE_M: 40,
+		renderPass: (capture) => capture.render(), depthRangeOverFrames, surveyedDepthPlate, PLATE_PASS, createDepthSoftener, DEPTH_SOFTEN_PX,
 		result: { frame: "data:image/png;base64,AA==", frameB: "data:image/png;base64,AQ==", partColours: { arm: "red" } },
 		setResult: (update) => { deps.result = update(deps.result); },
 		async exportOffscreenVideo(options) {
@@ -261,6 +263,19 @@ await staticShot.api.retryExport();
 assert.equal(staticShot.deps.shotWrites, 1, "static-shot preflight is not repeated on retry");
 assert.equal(staticShot.deps.undoCount, 1);
 assertPaired(staticShot, 2);
+
+// A named output size renders and encodes at that size; odd sides round down to even for H.264.
+const sized = fixture();
+await sized.api.exportShotVideo({ output: { width: 737, height: 416 } });
+assert.equal(sized.status.phase, "completed");
+assert.deepEqual([sized.encodes[0].width, sized.encodes[0].height], [736, 416]);
+assert.deepEqual(sized.targets.map((target) => target.output), [{ width: 736, height: 416 }]);
+await sized.api.retryExport();
+assert.deepEqual([sized.encodes[1].width, sized.encodes[1].height], [736, 416], "Retry keeps the requested size");
+const preset = fixture();
+await preset.api.exportShotVideo();
+assert.deepEqual([preset.encodes[0].width, preset.encodes[0].height], [2, 2], "without a size the shot aspect's preset still decides");
+console.log("PASS a video export renders at a requested output size, else at the shot preset");
 
 const depth = fixture();
 const beforeDepth = editor(depth);

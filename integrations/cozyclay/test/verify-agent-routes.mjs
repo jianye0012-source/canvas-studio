@@ -7,7 +7,10 @@ import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai";
 import { createAgentHandler as createHandler, REASONING_EFFORTS } from "../bin/agent/agent-routes.mjs";
 import { scriptedEditorJobs } from './fixtures/scripted-editor-jobs.mjs';
+import { withTurnControls } from './fixtures/turn-controls.mjs';
 function createAgentHandler(options) {
+  // every fake editor answers the turn transaction a Studio turn runs in
+  if (typeof options.liveHub?.command === 'function') withTurnControls(options.liveHub);
   if (!options.studioRuntime?.admit) return createHandler(options);
   const { studioRuntime, ...rest } = options;
   const liveHub = scriptedEditorJobs(rest.liveHub, studioRuntime);
@@ -16,7 +19,6 @@ function createAgentHandler(options) {
 import { createFakeModel } from "./fixtures/fake-model.mjs";
 // A scratch config dir: the author's own ~/.config/cozyclay (a stored key) must not change what these routes list.
 process.env.COZYCLAY_CONFIG_DIR = mkdtempSync(join(tmpdir(), "cozyclay-agent-routes-config-"));
-import { agentJobHub } from './bus/agent-job-hub.mjs';
 // Route job doubles speak the editor job contract. The held-HTTP cases below
 // additionally execute the production command bus.
 
@@ -285,11 +287,11 @@ try {
 	await new Promise((resolve) => realCatalogServer.close(resolve));
 }
 {
-	// Sign-in state and the codex live-catalog merge, exercised directly against
+	// Sign-in state and the codex live list, exercised directly against
 	// providers.mjs: an env-configured provider reports signedIn/authSource, and
-	// openai-codex merges codex.listModels() with the static pi catalog only for
-	// models the catalog does not already have — astra stays catalog-sourced
-	// (and therefore keeps its full pi effort list) and still sorts first.
+	// openai-codex lists what codex.listModels() names. A model the pi catalog
+	// has stays catalog-sourced (astra keeps its full pi effort list) and astra
+	// still sorts first; a model the catalog lacks is added from the live list.
 	const { listAgentModels, resolveModel, resolveEffort, EFFORT_LEVELS } = await import("../bin/agent/providers.mjs");
 	const previousAnthropicKey = process.env.ANTHROPIC_API_KEY;
 	process.env.ANTHROPIC_API_KEY = "x";
@@ -305,11 +307,12 @@ try {
 		assert.equal(anthropic.authSource, "env", "the api key came from the environment");
 		const codexProvider = result.providers.find((provider) => provider.id === "openai-codex");
 		assert.equal(codexProvider.signedIn, true);
-		assert.equal(codexProvider.models[0].id, "gpt-6-astra", "the catalog's astra still sorts first after the merge");
-		assert.ok(codexProvider.models[0].efforts.includes("max"), "the merge never overwrites astra's catalog entry with codex's live one");
+		assert.equal(codexProvider.models[0].id, "gpt-6-astra", "the catalog's astra, which the live list names too, still sorts first");
+		assert.ok(codexProvider.models[0].efforts.includes("max"), "astra keeps its catalog entry, not codex's live one");
 		assert.ok(codexProvider.models.some((model) => model.id === "gpt-9-nova"), "a live model the pi catalog does not know about still appears");
 		assert.equal(codexProvider.models.find((model) => model.id === "gpt-9-nova").key, "openai-codex/gpt-9-nova");
-		console.log("PASS openai-codex merges the live catalog with the pi catalog, keeping astra first");
+		assert.deepEqual(codexProvider.models.map((model) => model.id), ["gpt-6-astra", "gpt-5", "gpt-9-nova"], "the list is what the live list names: astra first, the rest in its order, no other catalog model");
+		console.log("PASS openai-codex lists what the live list names, a catalog model with its catalog entry, astra first");
 
 		await assert.rejects(resolveModel("anthropic/does-not-exist", { models: base }), (error) => error.code === "UNKNOWN_MODEL", "resolveModel rejects an unknown model id with the frozen error code");
 		const { getSupportedThinkingLevels } = await import("@earendil-works/pi-ai");
@@ -642,7 +645,7 @@ console.log("agent routes verified");
 }
 
 {
-	const { pickWorkspace, createAgentTools, agentToolSchemas, SYSTEM_PROMPT } = await import("../bin/agent/agent-tools.mjs");
+	const { pickWorkspace, createAgentTools, SYSTEM_PROMPT } = await import("../bin/agent/agent-tools.mjs");
 	const mapping = { describe_workflow: "get_graph", add_workflow_node: "add_node", update_workflow_node: "update_node", remove_workflow_node: "remove_node", connect_workflow_nodes: "connect", disconnect_workflow_nodes: "disconnect", run_workflow: "run_workflow", set_workflow_node_output: "set_node_output", focus_workflow_node: "focus_node" };
 	const details = [
 		{ handle: "studio", meta: { commands: ["capture_framing_png", "import_asset"] } },
@@ -661,7 +664,7 @@ console.log("agent routes verified");
 	assert.throws(() => pickWorkspace(onlyStudio, ["get_graph"], "workflow"), /workflow/i, "never route graph commands to a sole Studio");
 	const session = { signal: new AbortController().signal, images: new Map(), codex: fakeCodex };
 	const tools = createAgentTools({ liveHub: hub, session, emit: () => {} });
-	const schemas = agentToolSchemas(tools);
+	const schemas = tools;
 	const names = schemas.map((tool) => tool.name);
 	for (const removed of ["capture_blocking_frame", "render_from_frame", "place_image_in_scene"]) assert.equal(names.includes(removed), false, `${removed} is removed from the tool list`);
 	assert.ok(names.includes("describe_workflow") && names.includes("add_reference_node"), "describe_workflow and add_reference_node are exposed");
@@ -1277,7 +1280,6 @@ async function bounded16q(promise, label, ms = 10000) {
 	// test exactly as it would hang the real harness. This is the cooperative
 	// contract every real provider and Studio tool already follows.
 	const startedDetached = Promise.withResolvers();
-	const { fauxAssistantMessage: detachedFauxMessage, fauxText: detachedFauxText } = await import("@earendil-works/pi-ai/providers/faux");
 	const detachedFaux = createFakeModel();
 	detachedFaux.fauxProvider.setResponses([(context, options) => new Promise((resolve, reject) => {
 		const signal = options?.signal;

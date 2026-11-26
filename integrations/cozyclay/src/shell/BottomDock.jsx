@@ -3,7 +3,6 @@ import { useStudioPlaybackFrame, useStudioShell } from "./studio-shell-context.j
 import { logStore } from "./log-store.js";
 import "./dock.css";
 import LibrarySlot from "./LibrarySlot.jsx";
-import BoardSlot from "./BoardSlot.jsx";
 import LensScrub from "./lens-scrub.jsx";
 import { ko } from "../locale.js";
 import Timeline, { timelineTake } from "../motion/timeline.jsx";
@@ -52,24 +51,16 @@ function readDockHeight() {
 }
 
 const DOCK_TABS = [
-	{ key: "board", label: () => ko("Board", "보드") },
 	{ key: "animation", label: () => ko("Animation", "애니메이션") },
 	{ key: "assets", label: () => ko("Assets", "에셋") },
 ];
 
-/** The dock's tabs for a project mode: a storyboard works in panels
- * (Board | Assets), an animation in the Sequencer (Animation | Assets). */
-function dockTabsFor(previsMode) {
-	const keys = previsMode === "storyboard" ? ["board", "assets"] : ["animation", "assets"];
-	return keys.map((key) => DOCK_TABS.find((entry) => entry.key === key));
-}
-
-/** Animation | Assets (Board | Assets in a storyboard): all stay mounted, so
- * switching keeps the Sequencer's scroll and zoom and the Library's folder
- * and search. Any stored tab the mode does not offer opens its first tab. */
+/** Animation | Assets: both stay mounted, so switching keeps the Sequencer's
+ * scroll and zoom and the Library's folder and search. A stored tab the dock
+ * does not offer (an old "board") opens its first tab. */
 export default function BottomDock({ tab: requestedTab = "animation", onTabChange, embedded = false }) {
-	const { previsMode } = useStudioShell(), liveFrame = useStudioPlaybackFrame();
-	const tabs = embedded ? dockTabsFor(null) : dockTabsFor(previsMode);
+	const liveFrame = useStudioPlaybackFrame();
+	const tabs = DOCK_TABS;
 	const tab = tabs.some((entry) => entry.key === requestedTab) ? requestedTab : tabs[0].key;
 	const {
 		motion, waypointMode, craneSelectedIndex,
@@ -81,7 +72,7 @@ export default function BottomDock({ tab: requestedTab = "animation", onTabChang
 		bodyContact, shots, shotAspectKey, activeShotIdx, railDraw,
 		pathDraw, pathTarget, setPathDraw, setRailDraw, setWorkspaceLayout,
 		changeSceneObject, timingTokenRef, beginSceneTransaction, endSceneTransaction, railCurve,
-		posing, ikAddKeyframe, ikDeleteKeyframe, setRangePinSelection, setIkEditTool,
+		posing, ikAddKeyframe, ikDeleteKeyframe, ikMoveKeyframe, setRangePinSelection, setIkEditTool,
 		setBodyContact, setToast, setFootSnap, setTlFrame, advanceFrame,
 		stepFrame, cameraPreviewEndRef, manualCameraOverrideRef, setTlPlaying, toggleWaypointMode,
 		setWaypointMode, selectActiveCharacterInHierarchy, setActiveWaypointId, setPendingWaypointFrame, removeWaypoint,
@@ -203,7 +194,6 @@ export default function BottomDock({ tab: requestedTab = "animation", onTabChang
 				))}
 			</div>}
 			{!embedded && <LibrarySlot active={tab === "assets"} />}
-			{!embedded && previsMode === "storyboard" && <BoardSlot active={tab === "board"} />}
 			<div className="bottom-timeline" hidden={tab !== "animation"}><PoseKeyBar frame={liveFrame} frameCount={tlFrameCount} poseMode={Boolean(ikMode)} keyedFrames={ikFrames ?? []} characterId={characters[activeCharIndex]?.id ?? null} />
 			<Timeline
 				frame={liveFrame}
@@ -291,6 +281,7 @@ export default function BottomDock({ tab: requestedTab = "animation", onTabChang
 			shotCutDisabled={!!posing || ikMode || waypointMode}
 			onIkKeyframeAdd={ikAddKeyframe}
 			onIkKeyframeRemove={ikDeleteKeyframe}
+			onIkKeyframeMove={ikMoveKeyframe}
 			onPinSelect={(id) => { setRangePinSelection(id); setIkEditTool("pin"); }}
 			onBodyContactToggle={() => {
 				setBodyContact((v) => {
@@ -340,13 +331,14 @@ export default function BottomDock({ tab: requestedTab = "animation", onTabChang
 					if (workflowMode !== "camera") selectWorkflowMode("camera");
 				}}
 				onCameraBlockChange={(patch, shotId) => {
-					if (patch.mode === "follow") syncActiveCameraFraming();
 					const nextPatch = patch.mode === "rail" && activeCamera.railFollow?.mode === "off"
 						? { ...patch, railFollow: defaultRailRange(activeShotDuration) }
 						: patch;
 					// The embedded dolly graph edits the shot it sits in; the
 					// camera bar above edits the selected one.
 					changeActiveCamera(nextPatch, shotId);
+					// Measured once the shot is a follow shot: on a rail a hand turn is the head's, not follow framing.
+					if (patch.mode === "follow") syncActiveCameraFraming();
 					if (patch.mode === "follow" && !motion) {
 						setToast(ko(
 							"Follow rides the subject's motion — without a loaded motion the camera composes a static frame",
@@ -375,7 +367,7 @@ export default function BottomDock({ tab: requestedTab = "animation", onTabChang
 			</div>
 			{/* Embeds keep their own shot monitor in the viewport (.vp-shot-preview);
 			    the card is styled for the full studio only. */}
-			{(tab === "animation" || tab === "board") && !embedded && <ShotCard />}
+			{tab === "animation" && !embedded && <ShotCard />}
 		</div>
 	);
 }
@@ -393,7 +385,7 @@ const CARD_RATIOS = [
  * into the stage canvas under `.vp-shot-preview`, which sits over the card's
  * frame slot (see glass.css); the card holds its title, lens, ratio and look-through. */
 function ShotCard() {
-	const { activeShot, shot, fovDeg, shotsDomain, shotAspectKey, runStudioAction, enterShotLook, exitShotLook, lookThroughShot, tlFps, embedMode } = useStudioShell();
+	const { activeShot, shot: sceneShot, fovDeg, shotsDomain, shotAspectKey, runStudioAction, enterShotLook, exitShotLook, lookThroughShot, tlFps, embedMode, cameraReadoutAt } = useStudioShell(), shot = cameraReadoutAt(useStudioPlaybackFrame()).shot ?? sceneShot;
 	if (embedMode) return null;
 	const frames = activeShot && Number.isFinite(activeShot.startFrame) && Number.isFinite(activeShot.endFrame)
 		? `${activeShot.startFrame}–${activeShot.endFrame} · ${((activeShot.endFrame - activeShot.startFrame + 1) / (tlFps || 24)).toFixed(1)}s`
@@ -403,7 +395,7 @@ function ShotCard() {
 			<header className="dock-shot-head">
 				<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 5.75A1.5 1.5 0 0 1 3.5 4.25h6A1.5 1.5 0 0 1 11 5.75v4.5a1.5 1.5 0 0 1-1.5 1.5h-6A1.5 1.5 0 0 1 2 10.25z M11 7l3-1.5v5L11 9" /></svg>
 				<span className="dock-shot-title">{ko("Shot Camera", "샷 카메라")}</span>
-				<LensScrub fovDeg={fovDeg} sensorHeightMm={shot?.usedSensorHeightMm} shotsDomain={shotsDomain} disabled={!shot} />
+				<LensScrub fovDeg={shot?.focalMm && shot.usedSensorHeightMm ? (2 * Math.atan(shot.usedSensorHeightMm / (2 * shot.focalMm)) * 180) / Math.PI : fovDeg} sensorHeightMm={shot?.usedSensorHeightMm} shotsDomain={shotsDomain} disabled={!shot} />
 			</header>
 			{/* While the main view looks through this camera the card has nothing
 			    of its own to show (the preview pass is off): it says where the

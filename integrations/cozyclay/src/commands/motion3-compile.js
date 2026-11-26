@@ -8,12 +8,15 @@
 // runs the same code on the same plain inputs), whichever worker runs it.
 import { runCompileJob } from "../motion3/compile-job.js";
 import { StudioProtocolError } from "../studio-agent-protocol.js";
+import { specRefusalPath } from "../motion3/schema/fields.js";
+import { workerName } from "../lowvis/studio/figure.js";
 
 const POOL = 2;
 
 /** A job error (or a worker's serialized one) as the Studio's protocol error when it carries a code. */
 function rethrow(error) {
-	if (error?.code && !(error instanceof StudioProtocolError)) throw new StudioProtocolError(error.code, error.message);
+	// A refused spec names its top-level field for studio:refused (command-bus-telemetry.js); the message is unchanged.
+	if (error?.code && !(error instanceof StudioProtocolError)) throw new StudioProtocolError(error.code, error.message, error.code === "INVALID_ARGUMENT" ? { path: specRefusalPath(error.message), rule: "spec" } : {});
 	if (error instanceof Error) throw error;
 	throw Object.assign(new Error(error?.message ?? String(error)), { name: error?.name ?? "Error" });
 }
@@ -22,7 +25,7 @@ const local = job => { try { return runCompileJob(job); } catch (error) { return
 /** The browser's module worker, or null where there is none. */
 function browserWorker() {
 	if (typeof Worker !== "function") return null;
-	return new Worker(new URL("../motion3/compile-worker.js", import.meta.url), { type: "module", name: "motion-compile" });
+	return new Worker(new URL("../motion3/compile-worker.js", import.meta.url), { type: "module", name: workerName("motion-compile") });
 }
 
 // What the editor's compiles are doing, for the panel: { running: [meta], waiting: [meta] } (meta: { taskId, characterId }).
@@ -44,6 +47,7 @@ export function createCompileRunner({ spawn = browserWorker, size = POOL } = {})
 	const fallBack = reason => {
 		dead = true;
 		warning ??= `The motion compile worker stopped (${reason}); compiling on the main thread, which is slower and blocks the editor while it runs.`;
+		console.warn("[cozyclay] motion compile worker stopped", warning);
 		const orphans = [...slots.flatMap(slot => (slot.job ? [slot.job] : [])), ...queue.splice(0)];
 		for (const slot of slots.splice(0)) slot.worker?.terminate?.();
 		for (const { job, resolve, reject } of orphans) { try { resolve(local(job)); } catch (error) { reject(error); } }

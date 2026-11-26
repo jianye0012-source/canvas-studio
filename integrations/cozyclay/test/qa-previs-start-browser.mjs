@@ -1,15 +1,17 @@
 #!/usr/bin/env node
-// Browser QA for the start screen's project mode (#649, #654). The New
-// view offers Storyboard / Animation above the templates; the choice lands on
-// the project and survives a reload. No URL flag is needed.
+// Browser QA for the start screen's project defaults (#649, #654). The start
+// screen offers no mode or cast picker: every new project is an Animation
+// project with the Hybrid cast, and both survive a reload. No URL flag is needed.
 // Run through tools/qa-browser.mjs with QA_URL pointing at `/app/`.
 
 import { mkdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SCENES_STORAGE_KEY, PREVIOUS_SCENES_STORAGE_KEY } from "../src/scenes.js";
 
 const port = Number(process.env.CDP_PORT || 9222);
-const out = process.env.QA_OUT || "/Users/yun/CozyClay/.omo/evidence/previs-modes/previs-modes-r1/shots";
+// The default is the OS scratch directory: a path on one machine stopped this suite at its first line on every other (#1362).
+const out = process.env.QA_OUT || join(tmpdir(), "cozyclay-qa-previs-start");
 const SESSION_KEY = "cozyclay.project-session.v1";
 await mkdir(out, { recursive: true });
 const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
@@ -99,16 +101,19 @@ const setInput = (selector, value) => evaluate(`(() => {
 })()`);
 const click = (selector) => evaluate(`(() => { const node = document.querySelector(${JSON.stringify(selector)}); if (!node) return false; node.click(); return true; })()`);
 const session = () => evaluate(`JSON.parse(localStorage.getItem(${JSON.stringify(SESSION_KEY)}) || "null")`);
-const templateIds = () => evaluate("[...document.querySelectorAll('.v2-start-template-grid [data-template-id]')].map((node) => node.dataset.templateId)");
-const checkedMode = () => evaluate("document.querySelector('[data-testid=start-previs-mode] [aria-checked=true]')?.dataset.previsMode ?? null");
+const castStyle = () => evaluate("window.__cozyclayProject.export('qa').then((text) => JSON.parse(text).castStyle)");
+const noPicker = "!document.querySelector('[data-testid=start-previs-mode]') && !document.querySelector('[data-testid=start-cast-style]')";
 // Fresh first launch: no project session, no scenes.
 const firstLaunch = async () => {
+	const studioUrl = await evaluate("location.href");
+	// The Studio saves its scene as it leaves, and a stored scene is no first open: clear from another page of the origin.
+	{ const left = waitForPageLoad(); await send("Page.navigate", { url: `${await evaluate("location.origin")}/favicon.ico` }); await left; }
 	await evaluate(`(() => {
 		localStorage.removeItem(${JSON.stringify(SESSION_KEY)});
 		localStorage.removeItem("${SCENES_STORAGE_KEY}");
 		localStorage.removeItem("${PREVIOUS_SCENES_STORAGE_KEY}");
 	})()`);
-	await reload();
+	{ const back = waitForPageLoad(); await send("Page.navigate", { url: studioUrl }); await back; }
 };
 const editorOpen = "!document.querySelector('.v2-start-screen') && !!document.querySelector('.timeline')";
 
@@ -122,71 +127,62 @@ const expect = (name, condition, detail = "") => {
 
 await firstLaunch();
 
-// --- New screen, Animation (default) -------------------------------------
+// --- First launch: straight to the editor, in a project of its own ------------
+expect("a first launch goes straight to the editor", await waitFor(`${editorOpen} && !!localStorage.getItem('cozyclay.project-session.v1')`));
+const launched = await session();
+expect("the first launch's project has a name and no previs mode", typeof launched?.name === "string" && launched.name.length > 0 && launched?.previsMode === undefined, JSON.stringify(launched));
+expect("the first launch's project casts Hybrid", (await castStyle()) === "hybrid");
+
+// --- The empty first stage: every mode tab is safe to press (#1362) -----------
+for (const key of ["4", "3", "5", "2", "1"]) await click(`[data-mode-key="${key}"]`);
+expect("every mode tab keeps the empty stage up", await waitFor("document.querySelector('.app')?.dataset.workflowMode === 'scene' && !document.querySelector('.crash-screen')", 5000), await evaluate("document.body.innerText.slice(0, 200)"));
+
+// --- File > New on it: name + Create only -------------------------------------
+await click("[data-testid=menu-file]");
+expect("File shows New on the first launch's project", await waitFor("!!document.querySelector('[data-testid=menubar-new]')"));
+await click("[data-testid=menubar-new]");
 expect("the start screen renders", await waitFor("!!document.querySelector('.v2-start-screen.startup [data-testid=start-create]')"));
-expect("the mode control is above the template grid", await waitFor("(() => { const mode = document.querySelector('[data-testid=start-previs-mode]'); const grid = document.querySelector('.v2-start-template-grid'); return !!mode && !!grid && mode.getBoundingClientRect().bottom <= grid.getBoundingClientRect().top; })()"));
-const options = await evaluate("[...document.querySelectorAll('[data-testid=start-previs-mode] [role=radio]')].map((node) => node.dataset.previsMode + ':' + node.querySelector('strong').textContent)");
-expect("the control offers exactly Storyboard and Animation", options.join("|") === "storyboard:Storyboard|animation:Animation", options.join("|"));
-expect("Animation is selected by default", (await checkedMode()) === "animation");
-const animationTemplates = await templateIds();
-const plusCardSelected = "!!document.querySelector('[data-testid=start-new-project-card].selected')";
-expect("Animation offers no bundled starters, only the + card", animationTemplates.length === 0 && await evaluate(plusCardSelected), animationTemplates.join(","));
+expect("the start screen offers no mode or cast picker", await evaluate(noPicker));
+expect("the start screen offers Open a saved project", await evaluate("!!document.querySelector('[data-testid=start-open-project-card]')"));
 await setTheme("dark");
-await screenshot("task-18-new-animation-dark.png");
+await screenshot("start-simple-dark.png");
 await setTheme("light");
-await screenshot("task-18-new-animation-light.png");
+await screenshot("start-simple-light.png");
 
-// --- Storyboard: the grid keeps only the + card -----------------------------
-await click("[data-previs-mode=storyboard]");
-expect("Storyboard becomes the checked mode", await waitFor("document.querySelector('[data-previs-mode=storyboard]')?.getAttribute('aria-checked') === 'true'"));
-const storyboardTemplates = await templateIds();
-expect("Storyboard shows no template cards", storyboardTemplates.length === 0, storyboardTemplates.join(","));
-expect("the + card stays the selected blank entry", await evaluate(plusCardSelected));
-const storyboardName = await evaluate("document.querySelector('[data-testid=start-project-name]')?.value");
-expect("the blank name is kept through the switch", storyboardName === "Untitled Project", storyboardName);
-// The narrowest desktop the fixed 232px + 340px columns leave room for.
-await send("Emulation.setDeviceMetricsOverride", { width: 1024, height: 768, deviceScaleFactor: 1, mobile: false });
-const narrow = await evaluate("(() => { const mode = document.querySelector('[data-testid=start-previs-mode]').getBoundingClientRect(); const main = document.querySelector('.v2-start-main').getBoundingClientRect(); return { mode: [mode.left, mode.right], main: [main.left, main.right] }; })()");
-expect("the mode control fits the main column at 1024px", narrow.mode[0] >= narrow.main[0] && narrow.mode[1] <= narrow.main[1], JSON.stringify(narrow));
-await screenshot("task-18-new-storyboard-1024-light.png");
-await send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
-await screenshot("task-18-new-storyboard-light.png");
-await setTheme("dark");
-await screenshot("task-18-new-storyboard-dark.png");
-await screenshot("task-18-previs-modes.png");
-await setTheme("light");
-
-// --- Storyboard + the + card + name -> Create -------------------------------
-await click("[data-testid=start-new-project-card]");
-await setInput('[data-testid="start-project-name"]', "qa649_storyboard");
+// The theme switches above re-render the screen; type only once it has settled,
+// and press Create only once the typed name is in the field.
+await waitFor("false", 300);
+await setInput('[data-testid="start-project-name"]', "qa649_first");
+expect("the typed name is in the field", await waitFor("document.querySelector('[data-testid=start-project-name]')?.value === 'qa649_first'"));
 await click("[data-testid=start-create]");
 expect("Create opens the editor", await waitFor(editorOpen));
-const storyboardSession = await session();
-expect("the new project is a storyboard project", storyboardSession?.name === "qa649_storyboard" && storyboardSession?.previsMode === "storyboard", JSON.stringify(storyboardSession));
+const firstSession = await session();
+expect("the new project is stored without a previs mode", firstSession?.name === "qa649_first" && firstSession?.previsMode === undefined, JSON.stringify(firstSession));
+expect("the new project casts Hybrid", (await castStyle()) === "hybrid");
 
 await reload();
 expect("reload reopens the editor", await waitFor(editorOpen));
 await evaluate("window.__cozyclay.sceneObject.place({ kind: 'cube', x: 0, z: 0 })");
 expect("an edit after reload lands", await waitFor("!!document.querySelector('.project-dirty-dot')"));
 const reloadedSession = await session();
-expect("reload keeps previsMode storyboard", reloadedSession?.name === "qa649_storyboard" && reloadedSession?.previsMode === "storyboard", JSON.stringify(reloadedSession));
+expect("reload keeps the project", reloadedSession?.name === "qa649_first", JSON.stringify(reloadedSession));
+expect("reload keeps the Hybrid cast", (await castStyle()) === "hybrid");
 
-// --- File > New: Animation + the + card -> animation -------------------------
+// --- File > New: same screen, same defaults ----------------------------------
 await evaluate("window.confirm = () => true");
 await click("[data-testid=menu-file]");
 expect("File shows New", await waitFor("!!document.querySelector('[data-testid=menubar-new]')"));
 await click("[data-testid=menubar-new]");
-expect("File > New reuses the start screen with the mode control", await waitFor("!!document.querySelector('.v2-start-screen [data-testid=start-previs-mode]')"));
-expect("File > New starts on Animation", (await checkedMode()) === "animation");
-await click("[data-testid=start-new-project-card]");
-expect("the + card is the selected entry", await waitFor(plusCardSelected));
+expect("File > New reuses the start screen", await waitFor("!!document.querySelector('.v2-start-screen [data-testid=start-create]')"));
+expect("File > New offers no mode or cast picker", await evaluate(noPicker));
 await setInput('[data-testid="start-project-name"]', "qa649_animation");
-expect("the animation name is entered", await waitFor("document.querySelector('[data-testid=start-project-name]')?.value === 'qa649_animation'"));
+expect("the name is entered", await waitFor("document.querySelector('[data-testid=start-project-name]')?.value === 'qa649_animation'"));
 await click("[data-testid=start-create]");
 const animationOpened = await waitFor(`${editorOpen} && (document.querySelector('.project-menu-trigger')?.textContent || '').includes('qa649_animation')`, 30000);
-expect("the animation project opens in the editor", animationOpened, await evaluate("JSON.stringify({ start: !!document.querySelector('.v2-start-screen'), menu: document.querySelector('.project-menu-trigger')?.textContent, toast: document.querySelector('[role=status]')?.textContent, name: document.querySelector('[data-testid=start-project-name]')?.value, selected: document.querySelector('.v2-start-template.selected')?.dataset.templateId })"));
+expect("the project opens in the editor", animationOpened, await evaluate("JSON.stringify({ start: !!document.querySelector('.v2-start-screen'), menu: document.querySelector('.project-menu-trigger')?.textContent, toast: document.querySelector('[role=status]')?.textContent, name: document.querySelector('[data-testid=start-project-name]')?.value })"));
 const animationSession = await session();
-expect("the new project is an animation project", animationSession?.name === "qa649_animation" && animationSession?.previsMode === "animation", JSON.stringify(animationSession));
+expect("the File > New project is stored", animationSession?.name === "qa649_animation", JSON.stringify(animationSession));
+expect("the File > New project casts Hybrid", (await castStyle()) === "hybrid");
 
 ws.close();
 if (failures > 0) {

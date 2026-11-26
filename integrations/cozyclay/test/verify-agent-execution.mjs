@@ -8,9 +8,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHttpTransport } from "../src/workflow/agent-client.js";
 import { readStoredTaskMode } from "../src/workflow/task-board.js";
-import { createAgentHandler } from "../bin/agent/agent-routes.mjs";
+import { createAgentHandler as createHandler } from "../bin/agent/agent-routes.mjs";
+import { withTurnControls } from "./fixtures/turn-controls.mjs";
+// every fake editor answers the turn transaction a Studio turn runs in
+const createAgentHandler = options => { if (typeof options.liveHub?.command === "function") withTurnControls(options.liveHub); return createHandler(options); };
 import { createCanvasCommands } from "../src/workflow/canvas-commands.js";
 import { noteTurnDraft } from "../src/workflow/agent-turn-telemetry.js";
+import { stagePrompt } from "../src/workflow/prompt-telemetry.js";
 import { sanitizeProps } from "../src/analytics.js";
 import { closePostTurnWindow, noteEditGesture } from "../src/post-turn-edits.js";
 
@@ -98,6 +102,25 @@ for (const [status, failureCode] of [[401, "auth"], [429, "rate_limited"], [503,
 	await transport.turn(request, () => {});
 	assert.deepEqual(names(captured), ["agent:turn_requested", "agent:turn_failed"]);
 	assert.equal(captured[1].props.failure_code, failureCode);
+}
+// #1043: a failed turn names its provider and, for openai-compatible only, the server address's class; never the address.
+for (const [model, endpoint, expected] of [
+	["openai-compatible/qwen", "local", { provider: "openai-compatible", endpoint: "local" }],
+	["openai-compatible/qwen", "http://192.168.0.7:1234/v1", { provider: "openai-compatible", endpoint: "unknown" }],
+	["google/gemini-flash", "hosted", { provider: "google" }],
+]) {
+	for (const status of [503, 200]) {
+		const captured = [];
+		stagePrompt("make the camera orbit", { model, endpoint });
+		const transport = createHttpTransport({ capture: (event, props) => keep(captured, event, props), fetchImpl: async (_url, init) => new Response(status === 200 ? encode(terminal(JSON.parse(init.body).turn_id)) + encode({ type: "done" }) : "private response", { status }) });
+		await transport.turn(request, () => {});
+		const end = captured.find(({ event }) => event.startsWith("agent:turn_") && event !== "agent:turn_requested");
+		const origin = { provider: end.props.provider, endpoint: end.props.endpoint };
+		if (status === 200) assert.deepEqual(origin, { provider: undefined, endpoint: undefined }, `${model}: a succeeded turn carries no origin`);
+		else assert.deepEqual(Object.fromEntries(Object.entries(origin).filter(([, value]) => value !== undefined)), expected, `${model} ${endpoint}`);
+		if (status !== 200) assert.deepEqual(sanitizeProps("agent:turn_failed", end.props), end.props, "the analytics schema keeps every property");
+		assert.ok(!JSON.stringify(captured).includes("192.168"), "never the address");
+	}
 }
 {
 	const captured = [];
@@ -966,9 +989,18 @@ for (const [drafts, expected] of [
 	assert.equal(sent[0].provider, "anthropic");
 	for (const props of sent) assert.deepEqual(sanitizeProps("agent:prompt_sent", props), props, "the payload is closed values only");
 	assert.ok(!JSON.stringify(captured).includes(SENTINEL) && !JSON.stringify(captured).includes("door"), "no prompt text or word in any payload");
+	// #1043: an openai-compatible prompt carries its server address's class, never the address; other providers none.
+	assert.equal(Object.hasOwn(sent[0], "endpoint"), false, "no endpoint class outside openai-compatible");
+	for (const [endpoint, expected] of [["local", "local"], ["lan", "lan"], ["hosted", "hosted"], [undefined, "unknown"], ["http://10.0.0.5:1234", "unknown"]]) {
+		prompts.stagePrompt("hello", { via: "typed", model: "openai-compatible/qwen", endpoint });
+		const props = prompts.takePrompt("a".repeat(32));
+		assert.equal(props.endpoint, expected, `endpoint ${endpoint} -> ${expected}`);
+		assert.deepEqual(sanitizeProps("agent:prompt_sent", props).endpoint, expected, "the class survives the closed schema");
+	}
+	assert.equal(sanitizeProps("agent:prompt_sent", { endpoint: "http://127.0.0.1:11434" }).endpoint, undefined, "an address never passes");
 	restorePrompts();
 }
-console.log("PASS agent:prompt_sent: one per send on the real transport turn, its turn id, similarity/gap/prev_outcome, and no text anywhere");
+console.log("PASS agent:prompt_sent: one per send on the real transport turn, its turn id, similarity/gap/prev_outcome, the openai-compatible endpoint class, and no text anywhere");
 console.log("PASS agent:turn_summary: counts, refusal_top, stale_retry, authored, first_tool, cancel_phase, drafts trend and clearing, one per turn");
 console.log("PASS post-turn window: opened at finish with the analytics turn id, closed by the next turn's start");
 

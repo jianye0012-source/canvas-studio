@@ -2,6 +2,8 @@ import { defineConfig } from "vite";
 import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 import { readFileSync } from "node:fs";
+import { poserModelFlag } from "./src/poser/build-plugin.js";
+import { launchValue } from "./src/lowvis/studio/figure.js";
 
 const { version } = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
 
@@ -15,6 +17,9 @@ const dracoFile = name => new URL(`./node_modules/three/examples/jsm/libs/draco/
 export default defineConfig({
 	define: {
 		"import.meta.env.VITE_COZYCLAY_LIVE_PORT": JSON.stringify(livePort),
+		// the look rig characters are drawn in, read at the dev server's start (src/lowvis/studio/figure.js launchValue: "" is
+		// the default look, "block" the block figure); a page served by bin/cozyclay.mjs is handed its launch's value instead
+		"import.meta.env.VITE_COZYCLAY_FIGURE": JSON.stringify(launchValue(process.env)),
 	},
 	// Root-absolute on purpose: the site has its own apex domain, and the studio
 	// is served from "/app/" while its public assets stay at the root. A relative
@@ -54,6 +59,7 @@ export default defineConfig({
 				});
 			},
 		},
+		poserModelFlag(),
 		// The landing shows the release it was built from (#903).
 		{
 			name: "cozyclay-landing-version",
@@ -83,7 +89,7 @@ export default defineConfig({
 						res.end();
 						return;
 					}
-					if (!oauthUrl && /^\/oauth\/(start|status|logout)$/.test(path)) {
+					if (!oauthUrl && /^\/oauth\/(start|status|logout|cancel)$/.test(path)) {
 						res.statusCode = 503;
 						res.setHeader("content-type", "application/json; charset=utf-8");
 						res.end(JSON.stringify({ error: "oauth sidecar is not configured" }));

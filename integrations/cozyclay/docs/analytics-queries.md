@@ -18,16 +18,15 @@ handoff. A handoff does not prove that the operating system saved the file.
 - `attempt_id`: fresh random 32-character lowercase hexadecimal value, held only
   by that attempt. It is not persisted or derived from an installation, filename,
   URL, path, prompt, scene content or message/request identifier.
-- `export_kind`: `video`, `depth_video`, `frame`, `keyframe_pack`, `contact_sheet`,
-  `panel_pack`, `animatic`, `animation_project`, `workflow_send`, `storyboard`,
-  `render_pass`, `otio`. `contact_sheet` through `workflow_send` arrived with
-  storyboard projects (#653); older data only holds the first four.
-  `storyboard` (storyboard PNG), `render_pass` (depth + normal PNGs) and `otio`
+- `export_kind`: `video`, `depth_video`, `frame`, `keyframe_pack`, `workflow_send`,
+  `storyboard`, `render_pass`, `otio`. Rows from older builds can also hold
+  `contact_sheet`, `panel_pack`, `animatic` and `animation_project`.
+  `storyboard` (the shot-grid PNG), `render_pass` (depth + normal PNGs) and `otio`
   (OpenTimelineIO timeline) arrived with the analytics hygiene release; before
   it those exports emitted no attempt at all, so their earlier rows are
   **unknown, not 0**.
-- `format`: `mp4` for video/depth video, `png` for frames, storyboards and render
-  passes, `zip` for packs, `cclayproject` for an animation project file, `otio`
+- `format`: `mp4` for video/depth video, `png` for frames, the shot-grid PNG and
+  render passes, `zip` for packs, `cclayproject` (older rows only), `otio`
   for an OpenTimelineIO file.
 - `surface`: `studio`, `workflow`, `embed`; this identifies the initiator, not
   the renderer. Workflow owns its iframe request through its own download
@@ -67,8 +66,8 @@ lifecycle numerator. A multi-file export emits several.
 
 `export:menu_opened` fires once each time the Export flyout opens, by click or
 keyboard; reopening counts again and there is no session cap. `surface` is
-`studio` or `embed`, `mode` is `animation` or `storyboard`, `shots` the shot
-count bucket (panels in a storyboard; `0`, `1-3`, `4-10`, `gte11`), and
+`studio` or `embed`, `shots` the shot count bucket (`0`, `1-3`, `4-10`,
+`gte11`; rows from older builds also carry a `mode`), and
 `webcodecs` is `true` when the window has both `VideoEncoder` and `VideoFrame`.
 That is a synchronous presence check, not `isConfigSupported`, so `true` does
 not promise an MP4 export will encode. For menu -> attempt conversion, join
@@ -385,7 +384,7 @@ No production PostHog query was executed to establish this document.
 
 The actual call paths do not provide an own-project-reopen event contract:
 
-- `src/App.jsx::applyProject` calls `openScene` and unconditionally emits
+- `src/domains/scenes.js::applyProject` calls `openScene` and unconditionally emits
   `project:opened {age_bucket}`. `openProject` (file picker),
   `openProjectByHandle` (recents/folder), and `restoreStoredProject` (automatic
   stored-handle restore when permission is granted, or an explicit restore
@@ -403,7 +402,7 @@ The actual call paths do not provide an own-project-reopen event contract:
   events (`local`, then its starter or launch source); do not subtract
   or pair them by loose timestamps to infer ownership.
 - Hosted Playground startup is different: `src/main.jsx::boot` fetches and
-  stashes its bundled preset before mounting; `src/app-stage.jsx::loadSceneStartup`
+  stashes its bundled preset before mounting; `src/stage-startup-defaults.js::loadSceneStartup`
   consumes it without reading saved local scenes and without `applyProject`.
   Its automatic initial preset is not a project reopen. Normal cached scene
   startup likewise need not emit `project:opened`.
@@ -879,7 +878,8 @@ Historical `feature:used(mcp_connected)` is a connection signal, not work.
 | `agent:turn_requested` | `surface`, `turn_id` |
 | `agent:tool_executed` | `turn_id`, `tool_category`, `outcome`, `duration_bucket` |
 | `agent:turn_succeeded` | `turn_id`, `duration_bucket` |
-| `agent:turn_failed`, `agent:turn_cancelled` | `turn_id`, `duration_bucket`, `failure_code` |
+| `agent:turn_failed` | `turn_id`, `duration_bucket`, `failure_code`, `provider`, `endpoint` (openai-compatible only) |
+| `agent:turn_cancelled` | `turn_id`, `duration_bucket`, `failure_code` |
 | `agent:result_applied` | `turn_id` |
 | `mcp:tool_requested` | `request_id`, `tool_category`, `tool_name` |
 | `mcp:tool_executed` | `request_id`, `tool_category`, `tool_name`, `outcome`, `duration_bucket` |
@@ -900,6 +900,9 @@ Historical `feature:used(mcp_connected)` is a connection signal, not work.
   `stale_scene`, `capability_missing`, `busy`, `invalid_request`, `unknown`.
   Never raw error
   prose.
+- `agent:turn_failed` `provider`: the `agent:prompt_sent` provider of the same
+  turn (absent when the turn had no staged prompt). `endpoint`: `local`, `lan`,
+  `hosted` or `unknown`, for `openai-compatible` only (#1043).
 - New Agent codes, split out of `upstream` and `auth` in the analytics hygiene
   release (split by `app_version`; older rows keep the coarse code):
   - `key_refused`: the model provider rejected the key or credentials
@@ -936,7 +939,13 @@ Historical `feature:used(mcp_connected)` is a connection signal, not work.
   `bin/agent/agent-failure-codes.mjs` (kept identical by
   `test/verify-agent-execution.mjs`).
 - Agent `tool_category`: `workflow_read`, `workflow_write`, `workflow_run`,
-  `frame_capture`, `image_generate`, `scene_write`, `other`.
+  `frame_capture`, `image_generate`, `scene_write`, `scene_read`, `view`,
+  `motion`, `planning`, `scripting`, `other`.
+  The Studio families (`scene_read`, `view`, `motion`, `planning`,
+  `scripting`) exist from 3.3.2; before it those calls are `other`, so
+  compare by `app_version`. `motion` is the motion tool (`motion`,
+  `motion_result`, `design_motion`). `run_action` stays `other` because its
+  kind depends on its action.
 - MCP `tool_category`: `read`, `camera`, `scene_write`, `prompt_authoring`,
   `frame_capture`, `motion_generate`, `motion_apply`, `project_io`, `other`.
   `studio_commands` counts as `read`; `studio_run` stays `other` because its
@@ -982,9 +991,7 @@ MCP reports only into the selected connected editor through sanitized live
 frames; the browser revalidates, deduplicates and calls the existing analytics
 and opt-out gate. There is no server analytics client. Memory-only sessions,
 ambiguous/stale workspace routing and disconnected stages are unobserved, not
-zero use. Reconnecting never replays execution telemetry. `generate_motion`
-can complete by queuing work; application requires a later acknowledged
-installation.
+zero use. Reconnecting never replays execution telemetry.
 Same-value mutations and rolled-back batches do not count as applied. A
 partially applied failed batch can have a failed execution and an application.
 State comparisons stay inside the local hub; if a handler has no prior
@@ -1103,7 +1110,7 @@ contract report it: before that release the new events are **unknown, not 0**.
 | Do people use bone-level pose control? | `feature:used` `name = 'pose_edit'` (a real pose change) and `app:session_ended.pose_edit_bucket` |
 | Where does it break? | `app:error` (type, source, bundle file + line/column) |
 | Can their machine run it? | `device:profile` (GPU vendor/class, WebGL, CPU/memory, frame-rate bucket) |
-| Where did the install come from? | `install:first_launch.heard_from` (`site`, `playground` from `--via`) |
+| Where did the install come from? | `install:first_launch.heard_from` (`site`, `playground`, `installer` from `--via`) |
 | What are they making, with whom? | `survey:use_case` (`use_case`, `team`) |
 | Are they on the newest release? | `update_status` on every npm event |
 
@@ -1111,7 +1118,8 @@ contract report it: before that release the new events are **unknown, not 0**.
 
 - `feature:used name = 'pose_edit'` meant **a pose saved to the library** before
   this release. From this release it means a real pose change through the
-  semantic boundary, and library saves are `pose_save`. Split by `app_version`;
+  semantic boundary, and library saves were `pose_save` (the library is gone; no
+  new `pose_save` rows). Split by `app_version`;
   never add the two eras together.
 - `action_count_bucket` no longer counts passive signals (`motion:backend_state`,
   `app:error`, `device:profile`). Earlier npm sessions always counted at least
@@ -1185,7 +1193,8 @@ ORDER BY people DESC
 ## Install source, use case and update status
 
 ```sql
--- Install source: blank means the prompt was skipped and no --via was given.
+-- Install source: site, playground or installer can come from --via.
+-- Blank means no accepted source was supplied and the prompt was skipped.
 SELECT coalesce(properties.heard_from, '(blank)') AS source, uniq(distinct_id) AS installs
 FROM events
 WHERE event = 'install:first_launch' AND JSONExtractRaw(properties, 'internal_qa') != 'true'
@@ -1218,6 +1227,7 @@ event is **unknown, not 0**. Exclude `internal_qa = true` with
 | Event | Property | Values | Source | Cap |
 | --- | --- | --- | --- | --- |
 | `app:render_crash` | `error_type` | The `app:error` label set (`Error`, `TypeError`, ..., `DOMException`, `non_error`, `other`) | `ErrorBoundary.componentDidCatch` (`src/error-boundary.jsx`): the crash screen is showing | 2 per session |
+| `app:render_crash`, `app:error` | `locale` | `en`, `ko`, `zh`, `other` | The studio UI language (`uiLocale`, `src/analytics-values.js`): the stored Settings choice, `en` when none. Not the browser language, so a crash under browser translation (English UI, `zh-*` browser) splits from one in the in-app Chinese UI (#1046). Builds before this release have no `locale`: unknown, not `en` | with the event |
 | `app:gl_lost` | `kind` | `unavailable`, `context_lost` | `unavailable`: the one-time mount check behind the WebGL-unavailable overlay (`src/use-webgl-available.js`). `context_lost`: `ContextLossGuard` (`src/stage-canvas-rigs.jsx`) on `webglcontextlost` | 1 per kind per session |
 
 - No message, stack, component stack, file name or renderer string leaves.
@@ -1297,9 +1307,9 @@ Exclude `internal_qa = true` with
 | | `max_catchup` | `1`, `2`, `3-5`, `gte6` | The most frames one tick caught up | |
 | | `fps`, `speed` | `12`, `24`, `30`, `60`, `other`; `0.5`, `1`, `2`, `other` | The take's frame rate and the playback speed | |
 | | `measured_fps` | `device:profile.frame_rate_bucket` set: `lt20`, `20-40`, `40-55`, `gte55`, `unknown` | rAF frames counted during the same run | |
-| `guide:opened` | `mode` | `animation`, `storyboard` | `src/first-success-guide.jsx` (`STEPS_BY_MODE` keys) | 1 per session |
-| `guide:step` | `mode`, `step`, `step_ms` | `step` `1`-`4`; `step_ms` the `duration` set | "I did this" / "Mark complete"; `step_ms` since opening or the previous step | 1 per step per session |
-| `guide:dismissed` | `mode`, `reached` | `reached` `1`-`4`: the step showing | Close or Skip before the last step. Closing the completed guide is not a dismissal | 1 per session |
+| `guide:opened` | `mode` | `animation`, `camera` | `src/first-success-guide.jsx` (`animation`); `camera` is the camera tutorial (`src/camera-tutorial.jsx`, eight steps) | 1 per session |
+| `guide:step` | `mode`, `step`, `step_ms` | `step` `1`-`4` (`1`-`8` in `camera`); `step_ms` the `duration` set | "I did this" / "Mark complete"; in `camera`, the studio reporting the step done; `step_ms` since opening or the previous step | 1 per step per session |
+| `guide:dismissed` | `mode`, `reached` | `reached` `1`-`4` (`1`-`8` in `camera`): the step showing | Close or Skip before the last step. Closing the completed guide is not a dismissal | 1 per session |
 | `guide:completed` | `mode` | | The last step marked done | 1 per session |
 | `agent:panel_toggled` | `open`, `via` | bool; `key` (Cmd/Ctrl+B), `button` (toolbar or Workflow control) | The studio's agent-panel toggle (`src/App.jsx`) | 10 per session |
 | `object:deleted_soon` | `age` | `lt2s`, `2-10s`, `10-60s`, `gte60s` | A delete (`src/domains/objects.js`) of an id the user added this session. Ids are slugs a re-created object reuses, so the age is an **estimate** | 10 per session |
@@ -1504,7 +1514,7 @@ release have no rows (**unknown, not 0**).
 | --- | --- | --- |
 | `undo`, `redo` | `empty_history` | Ctrl/Cmd+Z or Ctrl/Cmd+Shift+Z with nothing to step (bus `noop`) |
 | `undo`, `redo` | `busy` | The bus refused the step (the last edit belongs to a running task) |
-| `mode` | `workflow_mode` | 2 with no rig to pose (4 in a storyboard is a key with no binding there, not a refusal, and is not counted) |
+| `mode` | `workflow_mode` | 2 with no rig to pose |
 | `transform` | `wrong_mode` | E in Pose mode (W and R are its IK tools; E has none) |
 | `frame`, `duplicate`, `delete` | `no_selection` | F, Ctrl/Cmd+D, Delete/Backspace with nothing selected that the key acts on, and no other handler claimed it |
 
@@ -1612,6 +1622,9 @@ Count bucket: `0`, `1`, `2`, `3`, `4-5`, `6-10`, `gte11` (the
 | | `origin` | `ui`, `agent` | The user's control, or the agent or an MCP client |
 | | `phase` | `admission`, `commit` | Refused before any change, or after the command started changing |
 | | `group` | `object`, `shot`, `cast`, `scene`, `motion`, `edit`, `task`, `agent`, `other` | The command's family |
+| | `command` | a declared action or bus control id | Absent for an id the caller made up (then `rule` is `unknown_action`) or a build before #975 |
+| | `rule` | `type`, `unknown_field`, `missing`, `items`, `unique`, `format`, `enum`, `range`, `variant`, `unknown_action`, `spec`, `recipe`, `check`, `unclassified` | `INVALID_ARGUMENT` only (#1042): which kind of check failed |
+| | `field` | schema path, list positions as `[]` | `INVALID_ARGUMENT` only, when known: `$.args.framing.intent.size`, `$.args.spec.keys`, `$.args.recipe.parts[].size` |
 | `edit:undone` | `age` | age bucket | Time since the undone edit was made; present only when `result = done` and the age is known |
 | | `kind` | `pose`, `camera`, `object`, `shot`, `prompt`, `agent_turn`, `ik_preview`, `other` | `agent_turn` is the agent's whole turn; `ik_preview` is an un-applied IK drag |
 | | `via` | `key`, `menu`, `button` | How the user asked for the undo |
@@ -1635,7 +1648,7 @@ Count bucket: `0`, `1`, `2`, `3`, `4-5`, `6-10`, `gte11` (the
 
 Caps and windows:
 
-- `studio:refused`: at most 3 per (`code`, `group`, `origin`) per session.
+- `studio:refused`: at most 3 per (`code`, `command` or `group`, `field` or `rule`, `origin`) per session.
   The rest are counted only in `app:friction_summary` `refusals_ui` /
   `refusals_agent`, so rank codes with these rows but total refusals with the
   summary. A cancel the caller asked for (`CANCELLED`) is not a refusal.
@@ -1709,6 +1722,31 @@ older scene revision), `TARGET_BUSY` (another gesture held the target) and
 `UNCERTAIN_APPLY` (the Studio could not confirm the change landed). The
 per-session cap flattens frequent codes, so `refusals` is a lower bound; read
 `sessions` for reach. Split by `phase` to see refusals after a change started.
+
+Which field the agent gets wrong, per command (#1042):
+
+```sql
+SELECT
+    properties.command AS command,
+    properties.rule AS rule,
+    properties.field AS field,
+    count() AS refusals,
+    uniq(distinct_id) AS users
+FROM events
+WHERE event = 'studio:refused'
+  AND properties.code = 'INVALID_ARGUMENT'
+  AND properties.origin = 'agent'
+  AND JSONExtractRaw(properties, 'internal_qa') != 'true'
+  AND timestamp >= now() - INTERVAL 14 DAY
+GROUP BY command, rule, field
+ORDER BY refusals DESC
+```
+
+`command` empty with `rule` `unknown_action` is an action id the registry does
+not declare (the old "command not reported" bucket). `rule` `spec` is a motion
+spec the compiler refused (`field` is its top-level spec field), `recipe` a
+sculpt recipe, `check` a refusal a command raised itself and `unclassified` a
+plain error without a code.
 
 ## 2.7 What people fixed after the agent (90 days)
 
@@ -1972,7 +2010,7 @@ Builds before this release have no rows (**unknown, not 0**).
 | --- | --- | --- |
 | `agent:connect_opened` | `entry`: `first_run`, `failure_card`, `signed_out`, `menu`, `other` | The menu's Connect a model, the signed-out card's other-provider button, or a refused key's Log in again. The signed-out card reads `first_run` until this browser profile has connected once. 5 per session |
 | `agent:connect_started` | `provider`, `method` (`oauth`, `api_key`, `chatgpt`) | A provider's login button, or Sign in with ChatGPT. One per attempt |
-| `agent:connect_finished` | `provider`, `method`, `outcome`, `step`, `duration` (lt10s … gte5m) | One per attempt, see below |
+| `agent:connect_finished` | `provider`, `method`, `outcome`, `step`, `duration` (lt10s … gte5m), `reason` (not-ok only, when known) | One per attempt, see below |
 | `agent:model_changed` | `provider`, `after_failure` (bool) | The model list. 10 per session |
 
 `provider` is one of the ten providers CozyClay configures itself
@@ -1985,10 +2023,15 @@ of a long tail read `other`.
 - `failed`: the flow ended with an error, or the login could not start.
 - `cancelled`: the user pressed Cancel inside a running flow.
 - `abandoned`: the panel was closed or left mid-flow, or another attempt
-  began. A ChatGPT sign-in that comes back without a session is also
-  `abandoned`: the sidecar reports a failed and a closed browser sign-in the
-  same way, and the panel's sign-in error is set only when the start request
-  itself fails.
+  began. Before #1044 a ChatGPT sign-in that came back without a session was
+  also `abandoned`; from #1044 the sidecar names why the wait ended, and that
+  attempt reads `failed` with a `reason`.
+
+`reason` (from #1044, on `failed`, `cancelled` and `abandoned` when known):
+`timeout` (the 10-minute wait ran out), `callback_error` (the sign-in page
+came back refused, or the code exchange failed), `port_busy` (no callback
+port was free), `user_closed` (Cancel, or the login list closed), `other`.
+Split `failed`/`waiting` by it to see which one to fix.
 
 `step` is how far the attempt got: `list` (it never started a flow),
 `waiting` (the flow ran), `prompt` (it was asking for a key, an address or a
@@ -2219,46 +2262,25 @@ GROUP BY error_class, duration
 ORDER BY installs DESC
 ```
 
-# Storyboard and capsule-figure events (issue #653)
+# Capsule-figure and new-project events (issue #653)
 
-Counts only. None of these events carries a caption, a panel or character name,
-an id, a prompt, an image or a position (`DENIED_PROPERTY_KEYS` and the closed
-value sets in `sanitizeProps` drop anything else).
+Counts only. None of these events carries a character name, an id, a prompt,
+an image or a position (`DENIED_PROPERTY_KEYS` and the closed value sets in
+`sanitizeProps` drop anything else).
 
 ## Event contract
 
 | Event | Properties | Meaning |
 | --- | --- | --- |
-| `scene:created` | `scene_source`, `previs_mode`, `cast_style` | `previs_mode` is `storyboard` or `animation`; absent on events from before modes existed. `cast_style` is `rig`, `capsule` or `hybrid`, sent with `scene_source: new_project` only |
-| `storyboard:panel_created` | `source` | `agent` (Studio Agent, MCP or any non-UI command) or `manual` (Board `+ Panel`, timeline add in a storyboard project) |
-| `storyboard:panel_stylized` | `outcome` | `ok` (the stylized picture is stored on the panel) or `error` (renderer not ready, entitlement or network refusal, storage failure) |
+| `scene:created` | `scene_source`, `cast_style` | `cast_style` is `rig`, `capsule` or `hybrid`, sent with `scene_source: new_project` only. Rows from older builds can also carry `previs_mode` |
 | `cast:proxy_added` | `surface` | `assets` (Capsule figure tile), `agent` (Studio Agent or another non-UI command) or `mcp` (`add_character` live tool) |
 
-## Panels per source and stylize success rate (7 days)
-
-Events carrying the explicit `internal_qa` boolean marker are excluded the same
-way the external cohort queries do.
+## Capsule figures by surface, and new projects by cast style (7 days)
 
 ```sql
 SELECT
     event,
-    coalesce(nullIf(properties.source, ''), properties.outcome) AS value,
-    count() AS events,
-    count(DISTINCT distinct_id) AS users
-FROM events
-WHERE event IN ('storyboard:panel_created', 'storyboard:panel_stylized')
-  AND timestamp >= now() - INTERVAL 7 DAY
-  AND JSONExtractRaw(properties, 'internal_qa') != 'true'
-GROUP BY event, value
-ORDER BY event, value
-```
-
-## Capsule figures by surface, and new projects by mode (7 days)
-
-```sql
-SELECT
-    event,
-    if(event = 'cast:proxy_added', properties.surface, properties.previs_mode) AS value,
+    if(event = 'cast:proxy_added', properties.surface, properties.cast_style) AS value,
     count() AS events
 FROM events
 WHERE event IN ('cast:proxy_added', 'scene:created')
@@ -2268,5 +2290,8 @@ GROUP BY event, value
 ORDER BY event, value
 ```
 
-An empty `value` on `scene:created` is a scene made before project modes
-existed (builds older than the Storyboard/Animation release). Undo and redo never emit a second event.
+An empty `value` on `scene:created` is a scene that was not made from the
+start screen's new-project path. Undo and redo never emit a second event.
+A first open (`src/guest-start.js`) makes its project through the same
+`project.new` action, so it also sends `scene_source: new_project` with the
+default `cast_style` (`hybrid`), although the author chose nothing there.

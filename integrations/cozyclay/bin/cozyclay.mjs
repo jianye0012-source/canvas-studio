@@ -24,6 +24,7 @@ import { openBrowser } from "./open-browser.mjs";
 import { maybeAskForStar } from "./star-prompt.mjs";
 import { checkForUpdate, readUpdateStatus, runUpdateCommand, updateChecksOn } from "./update-check.mjs";
 import { createStudioRoutes } from "./studio-routes.mjs";
+import { announceReady } from "./host-contract.mjs";
 import { handleOAuthRequest } from "./codex-auth.mjs";
 import { createAgentHandler } from "./agent/agent-routes.mjs";
 import { liveHubPort } from "./live-endpoint.mjs";
@@ -68,6 +69,11 @@ const TYPES = {
 	".ico": "image/x-icon",
 };
 
+// A host app passes --no-open, --no-star, --no-update-check, --via <v> and
+// --port <n> on every launch, and an unknown option exits with the help text,
+// so removing any of them breaks every installed host (bin/host-contract.mjs,
+// test/verify-host-contract.mjs). A flag that is retired stays accepted as a
+// no-op, the way --no-motion is below.
 function parseArgs(argv) {
 	const opts = { port: 5180, host: "127.0.0.1", open: true, star: true, updateCheck: true };
 	for (let i = 0; i < argv.length; i += 1) {
@@ -126,7 +132,6 @@ const HELP = `cozyclay - browser-based 3D staging studio
   cclay update --off|--on   stop or resume update notices (launch line, Studio chip)
   npx cozyclay --port 5200  serve on another port
   npx cozyclay --no-open    do not open a browser
-  npx cozyclay --scene <id> open the studio on a bundled starter scene
   npx cozyclay --no-star    never ask about starring the repo
   npx cozyclay --no-update-check
                             do not look for a newer release
@@ -263,7 +268,7 @@ const agentHandler = createAgentHandler({ port: () => opts.port, ...(SOURCE_CHEC
 const studioRoutes = createStudioRoutes({ port: opts.port, stateFile: STATE_FILE, takeRuntime, update: { currentVersion: version, stateDir: STATE_DIR, kind: INSTALL_KIND, enabled: updateChecksEnabled, pkgRoot: PKG_ROOT }, restart: { getServer: () => server, closeHub: () => agentHandler.close() } });
 server = createServer((req, res) => {
 	const url = new URL(req.url ?? "/", "http://127.0.0.1");
-	if (/^\/oauth\/(start|status|logout)$/.test(url.pathname)) {
+	if (/^\/oauth\/(start|status|logout|cancel)$/.test(url.pathname)) {
 		const origin = req.headers.origin;
 		const hosts = new Set([`127.0.0.1:${opts.port}`, `localhost:${opts.port}`]);
 		const origins = new Set([`http://127.0.0.1:${opts.port}`, `http://${"local" + "host"}:${opts.port}`]);
@@ -320,7 +325,9 @@ server = createServer((req, res) => {
 		// npx-served studio can never attach to the MCP server's live hub.
 		// __COZYCLAY_LIVE_PORT__ tells the prebuilt bundle which hub port this
 		// launch chose (COZYCLAY_LIVE_PORT), since the build baked its own (#862).
-		const html = readFileSync(target, "utf8").replace("</head>", `<script>window.__COZYCLAY_RUNTIME__ = ${JSON.stringify(runtime).replaceAll("<", "\\u003c")}; window.__COZYCLAY_LIVE__ = true; window.__COZYCLAY_LIVE_PORT__ = ${JSON.stringify(liveHubPort())};</script>\n</head>`);
+		// __COZYCLAY_FIGURE__, __COZYCLAY_MOTION_ENGINE__: what this launch names of the figures' look, as given (src/lowvis/studio/figure.js
+		// launchValue reads both); the agent sidecar in this process reads the same two, so the look drawn and the body a motion is built for are one value.
+		const html = readFileSync(target, "utf8").replace("</head>", `<script>window.__COZYCLAY_RUNTIME__ = ${JSON.stringify(runtime).replaceAll("<", "\\u003c")}; window.__COZYCLAY_LIVE__ = true; window.__COZYCLAY_LIVE_PORT__ = ${JSON.stringify(liveHubPort())}; window.__COZYCLAY_FIGURE__ = ${JSON.stringify(process.env.COZYCLAY_FIGURE ?? "").replaceAll("<", "\\u003c")}; window.__COZYCLAY_MOTION_ENGINE__ = ${JSON.stringify(process.env.COZYCLAY_MOTION_ENGINE ?? "").replaceAll("<", "\\u003c")};</script>\n</head>`);
 		res.writeHead(200, {
 			"content-type": "text/html; charset=utf-8",
 			"content-length": Buffer.byteLength(html),
@@ -351,8 +358,8 @@ server.listen({ port: opts.port, host: "127.0.0.1", ipv6Only: false }, async () 
 	const sceneParam = opts.scene && /^[a-z0-9-]+$/i.test(opts.scene) ? `?scene=${encodeURIComponent(opts.scene)}` : "";
 	if (opts.scene && !sceneParam) console.error(`cozyclay: --scene expects a bare starter id (got ${opts.scene}); opening the studio without it.`);
 	const url = `http://127.0.0.1:${opts.port}/app/${sceneParam}`;
-	console.log(`CozyClay is running at ${url}`);
-	console.log("Use a Chromium-based browser — Safari and Firefox are not supported.");
+	// The ready lines are part of the host contract (bin/host-contract.mjs).
+	announceReady(url, version);
 	// Asked once per version, before the browser opens: the question comes
 	// first, and the studio opens after the answer (or the ask timeout).
 	try {

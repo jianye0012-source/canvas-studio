@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { rehydrateProjectAssets } from "../project-assets-restore.js";
 import { StudioProtocolError } from "../studio-agent-protocol.js";
 import { createDocumentStore } from "../document-store.js";
-import { useDocumentDomain } from "../store/use-document-store.js";
+import { useChangedState, useDocumentDomain } from "../store/use-document-store.js";
 import {
 	SCENES_STORAGE_KEY,
 	readSceneDocument,
@@ -22,7 +22,6 @@ import {
 	loadWorkflowGraph,
 	createProjectDocument,
 	storeProjectSession,
-	verifyEmbeddedAsset,
 	hasFileSystemAccess,
 	pickProjectFileForSave,
 	writeProjectFile,
@@ -36,36 +35,34 @@ import {
 	requestHandlePermission,
 	createWorkflowGraph,
 	clearStoredProjectHandle,
-	DEFAULT_PREVIS_MODE,
-	normalizePrevisMode,
 	DEFAULT_CAST_STYLE,
 	normalizeCastStyle,
-	buildAnimationProjectFromStoryboard,
+	animationCopyOfStoryboard,
 } from "../project.js";
 import { playgroundSceneUrl, fetchSceneProject } from "../playground.js";
 import { pickProjectToOpen } from "../project-open-file.js";
-import { openAssetDb, referencedAssetIds, getAsset, putAsset } from "../scene-assets.js";
+import { projectSummary, serializedSummary } from "../project-summary.js";
+import { captureProjectThumb } from "../project-thumbs.js";
+import { openAssetDb, referencedAssetIds, getAsset } from "../scene-assets.js";
 import { internWorkflowOutputs, workflowOutputRefs, resolveWorkflowOutputs } from "../workflow/workflow-resources.js";
 
 import { resourceManifest } from "../project-resources.js";
-import { ko } from "../locale.js";
-import { track, bucketCount, bucketProjectAge } from "../analytics.js"; import { startExportAttempt } from "../export-attempt.js";
-import { mergeProjectCustomPoses } from "../project-poses.js";
+import { ko } from "../locale.js"; import { checkAfterWrite } from "./save-deadline.js";
+import { track, bucketCount, bucketProjectAge } from "../analytics.js";
 import { DEFAULT_WORKSPACE_LAYOUT, DEFAULT_DURATION_S, TIMELINE_FPS } from "../app-stage.jsx";
-import { saveCustomPoses } from "../poses.js";
 import { readShotAuthoringDocument } from "../shot-authoring.js";
 import { initialShots } from "../cuts.js";
 import { createIkState } from "../motion/ik.js";
 
 // The scene list and project identity share one history. Dirty is derived from
 // the saved checkpoint, not an authored edit, and has its own non-history slice.
-// previsMode and castStyle are project identity too: they are set only by a
+// castStyle is project identity too: it is set only by a
 // document boundary (blank creation, starter/file open, session restore),
 // never by an edit.
-function createScenesDomain(appContext, initial, name, previsMode = DEFAULT_PREVIS_MODE, castStyle = DEFAULT_CAST_STYLE) {
+function createScenesDomain(appContext, initial, name, castStyle = DEFAULT_CAST_STYLE) {
 	const ordered = rows => rows.map((scene, order) => ({ ...scene, order }));
-	const project = (fields, mode, style) => ({ ...fields, previsMode: normalizePrevisMode(mode), castStyle: normalizeCastStyle(style) });
-	let native = createDocumentStore({ owned: { scenes: ordered(initial.scenes), project: project({ name, activeSceneId: initial.activeSceneId }, previsMode, castStyle) } });
+	const project = (fields, style) => ({ ...fields, castStyle: normalizeCastStyle(style) });
+	let native = createDocumentStore({ owned: { scenes: ordered(initial.scenes), project: project({ name, activeSceneId: initial.activeSceneId }, castStyle) } });
 	const listeners = new Set();
 	const notify = () => { for (const listener of listeners) listener(); };
 	let release = native.subscribe(notify);
@@ -125,9 +122,9 @@ function createScenesDomain(appContext, initial, name, previsMode = DEFAULT_PREV
 		},
 		// Session cache/file loads are explicit non-authored boundaries. They
 		// retire scene history, just as opening a scene retired native history.
-		replaceDocument(scenes, activeSceneId, name = metadata().name, previsMode = metadata().previsMode, castStyle = metadata().castStyle) {
+		replaceDocument(scenes, activeSceneId, name = metadata().name, castStyle = metadata().castStyle) {
 			release(); native.dispose();
-			native = createDocumentStore({ owned: { scenes: ordered(scenes), project: project({ name, activeSceneId }, previsMode, castStyle) } });
+			native = createDocumentStore({ owned: { scenes: ordered(scenes), project: project({ name, activeSceneId }, castStyle) } });
 			release = native.subscribe(notify); notify();
 		},
 		setDirty(value) {
@@ -146,15 +143,16 @@ export function useScenes(appContext) {
 	const [domain] = useState(() => {
 		if (appContext.storeDomain("scenes")) return appContext.storeDomain("scenes");
 		const session = loadProjectSession();
-		return createScenesDomain(appContext, appContext.shared.startup.document, session?.name ?? null, session?.previsMode, session?.castStyle);
+		return createScenesDomain(appContext, appContext.shared.startup.document, session?.name ?? null, session?.castStyle);
 	});
 	const scenes = useDocumentDomain(domain.documentStore, "scenes");
-	const { activeSceneId, name: projectName, previsMode, castStyle } = useDocumentDomain(domain.documentStore, "project");
+	const { activeSceneId, name: projectName, castStyle } = useDocumentDomain(domain.documentStore, "project");
 	const projectDirty = useDocumentDomain(domain.dirtyStore, "projectDirty");
 	const runtimeValues = useRef(new Map());
 	async function runProject(id, args = {}) {
 		const receipt = await appContext.bus.run(id, args);
-		if (!receipt.ok) appContext.notify(receipt.message);
+		// The user's own cancel (picker closed, discard declined) needs no toast.
+		if (!receipt.ok && receipt.code !== "CANCELLED") appContext.notify(receipt.message);
 		return receipt;
 	}
 	async function runWithValue(id, key, value) {
@@ -201,7 +199,10 @@ export function useScenes(appContext) {
 	 * workspace layout, custom poses) round-trips through a real
 	 * `.cclayproject` file. localStorage stays as the always-on session
 	 * cache; the file is the portable, user-owned document. */
-	const [projectSaveState, setProjectSaveState] = useState("idle");
+	// refreshProjectDirty runs after most commits; a no-op React update from it
+	// kept a pending lane behind every playback-frame commit and chained React
+	// into "Maximum update depth exceeded" on busy machines (#1045).
+	const [projectSaveState, setProjectSaveState] = useChangedState("idle");
 
 	const [projectMenuOpen, setProjectMenuOpen] = useState(false);
 
@@ -212,7 +213,9 @@ export function useScenes(appContext) {
 	// A first-run author should choose a document (or explicitly start a named
 	// local draft). Keep this as a light startup sheet so the studio remains
 	// inspectable while the choice is pending; it never traps the topbar.
-	// A ?scene= launch opens its starter instead of the chooser.
+	// A ?scene= launch opens its starter instead of the chooser. Under canvas-studio's
+	// ?canvas= embed, guest-start.js already opens a project of its own, so the chooser
+	// stays closed there too (avoids racing the canvas bridge's project.open/new).
 	const [projectStartupOpen, setProjectStartupOpen] = useState(() => !(globalThis.__CANVAS_LOCAL__ && new URLSearchParams(globalThis.location?.search).has('canvas')) && !appContext.shared.playgroundMode && !playgroundSceneUrl(globalThis.location?.search) && !loadProjectSession()?.name);
 
 	const [projectManifest, setProjectManifest] = useState({ items: [], totals: { embedded: 0, external: 0, missing: 0, bytes: 0 }, missing: [] });
@@ -229,10 +232,8 @@ export function useScenes(appContext) {
 				scenes: snapshotActiveScene(),
 			},
 			workspaceLayout: appContext.shared.projectStateRef.current.workspaceLayout,
-			customPoses: appContext.shared.projectStateRef.current.customPoses,
 			workflow: loadWorkflowGraph(),
 			name,
-			previsMode: domain.metadata().previsMode,
 			castStyle: domain.metadata().castStyle,
 		};
 	}
@@ -251,7 +252,7 @@ export function useScenes(appContext) {
 			const workflowResult = await internWorkflowOutputs(input.workflow);
 			const allAssets = [...assets.filter(Boolean), ...workflowResult.assets];
 			const nextInput = { ...input, scenesDocument, workflow: workflowResult.graph, assets: allAssets };
-			const manifest = resourceManifest({ scenesDocument: nextInput.scenesDocument, workflow: nextInput.workflow, poseLibrary: nextInput.customPoses, assets: allAssets, workflowOutputRefs });
+			const manifest = resourceManifest({ scenesDocument: nextInput.scenesDocument, workflow: nextInput.workflow, assets: allAssets, workflowOutputRefs });
 			setProjectManifest(manifest);
 			if (manifest.missing.length) {
 				const error = new Error("Project has missing resources");
@@ -297,12 +298,17 @@ export function useScenes(appContext) {
 		storeProjectSession(domain.metadata().name, domain.metadata());
 	}
 
-	function projectProblemsNotice(problems) {
-		if (!Array.isArray(problems) || !problems.length) return "";
+	// The toast text after "Project opened": skipped resources, and for an old
+	// storyboard file the note that this is an unsaved animation copy.
+	function projectProblemsNotice(problems, project = null) {
+		const copied = project?.wasStoryboard ? ` · ${ko("Storyboard projects open as animation projects in this version. This is a copy: the original file is unchanged.",
+			"이 버전에서 스토리보드 프로젝트는 애니메이션 프로젝트로 열려요. 사본이며 원본 파일은 바뀌지 않아요.",
+			"此版本中故事板项目以动画项目打开。这是副本：原始文件保持不变。")}` : "";
+		if (!Array.isArray(problems) || !problems.length) return copied;
 		const codes = [...new Set(problems.map((problem) => problem?.code).filter(Boolean))].join(", ");
 		return ko(` · skipped ${problems.length} embedded resource${problems.length === 1 ? "" : "s"}${codes ? ` (${codes})` : ""}`,
 			` · 포함된 자원 ${problems.length}개를 건너뛰었어요${codes ? ` (${codes})` : ""}`,
-			` · 已跳过 ${problems.length} 个嵌入资源${codes ? `（${codes}）` : ""}`);
+			` · 已跳过 ${problems.length} 个嵌入资源${codes ? `（${codes}）` : ""}`) + copied;
 	}
 
 	/** Save the project; the answer says what happened, for project.save:
@@ -316,12 +322,12 @@ export function useScenes(appContext) {
 		}
 		const currentName = domain.metadata().name;
 		if (currentName === null && explicitName === null) {
-			setProjectNameDialog({ kind: "save", initialName: "My Project" });
+			setProjectNameDialog({ kind: "save", initialName: ko("Untitled Project", "제목 없는 프로젝트", "未命名项目") });
 			return { saved: false, naming: true };
 		}
 		setProjectSaveState("saving");
-		const name = (explicitName ?? currentName ?? "My Project").trim() || "My Project";
-		const checkpoint = collectProjectSnapshot(name);
+		const name = (explicitName ?? currentName ?? ko("Untitled Project", "제목 없는 프로젝트", "未命名项目")).trim() || ko("Untitled Project", "제목 없는 프로젝트", "未命名项目");
+		const checkpoint = collectProjectSnapshot(name), checkWritten = checkAfterWrite(context, appContext.ports.read);
 		let downloaded = false;
 		try {
 			const serialized = await collectProjectSerialized(name);
@@ -332,16 +338,19 @@ export function useScenes(appContext) {
 					handle = await pickProjectFileForSave(name);
 					appContext.shared.projectHandleRef.current = handle;
 					await writeProjectFile(handle, serialized);
-					await rememberRecentProject(handle, name);
+					await rememberRecentProject(handle, name, serializedSummary(serialized));
 				} else {
 					downloadProjectFallback(serialized, name);
 					downloaded = true;
 				}
 			} else {
 				await writeProjectFile(handle, serialized);
+				// the recent entry's counts were read when the project opened: an overwrite refreshes them
+				await rememberRecentProject(handle, name, serializedSummary(serialized));
 			}
-			context.check();
+			checkWritten(); // an expired deadline after the write still records the save (#1207)
 			markProjectClean(name, checkpoint, currentName);
+			void captureProjectThumb(name);
 			setSaveBlockedReasons(null);
 			setProjectSaveState(domain.dirtyStore.read("projectDirty") ? "dirty" : "saved");
 			track("project:saved", {
@@ -363,45 +372,14 @@ export function useScenes(appContext) {
 		}
 	}
 
-	async function exportAsAnimationProject(context) {
-		if (domain.metadata().previsMode !== "storyboard") return { saved: false, failure: "not-storyboard" };
-		const attempt = startExportAttempt({ export_kind: "animation_project", format: "cclayproject", surface: "studio" });
-		try {
-			const source = readProjectDocument(await collectProjectSerialized(domain.metadata().name ?? "Untitled"));
-			context.check();
-			if (!source.ok) throw new Error(`Could not read the storyboard project: ${source.reason}`);
-			const animation = buildAnimationProjectFromStoryboard(source.project);
-			const serialized = JSON.stringify(animation, null, 2);
-			let downloaded = false;
-			if (hasFileSystemAccess()) {
-				const handle = await pickProjectFileForSave(animation.name);
-				context.check();
-				await writeProjectFile(handle, serialized);
-				await rememberRecentProject(handle, animation.name);
-			} else {
-				downloadProjectFallback(serialized, animation.name);
-				downloaded = true;
-			}
-			attempt.succeed();
-			return {
-				saved: true,
-				name: animation.name,
-				fileName: `${animation.name}${PROJECT_EXTENSION}`,
-				downloaded,
-			};
-		} catch (error) {
-			attempt.fail(error, error?.name === "AbortError" ? "aborted" : "unknown");
-			if (error?.name === "AbortError") return { saved: false, cancelled: true };
-			appContext.notify(ko("Could not export the animation project", "애니메이션 프로젝트를 내보내지 못했어요"));
-			return { saved: false, failure: error?.code ?? error?.name ?? "error" };
-		}
-	}
-
 	function applyProject(project, authorized = false) {
 		if (!authorized) return runWithValue("project.open", "projectToken", project);
 		const checked = readSceneDocument(JSON.stringify(project.scenesDocument));
 		if (!["valid", "migrated"].includes(checked.status)) throw new StudioProtocolError("INVALID_ARGUMENT", "Invalid project scene document.");
-		project = { ...project, scenesDocument: checked.document };
+		// An old storyboard file opens as an unsaved animation copy: the file handle
+		// the open path set is dropped, so a later save never writes to the original.
+		const fromStoryboard = project.wasStoryboard === true;
+		project = { ...(fromStoryboard ? animationCopyOfStoryboard(project) : project), scenesDocument: checked.document };
 		appContext.shared.studioDocumentEpochRef.current = crypto.randomUUID();
 		appContext.shared.exportShotIdRef.current = null;
 		const source = project.scenesDocument;
@@ -409,30 +387,28 @@ export function useScenes(appContext) {
 		// storage reader, so the 20 fps → 24 fps clock migration is applied here
 		// too — otherwise an older .cozyclay would open a sixth too fast.
 		const doc = migrateToCurrentScenes(source);
-		const mergedCustomPoses = mergeProjectCustomPoses(appContext.shared.customPoses, project.customPoses);
-		const projectPrevisMode = normalizePrevisMode(project.previsMode), projectCastStyle = normalizeCastStyle(project.castStyle);
-		domain.replaceDocument(doc.scenes, doc.activeSceneId, project.name, projectPrevisMode, projectCastStyle);
+		const projectCastStyle = normalizeCastStyle(project.castStyle);
+		if (fromStoryboard) { appContext.shared.projectHandleRef.current = null; void clearStoredProjectHandle(); }
+		domain.replaceDocument(doc.scenes, doc.activeSceneId, project.name, projectCastStyle);
 		if (project.workspaceLayout) appContext.shared.setWorkspaceLayout({ ...DEFAULT_WORKSPACE_LAYOUT, ...project.workspaceLayout });
-		appContext.bus.run('cast.setCustomPoses', { poses: mergedCustomPoses });
 		const resolvedWorkflow = resolveWorkflowOutputs(normalizeWorkflowGraph(project.workflow), new Map((project.assets ?? []).map((asset) => [asset.id, asset])));
 		storeWorkflowGraph(resolvedWorkflow);
-		saveCustomPoses(mergedCustomPoses);
 		persistScenes(doc.scenes, doc.activeSceneId);
 		openScene(doc.scenes[activeSceneIndex(doc.scenes, doc.activeSceneId)], doc.scenes);
 		appContext.shared.projectSnapshotRef.current = collectProjectSnapshot(project.name);
 		domain.pendingCheckpoint = { clock: appContext.undoClock, name: project.name };
 		domain.setDirty(false);
-		storeProjectSession(project.name, { previsMode: projectPrevisMode, castStyle: projectCastStyle });
+		storeProjectSession(project.name, { castStyle: projectCastStyle });
 		setProjectStartupOpen(false);
-		setProjectManifest(resourceManifest({ scenesDocument: doc, workflow: resolvedWorkflow, poseLibrary: mergedCustomPoses, assets: project.assets ?? [], workflowOutputRefs }));
+		setProjectManifest(resourceManifest({ scenesDocument: doc, workflow: resolvedWorkflow, assets: project.assets ?? [], workflowOutputRefs }));
 		track("project:opened", { age_bucket: bucketProjectAge(Date.now() - (project.savedAt ?? Date.now())) });
 	}
 
 	/** Open a bundled starter scene as a fresh, saveable project. Used by the
-	 * first-run dialog and by `npx cozyclay --scene <id>` (`?scene=`). */
+	 * project chooser and by `npx cozyclay --scene <id>` (`?scene=`). */
 	// A cast style chosen on the start screen overrides the starter's own.
 	async function openStarterScene(id, source = "starter", context = null, name = null, castStyle = undefined) {
-		if (source === "starter" && domain.dirtyStore.read("projectDirty") && !window.confirm(ko("Discard unsaved changes and start a new project?", "저장되지 않은 변경사항을 버리고 새 프로젝트를 시작할까요?"))) return false;
+		if (source === "starter" && domain.dirtyStore.read("projectDirty") && !window.confirm(ko("Discard unsaved changes and start a new project?", "저장되지 않은 변경사항을 버리고 새 프로젝트를 시작할까요?"))) return "cancelled";
 		const url = playgroundSceneUrl(`?scene=${encodeURIComponent(id)}`);
 		const project = url ? await fetchSceneProject(url) : null;
 		if (!project) {
@@ -451,7 +427,7 @@ export function useScenes(appContext) {
 		try {
 			const { file, handle = null, blocked } = await pickProjectToOpen();
 			if (blocked) throw new StudioProtocolError("TARGET_NOT_READY", ko("This browser would not read that file. Open it once more.", "이 브라우저가 그 파일을 읽지 못했어요. 한 번 더 열어 주세요."));
-			if (!file) return false;
+			if (!file) return "cancelled"; // the user closed the picker
 			const result = readProjectDocument(file.text);
 			if (!result.ok) {
 				appContext.notify(ko(`Cannot open project: ${result.reason}`, `프로젝트를 열 수 없어요: ${result.reason}`, `无法打开项目：${result.reason}`));
@@ -459,15 +435,16 @@ export function useScenes(appContext) {
 			}
 			result.project.savedAt = result.project.savedAt ?? file.savedAt ?? null;
 			appContext.shared.projectHandleRef.current = handle;
-			if (handle) await rememberRecentProject(handle, result.project.name);
+			if (handle) await rememberRecentProject(handle, result.project.name, projectSummary(result.project));
 			await rehydrateProjectAssets(result.project, result.warnings);
 			context.check();
 			applyProject(result.project, true);
+			void captureProjectThumb(result.project.name, { settle: true });
 			setProjectStartupOpen(false);
-			appContext.notify(`${ko(`Project opened: ${result.project.name}`, `프로젝트 열림: ${result.project.name}`, `项目已打开：${result.project.name}`)}${projectProblemsNotice(result.problems)}`);
+			appContext.notify(`${ko(`Project opened: ${result.project.name}`, `프로젝트 열림: ${result.project.name}`, `项目已打开：${result.project.name}`)}${projectProblemsNotice(result.problems, result.project)}`);
 			return true;
 		} catch (err) {
-			if (err?.name === "AbortError") return false;
+			if (err?.name === "AbortError") return "cancelled";
 			if (err?.code) throw err;
 			console.error("openProject failed", err);
 			appContext.notify(ko("Could not open the project", "프로젝트를 열지 못했어요"));
@@ -494,13 +471,14 @@ export function useScenes(appContext) {
 			}
 			result.project.savedAt = result.project.savedAt ?? file.savedAt ?? null;
 			appContext.shared.projectHandleRef.current = handle;
-			await rememberRecentProject(handle, result.project.name);
+			await rememberRecentProject(handle, result.project.name, projectSummary(result.project));
 			await rehydrateProjectAssets(result.project, result.warnings);
 			context.check();
 			applyProject(result.project, true);
+			void captureProjectThumb(result.project.name, { settle: true });
 			setProjectBrowserOpen(false);
 			setProjectStartupOpen(false);
-			appContext.notify(`${ko(`Project opened: ${result.project.name}`, `프로젝트 열림: ${result.project.name}`, `项目已打开：${result.project.name}`)}${projectProblemsNotice(result.problems)}`);
+			appContext.notify(`${ko(`Project opened: ${result.project.name}`, `프로젝트 열림: ${result.project.name}`, `项目已打开：${result.project.name}`)}${projectProblemsNotice(result.problems, result.project)}`);
 			return true;
 		} catch (err) {
 			if (err?.code) throw err;
@@ -510,16 +488,16 @@ export function useScenes(appContext) {
 		}
 	}
 
-	// The start screen's choices (previs mode, cast style); a field left out is
-	// not sent, so the command's own default applies.
-	const chosen = ({ previsMode, castStyle } = {}) => ({ ...(previsMode === undefined ? {} : { previsMode }), ...(castStyle === undefined ? {} : { castStyle }) });
+	// The start screen's choice (cast style); a field left out is not sent, so
+	// the command's own default applies.
+	const chosen = ({ castStyle } = {}) => (castStyle === undefined ? {} : { castStyle });
 
 	function requestNewProject(authorized = false, choices = {}) {
 		if (!authorized) return runProject("project.new", Object.keys(chosen(choices)).length ? chosen(choices) : undefined);
-		if (domain.dirtyStore.read("projectDirty") && !window.confirm(ko("Discard unsaved changes and start a new project?", "저장되지 않은 변경사항을 버리고 새 프로젝트를 시작할까요?"))) return;
+		if (domain.dirtyStore.read("projectDirty") && !window.confirm(ko("Discard unsaved changes and start a new project?", "저장되지 않은 변경사항을 버리고 새 프로젝트를 시작할까요?"))) return "cancelled"; // the user kept their unsaved changes
 		// The choices made on the start screen ride on the name dialog until its
 		// submit commits the project.
-		setProjectNameDialog({ kind: "new", initialName: projectName ?? "My Project", ...chosen(choices) });
+		setProjectNameDialog({ kind: "new", initialName: projectName ?? ko("Untitled Project", "제목 없는 프로젝트", "未命名项目"), ...chosen(choices) });
 	}
 
 	function newProject(name, authorized = false, choices = {}) {
@@ -528,23 +506,22 @@ export function useScenes(appContext) {
 			return runProject("project.new", { ...(typeof name === "string" ? { name } : {}), ...pending, ...chosen(choices) });
 		}
 		if (typeof name !== "string") return requestNewProject(true, choices);
-		name = name.trim() || "My Project";
-		const previsMode = normalizePrevisMode(choices.previsMode), castStyle = normalizeCastStyle(choices.castStyle);
+		name = name.trim() || ko("Untitled Project", "제목 없는 프로젝트", "未命名项目");
+		const castStyle = normalizeCastStyle(choices.castStyle);
 		setProjectNameDialog(null);
 		const fresh = createSceneDocument(ko("SCENE 01", "씬 01"));
 		storeWorkflowGraph(createWorkflowGraph());
 		appContext.shared.motionFullRef.current.clear();
-		domain.replaceDocument(fresh.scenes, fresh.activeSceneId, name, previsMode, castStyle);
+		domain.replaceDocument(fresh.scenes, fresh.activeSceneId, name, castStyle);
 		persistScenes(fresh.scenes, fresh.activeSceneId);
 		openScene(fresh.scenes[0], fresh.scenes);
 		appContext.shared.projectHandleRef.current = null;
 		clearStoredProjectHandle();
 		appContext.shared.projectSnapshotRef.current = collectProjectSnapshot(name);
 		domain.setDirty(false);
-		storeProjectSession(name, { previsMode, castStyle });
-		track("scene:created", { scene_source: "new_project", previs_mode: previsMode, cast_style: castStyle });
+		storeProjectSession(name, { castStyle });
+		track("scene:created", { scene_source: "new_project", cast_style: castStyle });
 		setProjectStartupOpen(false);
-		appContext.shared.setFirstSuccessGuideOpen(true);
 		domain.pendingCheckpoint = { clock: appContext.undoClock, name };
 		appContext.notify(ko(`New project: ${name}`, `새 프로젝트: ${name}`, `新项目：${name}`));
 		return true;
@@ -563,7 +540,8 @@ export function useScenes(appContext) {
 			await rehydrateProjectAssets(result.project, result.warnings);
 			context.check();
 			applyProject(result.project, true);
-			appContext.notify(`${ko(`Project restored: ${result.project.name}`, `프로젝트 복원됨: ${result.project.name}`, `项目已恢复：${result.project.name}`)}${projectProblemsNotice(result.problems)}`);
+			void captureProjectThumb(result.project.name, { settle: true });
+			appContext.notify(`${ko(`Project restored: ${result.project.name}`, `프로젝트 복원됨: ${result.project.name}`, `项目已恢复：${result.project.name}`)}${projectProblemsNotice(result.problems, result.project)}`);
 			return true;
 		} catch (error) {
 			if (error?.code) throw error;
@@ -651,7 +629,7 @@ export function useScenes(appContext) {
 		const target = nextScenes[nextScenes.length - 1];
 		persistScenes(nextScenes, target.id);
 		openScene(target, nextScenes);
-		track("scene:created", { scene_source: "ui", previs_mode: domain.metadata().previsMode });
+		track("scene:created", { scene_source: "ui" });
 	}
 
 	function duplicateSceneDocument(sceneId) {
@@ -768,7 +746,6 @@ export function useScenes(appContext) {
 	domain.fileState = () => ({ name: domain.metadata().name, hasFile: Boolean(appContext.shared.projectHandleRef.current),
 		fileAccess: hasFileSystemAccess(), gesture: globalThis.navigator?.userActivation?.isActive === true });
 	domain.save = (args, context) => saveProject(args.saveAs, args.name ?? null, context);
-	domain.exportAsAnimationProject = context => exportAsAnimationProject(context);
 	domain.loadScenes = args => loadLiveScenes(args, true);
 	domain.projectAction = async (id, args, context) => {
 		const runtime = key => {
@@ -778,7 +755,7 @@ export function useScenes(appContext) {
 			return value;
 		};
 		if (id === "project.browse") { setProjectStartupOpen(false); setProjectBrowserOpen(true); return; }
-		if (id === "project.new") return newProject(args.name, true, { previsMode: args.previsMode, castStyle: args.castStyle });
+		if (id === "project.new") return newProject(args.name, true, { castStyle: args.castStyle });
 		if (id === "project.openStarter") return openStarterScene(args.id, args.source, context, args.name, args.castStyle);
 		if (id === "project.restore") return restoreStoredProject({ handle: runtime("handleToken") }, context);
 		if (args.handleToken) return openProjectByHandle(runtime("handleToken"), context);
@@ -798,13 +775,12 @@ export function useScenes(appContext) {
 	domain.refreshDirty = () => refreshProjectDirty(false);
 	return {
 		...domain, applyExternalScene, loadLiveScenes, refreshProjectDirty,
-		scenes, activeSceneId, sceneSaveError, snapshotActiveScene, persistScenes, projectName, previsMode, castStyle,
-		projectDirty, setProjectDirty: domain.setDirty, projectSaveState, setProjectSaveState, projectMenuOpen,
+		scenes, activeSceneId, sceneSaveError, snapshotActiveScene, persistScenes, projectName, castStyle,
+		projectDirty, projectSaveState, projectMenuOpen,
 		setProjectMenuOpen, projectBrowserOpen, setProjectBrowserOpen, projectNameDialog, setProjectNameDialog,
 		projectStartupOpen, setProjectStartupOpen, projectManifest, setProjectManifest, saveBlockedReasons,
 		setSaveBlockedReasons, workflowRevision, setWorkflowRevision, collectProjectSnapshot,
 		collectProjectSerialized, collectProjectReferenced, projectProblemsNotice, rehydrateProjectAssets, saveProject, applyProject,
-		exportAsAnimationProject,
 		openStarterScene: async (id, source = "starter", name = null, castStyle = undefined) => (await runProject("project.openStarter", { id, source, ...(name ? { name } : {}), ...(castStyle ? { castStyle } : {}) })).output?.opened === true,
 		openProject, openProjectByHandle, requestNewProject, newProject, restoreOffer,
 		setRestoreOffer, restoreStoredProject, flushScenes, openScene, selectSceneDocument,

@@ -44,9 +44,10 @@ expect("inset collapse state persists with the workspace layout", app.includes("
 expect("collapsed inset skips its render pass", dualview.includes("insetCollapsed = false") && dualview.includes("const insetOff = insetCollapsed ||") && dualview.includes("if (!insetOff) draw("));
 expect("resize handle hides while collapsed", app.includes("{!workspaceLayout.insetCollapsed && ("));
 expect("resize grip is visible on the clay viewport", css.includes(".vp-inset-resize:before,") && css.includes("rgba(255, 252, 247, .85)"));
-expect("Top-View plan zooms with the wheel over the inset", app.includes('pane.addEventListener("wheel", onWheel, { passive: false })') && app.includes("current.planZoom * Math.pow"));
+const planNavigation = readFileSync(new URL("../src/plan-navigation.js", import.meta.url), "utf8");
+expect("Top-View plan zooms with the wheel over the inset", planNavigation.includes('host.addEventListener("wheel", onWheel, { passive: false })') && planNavigation.includes("Math.pow(WHEEL_RATE, -event.deltaY)") && app.includes("onPlanZoom={setPlanZoom}"));
 expect("plan zoom persists with the workspace layout", app.includes("planZoom: 1,") && app.includes("WORKSPACE_LAYOUT_KEY"));
-expect("zoom shrinks the ortho extent, not the pane", dualview.includes("planZoom = 1") && dualview.includes("PLAN_EXTENT / Math.max(0.25, planZoom)"));
+expect("zoom shrinks the ortho extent, not the pane", dualview.includes("planZoom = 1") && dualview.includes("applyPlanView(planCam,") && planNavigation.includes("const extent = PLAN_EXTENT / clampZoom(view.zoom)"));
 expect("demand loop wakes on mount and model commit", dualview.includes("requestAnimationFrame(() => requestAnimationFrame(invalidate))") && app.includes("const frame = requestAnimationFrame(invalidate);"));
 expect("double-click no longer swaps Scene and Top-View", !app.includes('setViewMode((current) => (current === "plan" ? "shot" : "plan"))'));
 expect("Scene toolbar exposes shot preset, aspect, FOV, recenter, and Top-View controls", app.includes("viewport-toolbar-field shot-field") && app.includes("SHOT_ASPECT_PRESETS") && app.includes("viewport-fov-control") && app.includes("Recenter on subject") && app.includes('ko("Top", "탑")'));
@@ -81,12 +82,14 @@ expect(
 	!css.includes(".viewport-readout"),
 );
 expect(
-	"one File › Export menu leads with the keyframe pack",
+	"one File › Export menu leads with the video and keeps the other formats behind Alt",
 	app.includes('data-testid="topbar-export"') &&
 	app.includes('id="export-menu-trigger"') &&
 	app.includes('className="menubar-item export-menu-primary"') &&
 	app.includes('data-testid="export-video"') &&
-	app.includes('data-testid="export-otio"'),
+	app.includes('data-testid="export-depth-video"') &&
+	app.includes("{exportEvery && <ExportMoreItems") &&
+	readFileSync(new URL("../src/shell/ExportMoreItems.jsx", import.meta.url), "utf8").includes('data-testid="export-otio"'),
 );
 // Letterbox bars are editor chrome. Painting them with the scene background
 // put a sheet of near-white either side of the frame the moment a narrower
@@ -134,14 +137,16 @@ expect("selection routing is derived once, not repeated per foldout", app.includ
 expect("an unowned selection explains itself instead of showing a blank column", app.includes("data-inspector-empty") && css.includes(".inspector-empty"));
 expect("the heavy motion pipeline starts collapsed", app.includes("function Foldout({ title, hidden, defaultOpen = true, openSignal = 0, children })") && app.includes("useState(defaultOpen)"));
 expect(
-	"recording captures the clean render without a frame stamp",
-	app.includes("capture: (frame, kind) => withExportFrame(frame, kind") &&
+	"recording stays clean unless review burn-in is explicitly enabled",
+	app.includes("capture: (frame, kind) => withExportFrame(frame, !kind ? null :") &&
 		app.includes("const plate = applyExportFrame(frame);") &&
-		!app.includes("burnInCapture") &&
+		app.includes("if (!shotForFrame?.review?.burnIn) return pixels;") &&
+		// a pass (depth) is never burnt in: its only decoration is the plate's own softening
+		app.includes("decorate: passKind ? soften : exportReviewDecoration") &&
 		// #276 retains #193's preflight shot list in the immutable request.
 		// The executable export-recovery tests verify selection and retry.
 		app.includes("structuredClone({ shots: exportShots, playbackScene") &&
-		app.includes("sampleAt(context?.playbackScene ?? playbackScene, shotAtFrame(context?.shots ?? shots, frame), frame)"),
+		app.includes("sampleAt(context?.playbackScene ?? playbackScene, shotForFrame, frame)"),
 );
 expect(
 	"recording uses current motion content instead of a stale timeline tail",
@@ -156,8 +161,6 @@ expect("motion preview stays at native 1x speed", app.includes("const DEFAULT_PL
 expect("timeline cadence and v2 readout expose native preview speed", timeline.includes("fps * playbackSpeed") && timeline.includes('data-testid="sequencer-frame-readout"') && timeline.includes('padStart(4, "0")'));
 expect("legacy greeting demo migration is removed", !app.includes("GREETING_DEMO_MIGRATION_KEY") && !app.includes('id: "demo-rise"'));
 // v2 removed the Details "Generate all blocks" button, so the top bar is the only generate home and runs the blocks when any has text.
-// The pin decision moved into ardy/pose-pin.js so it can be tested directly
-// (test/ardy/verify-pose-pin.mjs); the call site only has to route it.
 // Prompt Blocks starts collapsed and can sit below the fold, so selecting a
 // block on the timeline has to open it AND bring it on screen — otherwise the
 // click reads as doing nothing at all.
@@ -250,10 +253,11 @@ expect(
 	app.includes('ko("Stage position — does not change the take", "무대 위치 — 테이크는 바꾸지 않습니다")'),
 );
 // Entering Motion selects the active character's ROW: the placement gizmo only
-// renders for a specific cast member, never for the group.
+// renders for a specific cast member, never for the group. An empty stage has no
+// row to select, so it lands on the scene row instead of on nothing (#1362).
 expect(
-	"Motion mode lands on a character the gizmo can draw",
-	app.includes("setSelectedHierarchyId(rowIdForCharIndex(activeCharIndex));"),
+	"Motion mode lands on a character the gizmo can draw, or on the scene when there is none",
+	app.includes('setSelectedHierarchyId(rowIdForCharIndex(activeCharIndex) ?? "shot");'),
 );
 expect(
 	"the character gizmo no longer caps lift at 4 m",
@@ -281,8 +285,8 @@ expect(
 	!app.includes("advanced-toggle") && !app.includes("cozyclay.advanced"),
 );
 expect(
-	"the Studio's Window menu returns to Workflow",
-	app.includes('className="menubar-item workflow-topbar-link" href="/workflow/"'),
+	"the Studio's Window menu keeps its Workflow link behind the off-by-default entry switch (#1211)",
+	app.includes('className="menubar-item workflow-topbar-link" href="/workflow/"') && app.includes("{WORKFLOW_ENTRY_ENABLED && "),
 );
 expect(
 	"expert foldouts stay enabled in the always-advanced Studio",
@@ -349,28 +353,20 @@ expect(
   scrollRules.join(" | ").slice(0, 200),
 );
 
-// #650: the project's previs mode gates the shell. A storyboard drops Motion
-// from the mode pill, key 4, the Generate group, root-path authoring and the
-// motion timeline tools; the root carries the mode for the CSS gates.
+// No project mode gates the shell any more: no previs mode attribute, badge or storyboard CSS.
 const shellSource = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const appSource = shellSource("../src/App.jsx");
 const viewportToolbar = shellSource("../src/shell/ViewportToolbar.jsx");
 const topBar = shellSource("../src/shell/TopBar.jsx");
 const modeCss = shellSource("../src/shell/mode.css");
-expect("the studio root carries data-previs-mode beside data-workflow-mode", appSource.includes("data-workflow-mode={workflowMode} data-previs-mode={scenesDomain.previsMode}"));
-expect("the mode pill drops Motion in a storyboard", viewportToolbar.includes('previsMode === "storyboard" ? MODES.filter((mode) => mode.id !== "motion") : MODES') && viewportToolbar.includes("modesFor(previsMode).map("));
-expect("key 4 is ignored in a storyboard", appSource.includes('if (modeKey === "motion" && storyboardProject) return;'));
-expect("selectWorkflowMode refuses Motion in a storyboard with the shared toast", appSource.includes('if (next === "motion" && storyboardProject) {') && appSource.includes("setToast(ko(STORYBOARD_MOTION_REFUSAL.en, STORYBOARD_MOTION_REFUSAL.ko, STORYBOARD_MOTION_REFUSAL.zh))"));
-expect("the project head always shows the mode badge", topBar.includes('data-testid="topbar-previs-mode"') && topBar.includes("<PrevisModeBadge mode={previsMode} />") && !topBar.includes("previsEnabled"));
-expect("waypoint authoring and Top-View path drawing stay off in a storyboard", appSource.includes("toggleWaypointMode: storyboardProject ? undefined : toggleWaypointMode") && appSource.includes("if (waypointMode) setWaypointMode(false);") && appSource.includes("if (pathDraw) setPathDraw(false);"));
-expect(
-	"storyboard CSS hides the take bar, motion/pose tools, the waypoint switch and the prop path track",
-	[".take-bar", ".tl-motion-tools", ".tl-pose-tools", ".tl-btn.wp", ".tl-wp-hint", ".tl-track.objmo"].every((selector) => modeCss.includes(`.app[data-previs-mode="storyboard"] ${selector}`)),
-);
+expect("the studio root carries no data-previs-mode", !appSource.includes("data-previs-mode"));
+expect("the mode pill shows every mode", viewportToolbar.includes("{MODES.map((mode) => {") && !viewportToolbar.includes("previsMode"));
+expect("the project head has no mode badge", !topBar.includes("topbar-previs-mode") && !topBar.includes("PrevisModeBadge"));
+expect("no storyboard CSS gate is left", !modeCss.includes("data-previs-mode"));
 
 // Add > Camera toasts the shot it made (its name and start frame); a refusal leaves the toast to runStudioAction.
 const addCameraShot = readFileSync(new URL("../src/shell/add-camera-shot.js", import.meta.url), "utf8");
-expect("Add > Camera toasts the new shot from its receipt", addCameraShot.includes("affectedIds") && addCameraShot.includes("setToast(") && addCameraShot.includes("startFrame") && viewportToolbar.includes("onClick={() => { addCameraShot({ appContext, runStudioAction, setToast }); menu.close(); }}"));
+expect("Add > Camera toasts the new shot from its receipt", addCameraShot.includes("affectedIds") && addCameraShot.includes("setToast(") && addCameraShot.includes("startFrame") && readFileSync(new URL("../src/shell/AddSceneEntries.jsx", import.meta.url), "utf8").includes("onClick={() => { addCameraShot({ appContext, runStudioAction, setToast }); onDone?.(); }}") && viewportToolbar.includes("<AddSceneEntries onDone={menu.close} />"));
 
 if (failures) process.exit(1);
 console.log("all resizable workspace checks PASS");
