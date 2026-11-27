@@ -31,6 +31,10 @@ const path = require('node:path');
     await frame.locator('.canvas-return-bar').getByText('已保存到本机', { exact: true }).waitFor();
     await frame.locator('.project-browser-backdrop').waitFor({ state: 'detached' });
     results.push('免登录、导演台加载、自动落盘及同源 WebSocket 连接通过');
+    // 3.3.0 turns the toon look (extra outline/shading pass) on by default for every fresh browser profile; under
+    // software rendering (no GPU on CI) this measurably slows every render, including shot export. Off keeps this
+    // test's timing close to pre-3.3 and matches COZYCLAY_MOTION_ENGINE=old's "keep behaviour unchanged for now".
+    await frame.evaluate(() => window.__cozyFinish?.('off'));
     const fresh = await frame.evaluate(() => window.__cozyclay.runStudioAction('project.new', { name: '联调白模导演台', castStyle: 'rig' }));
     assert.equal(fresh?.ok, true);
     await frame.waitForFunction(() => window.__cozyclay.characters.length === 0);

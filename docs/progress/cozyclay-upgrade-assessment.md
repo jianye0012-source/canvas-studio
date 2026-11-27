@@ -84,4 +84,8 @@ description: 现有导演台与上游 3.3.2 的差异、风险和升级步骤
 2. **`launcher/test/browser-smoke.cjs` 自己也调了一次 `previsMode`**：`window.__cozyclay.runStudioAction('project.new', {..., previsMode: 'animation', ...})` 这行是测试代码自己直接调用 Studio 命令，和 `canvas-bridge.js` 那处是同一类 bug，漏改了，同样删掉这个参数。
 3. **新建角色的操作方式变了，测试里硬编码的「Y Bot」选项已经不存在**：3.3.0 把 X Bot / Y Bot 的选择去掉了，新角色统一是积木人（Block 造型），而且入口也从原来「点一个通用『添加』按钮 → 选 Y Bot」，变成「点工具栏里 `title="添加物体、角色或摄影机"` 的加号 → 在弹出菜单里点『积木人』」。这个按钮的可访问名称和它的可见文字对不上（`getByRole('button', {name:'添加'})` 匹配不到，要用 `getByTitle`），光看代码猜不出来，是实际跑起来、一步步点开菜单核对了 DOM 才确认的。
 
-这三类问题修复后，`launcher/test/director-lifecycle.cjs`（4/4）、`launcher/test/portable-browser-smoke.cjs`（10/10，`passed: true`）、`launcher` 单元测试（110/110）全部重新跑通。
+这三类问题修复后，`launcher/test/director-lifecycle.cjs`（4/4）、`launcher/test/portable-browser-smoke.cjs`（10/10，`passed: true`）、`launcher` 单元测试（110/110）全部重新跑通；重新打上 v1.3.24 标签触发 CI，Windows 上同一个测试又在不同的地方连续失败两次——「动画到画布」卡在「正在导出动画…」120 秒超时。本地用同一份构建完整复现整条流程却顺利通过，判断是 Windows 跑分机没有 GPU、纯软件渲染更慢，而不是逻辑错误。
+
+往上游 3.3.0 的变更记录查证：浏览器一旦没有存过设置，默认会打开「卡通描边」（toon look）——给视口、截图和导出都多加一道轮廓/明暗分层的后期处理，每一帧都更贵；这是全新的默认行为，不是我们这次升级特意改的，但正好只有 `browser-smoke.cjs` 这个测试文件会触发截图和导出，其余跑过的测试都不涉及渲染导出，没撞上这个问题。代码里本来就留了一个专门给自动化用的开关 `window.__cozyFinish('off')`（注释写明是 QA hook），在测试里连上导演台之后、正式开始操作之前调一下就行，不是我们自己发明的绕过写法。
+
+这个默认行为变化本身超出本次「先保持升级前体验」的范围，暂不处理产品侧默认值，只在测试里关闭，避免 CI 因为纯软件渲染变慢而超时；产品里要不要默认关掉卡通描边，留给后续单独评估。
