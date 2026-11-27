@@ -28,16 +28,15 @@ const path = require('node:path');
     await page.getByRole('button', { name: '打开导演台', exact: true }).first().click();
     await page.frameLocator('iframe[title="3D导演台"]').locator('.canvas-return-bar').waitFor();
     const frame = page.frames().find(frame => frame.url().includes('/cozy/app'));
-    await frame.locator('.topbar-mcp[data-state="connected"]').waitFor();
     await frame.locator('.canvas-return-bar').getByText('已保存到本机', { exact: true }).waitFor();
     await frame.locator('.project-browser-backdrop').waitFor({ state: 'detached' });
     results.push('免登录、导演台加载、自动落盘及同源 WebSocket 连接通过');
-    const fresh = await frame.evaluate(() => window.__cozyclay.runStudioAction('project.new', { name: '联调白模导演台', previsMode: 'animation', castStyle: 'rig' }));
+    const fresh = await frame.evaluate(() => window.__cozyclay.runStudioAction('project.new', { name: '联调白模导演台', castStyle: 'rig' }));
     assert.equal(fresh?.ok, true);
     await frame.waitForFunction(() => window.__cozyclay.characters.length === 0);
     if (!await frame.evaluate(() => window.__cozyclay.characters.length)) {
-      await frame.getByRole('button', { name: '添加', exact: true }).first().click();
-      await frame.getByText('Y Bot', { exact: true }).first().click();
+      await frame.getByTitle('添加物体、角色或摄影机').click();
+      await frame.locator('.add-object-item').getByText('积木人', { exact: true }).first().click();
     }
     await frame.waitForFunction(() => Boolean(window.__cozyclay?.rigA));
     const setup = await frame.evaluate(async () => {

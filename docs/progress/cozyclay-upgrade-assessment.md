@@ -75,3 +75,13 @@ description: 现有导演台与上游 3.3.2 的差异、风险和升级步骤
   - `launcher/test/workspace-smoke.cjs`：发现并修了一个由本次改动引入的测试问题——`.canvas-return-bar` 里「已连接画布」这行字只是连接成功那一刻的瞬时提示，代码立刻就继续往下把它改写成「正在保存到本机…」「已保存到本机」，Playwright 轮询经常错过这个窗口导致超时；`director-lifecycle.cjs` 自己一直等的是稳定落地的「已保存到本机」，照抄这个写法后两个测试都稳定通过。这不是产品本身的 bug——截图显示导演台当时已经正常连上、场景已保存、新按钮也正确渲染，只是测试选的等待文案不够稳定。
   - 跑完以上两个集成测试后，`launcher` 单元测试 110/110 仍然全部通过。
   - 没有验证的：真实 Windows 打包流程（Electron 签名、安装/卸载、在线更新）和真实模型渠道下的动作生成效果，这些需要 Windows 实机或下一次专门会话。
+
+## v1.3.24 发布时 Windows CI 暴露、本地复现并修复的问题
+
+发布 v1.3.24 时 `Build Windows release` 工作流的「Verify portable projects on isolated Windows workspaces」步骤失败，本地重新组装一份 `work/bundle-linux` 完整复现，定位并修复了三类问题，均已在修复后的本地构建上重新跑通：
+
+1. **`.topbar-mcp[data-state="connected"]` 这个死选择器还有三处漏网**：之前只改了 `workspace-smoke.cjs`，`launcher/test/browser-smoke.cjs`、`multi-channel.cjs`、`agent-transport.cjs` 里各有一处同样的等待，而且这三处紧跟着的下一行本来就已经在等 `.canvas-return-bar` 的「已保存到本机」——两个等待本来就是重复的，直接删掉死的那一行即可。
+2. **`launcher/test/browser-smoke.cjs` 自己也调了一次 `previsMode`**：`window.__cozyclay.runStudioAction('project.new', {..., previsMode: 'animation', ...})` 这行是测试代码自己直接调用 Studio 命令，和 `canvas-bridge.js` 那处是同一类 bug，漏改了，同样删掉这个参数。
+3. **新建角色的操作方式变了，测试里硬编码的「Y Bot」选项已经不存在**：3.3.0 把 X Bot / Y Bot 的选择去掉了，新角色统一是积木人（Block 造型），而且入口也从原来「点一个通用『添加』按钮 → 选 Y Bot」，变成「点工具栏里 `title="添加物体、角色或摄影机"` 的加号 → 在弹出菜单里点『积木人』」。这个按钮的可访问名称和它的可见文字对不上（`getByRole('button', {name:'添加'})` 匹配不到，要用 `getByTitle`），光看代码猜不出来，是实际跑起来、一步步点开菜单核对了 DOM 才确认的。
+
+这三类问题修复后，`launcher/test/director-lifecycle.cjs`（4/4）、`launcher/test/portable-browser-smoke.cjs`（10/10，`passed: true`）、`launcher` 单元测试（110/110）全部重新跑通。

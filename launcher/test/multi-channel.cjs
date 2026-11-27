@@ -104,7 +104,6 @@ const assert = require('node:assert/strict');
     await page.getByLabel('重置视图', { exact: true }).click();
     await page.getByRole('button', { name: '打开导演台', exact: true }).first().click();
     const studio = page.frameLocator('iframe[title="3D导演台"]');
-    await studio.locator('.topbar-mcp[data-state="connected"]').waitFor();
     await studio.locator('.canvas-return-bar').getByText('已保存到本机', { exact: true }).waitFor();
     await studio.getByTestId('studio-agent-bar').click();
     const picker = studio.locator('select.agent-model-select:not(.agent-effort-select)'); await picker.waitFor();
